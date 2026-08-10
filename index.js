@@ -2,9 +2,27 @@ const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const config = require('./config');
-const { verificarPrazosJulgamento, verificarRenovacoesPorteArma, DIA_MS } = require('./utils/prazos');
+const {
+  verificarPrazosJulgamento, verificarRenovacoesPorteArma, verificarVinculosPendentes,
+  verificarProcessosSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
+  verificarMedidasAguardandoMP, verificarMedidasAguardandoJuiz, verificarMandadosPendentes,
+  verificarApelacoesPendentes, verificarPrazosContestacao, DIA_MS,
+} = require('./utils/prazos');
+const ficha = require('./utils/ficha');
+const integracaoPoliciaCivil = require('./utils/integracaoPoliciaCivil');
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const DEZ_MIN_MS = 10 * 60 * 1000;
+
+// GuildMembers é intent privilegiada — precisa estar habilitada em "Server Members Intent"
+// no Discord Developer Portal (Bot > Privileged Gateway Intents) antes de adicionar aqui,
+// senão o login falha com "Used disallowed intents" e o bot fica offline. Enquanto não
+// habilitar, o guildMemberAdd abaixo fica registrado mas nunca dispara (inofensivo).
+// GuildMessages não é privilegiada (não precisa de toggle no Developer Portal) — só é
+// necessária pra receber o evento messageCreate (auto-limpeza do canal do painel).
+// MessageContent também é privilegiada (mesmo toggle "Message Content Intent" no Developer
+// Portal) — sem ela, o Discord manda embeds/conteúdo VAZIOS em mensagens que o bot não
+// escreveu, o que quebra a leitura do webhook da Polícia Civil (utils/integracaoPoliciaCivil.js).
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 client.commands = new Collection();
 
 const commandsPath = path.join(__dirname, 'commands');
@@ -32,7 +50,45 @@ client.once('ready', async () => {
   setInterval(rodarChecagens, DIA_MS);
 
   const painel = client.commands.get('painel');
+
+  // Prazos curtos (1h, 24h), retentativas e limpeza do canal do painel não esperam o job
+  // diário — rodam a cada 10min.
+  const rodarChecagensFrequentes = () => {
+    verificarVinculosPendentes(client, guild).catch(err => console.error('Erro na checagem de vínculos pendentes:', err));
+    verificarProcessosSemJuiz(guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (civil):', err));
+    verificarPeticoesSemJuiz(guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (petição):', err));
+    verificarDiligenciasPendentes(client, guild).catch(err => console.error('Erro na checagem de diligências pendentes:', err));
+    verificarMedidasAguardandoMP(client, guild).catch(err => console.error('Erro na checagem de medidas aguardando MP:', err));
+    verificarMedidasAguardandoJuiz(client, guild).catch(err => console.error('Erro na checagem de medidas aguardando Juiz:', err));
+    verificarMandadosPendentes(client, guild).catch(err => console.error('Erro na checagem de mandados pendentes:', err));
+    verificarApelacoesPendentes(client, guild).catch(err => console.error('Erro na checagem de apelações pendentes:', err));
+    verificarPrazosContestacao(client, guild).catch(err => console.error('Erro na checagem de prazos de contestação:', err));
+    if (painel?.limparCanalPainelPeriodico) painel.limparCanalPainelPeriodico(guild).catch(err => console.error('Erro ao limpar canal do painel:', err));
+  };
+  rodarChecagensFrequentes();
+  setInterval(rodarChecagensFrequentes, DEZ_MIN_MS);
+
   if (painel?.postarPainelFixo) await painel.postarPainelFixo(guild, client).catch(err => console.error('Erro ao postar painel fixo:', err));
+});
+
+// Alguém vinculado por ID (cliente/réu que ainda não estava no servidor no momento do vínculo)
+// entrou agora — aplica o apelido automaticamente, sem precisar de nenhuma ação manual.
+client.on('guildMemberAdd', async member => {
+  const sincronizado = await ficha.sincronizarNovoMembro(member).catch(err => {
+    console.error(`Erro ao sincronizar novo membro ${member.id}:`, err);
+    return null;
+  });
+  if (sincronizado) console.log(`Apelido sincronizado automaticamente pra ${member.id} ao entrar no servidor.`);
+});
+
+// Só a integração com a Polícia Civil continua ouvindo mensagens novas — a auto-limpeza de
+// 3min do canal do painel (mensagem real e resposta ephemeral) foi removida a pedido do
+// operador. A limpeza do canal do painel volta a ser só a varredura periódica de 10min
+// (limparCanalPainelPeriodico, chamada no job frequente abaixo) + a limpeza que roda toda vez
+// que o painel fixo é postado/editado (postarPainelFixo).
+client.on('messageCreate', message => {
+  if (message.channelId !== config.canalRequerimentoPoliciaCivilId) return;
+  integracaoPoliciaCivil.processarRequerimento(message).catch(err => console.error('Erro na integração com a Polícia Civil:', err));
 });
 
 async function responderErro(interaction, err) {
@@ -70,7 +126,7 @@ client.on('interactionCreate', async interaction => {
       const [modulo, acao, numero] = interaction.customId.split(':');
       const comando = client.commands.get(modulo);
       const mapa = {
-        medida: { aprovar: 'aprovar', negar: 'negar', recorrer: 'recorrer', referendar: 'referendar', cumprir: 'cumprirMandado', abrirprocesso: 'abrirProcesso' },
+        medida: { aprovar: 'aprovar', negar: 'negar', recorrer: 'recorrer', referendar: 'referendar', cumprir: 'cumprirMandado', abrirprocesso: 'abrirProcesso', anexarindicios: 'anexarIndicios' },
         processo: { oferecer: 'oferecer', arquivar: 'arquivar', habilitar: 'habilitar', julgar: 'julgar' },
       };
       const nomeHandler = mapa[modulo]?.[acao];

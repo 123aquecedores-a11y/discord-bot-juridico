@@ -6,7 +6,14 @@ const canais = require('./canais');
 const auditoria = require('./auditoria');
 const { temCargo, isAdmin } = require('./permissoes');
 const { truncar } = require('./texto');
-const processoCmd = require('../commands/processo');
+const andamentos = require('./andamentos');
+const documentoPng = require('../services/gerarDocumentoPNG');
+const documentos = require('./documentos');
+// processoCmd é requerido sob demanda (não no topo do arquivo) de propósito: processo.js -> medida.js
+// -> supervisao.js -> processo.js forma um ciclo, e um require no topo aqui pega o module.exports
+// de processo.js ainda incompleto (objeto vazio, dependendo da ordem em que os arquivos carregam
+// na inicialização), fazendo `processoCmd.botoesJuiz` virar undefined silenciosamente até alguém
+// clicar. Resolvendo dentro da função, o require só roda depois que todo o boot já terminou.
 
 function extrairMencao(texto) {
   const m = texto && texto.match(/<@!?(\d+)>/);
@@ -118,6 +125,51 @@ async function trocarPromotor(interaction) {
   return interaction.reply({ content: `Promotor do processo ${numero} trocado para <@${novoPromotorId}>.`, ephemeral: true });
 }
 
+// ---- Trocar Desembargador de uma apelação ----
+// Sem isso, uma apelação sorteada pra um Desembargador que ficasse indisponível (licença,
+// saiu do cargo) ficava presa pra sempre — só o `desembargadorId` original podia decidir.
+
+function abrirModalTrocarDesembargador(interaction) {
+  if (!temCargo(interaction, 'Desembargador') && !isAdmin(interaction)) {
+    return interaction.reply({ content: 'Só Desembargadores podem trocar o relator de uma apelação.', ephemeral: true });
+  }
+  const modal = new ModalBuilder().setCustomId('painel:modal:supervisao:trocardesembargador').setTitle('Trocar relator da apelação');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('numero').setLabel('Número da apelação').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('novo').setLabel('Menção @ do novo Desembargador').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Motivo da troca').setStyle(TextInputStyle.Short).setRequired(true)),
+  );
+  return interaction.showModal(modal);
+}
+
+async function trocarDesembargador(interaction) {
+  const numero = interaction.fields.getTextInputValue('numero');
+  const novoId = extrairMencao(interaction.fields.getTextInputValue('novo'));
+  const motivo = interaction.fields.getTextInputValue('motivo');
+
+  const apelacao = db.buscarPorNumero('apelacoes', numero);
+  if (!apelacao) return interaction.reply({ content: 'Apelação não encontrada.', ephemeral: true });
+  if (!novoId) return interaction.reply({ content: 'Marque o novo Desembargador com @menção.', ephemeral: true });
+  if (apelacao.status !== 'Aguardando decisão') return interaction.reply({ content: 'Essa apelação já foi decidida.', ephemeral: true });
+
+  const antigoId = apelacao.desembargadorId;
+  db.atualizar('apelacoes', numero, { desembargadorId: novoId });
+
+  const canal = await interaction.guild.channels.fetch(apelacao.canalId).catch(() => null);
+  if (canal) {
+    await canais.adicionarMembro(canal, novoId);
+    if (antigoId) await canal.permissionOverwrites.delete(antigoId).catch(() => {});
+    await canal.send({ content: `<@${novoId}> passa a ser o Desembargador relator desta apelação (trocado por decisão de <@${interaction.user.id}>). Motivo: ${motivo}` });
+  }
+
+  await auditoria.registrar(interaction.guild, {
+    acao: 'Troca de relator (apelação)', executorId: interaction.user.id,
+    referencia: `Apelação ${numero}: <@${antigoId}> → <@${novoId}>`, motivo,
+  });
+
+  return interaction.reply({ content: `Relator da apelação ${numero} trocado para <@${novoId}>.`, ephemeral: true });
+}
+
 // ---- Forçar denúncia (Procurador reverte arquivamento do Promotor) ----
 
 function abrirModalForcarDenuncia(interaction) {
@@ -147,6 +199,7 @@ function abrirModalForcarDenunciaDireto(interaction, numero) {
 }
 
 async function executarForcarDenuncia(interaction, numero, motivo) {
+  const processoCmd = require('../commands/processo');
   const guild = await resolverGuild(interaction);
   if (!guild) return interaction.reply({ content: 'Não consegui identificar o servidor — tente pelo /painel direto no Discord.', ephemeral: true });
 
@@ -161,16 +214,46 @@ async function executarForcarDenuncia(interaction, numero, motivo) {
 
   db.atualizar('processos', numero, { status: 'Instrução', juiz: juizId, juizDesde: new Date().toISOString(), revisaoArquivamento: 'Decidida' });
 
+  // Peça formal da decisão do Procurador (igual parecer do MP) — antes ia só texto solto no
+  // canal, sem nenhum documento nos autos representando a revisão em si.
+  const nomeProcurador = await documentoPng.nomeExibicao(guild, interaction.user.id);
+  const nomeReuTxt = (processo.reus || []).length
+    ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(guild, id)))).join(' e ')
+    : 'o(a) indiciado(a)';
+  const crimeDescricao = (processo.crimes || []).map(c => `${c.nome} (art. ${c.artigo})`).join(', ') || 'crime não especificado';
+  const pngDecisao = await documentoPng.gerarDocumentoPNG({
+    tipoDocumento: 'decisao_revisao_forcar', orgaoEmissor: 'ministerio_publico', subunidade: '1ª Promotoria de Justiça Criminal',
+    tituloDocumento: 'DECISÃO EM REVISÃO DE ARQUIVAMENTO', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),
+    destinatario: 'Autos', corpoTexto: motivo, nomeReu: nomeReuTxt, crimeDescricao,
+    nomeAssinante: nomeProcurador, cargoAssinante: 'Procurador de Justiça',
+  }).catch(err => { console.error('Falha ao gerar PNG da decisão (forçar denúncia):', err.message); return null; });
+
   const canal = await guild.channels.fetch(processo.canalId).catch(() => null);
+  let msgPainel = null;
   if (canal) {
     await canais.adicionarMembro(canal, juizId);
     await canal.send({
-      content: `Denúncia forçada pelo Procurador <@${interaction.user.id}> — <@${juizId}> sorteado para o caso. Motivo: ${motivo}`,
-      components: [processoCmd.botoesJuiz(numero)],
+      content: `📋 Decisão do Procurador <@${interaction.user.id}> em revisão de arquivamento:`,
+      ...(pngDecisao ? { files: [{ attachment: pngDecisao, name: `Decisao-Revisao-${numero}.png` }] } : {}),
     });
+    msgPainel = await canal.send({
+      content: `Denúncia forçada — <@${juizId}> sorteado para o caso.`,
+      components: processoCmd.montarPainelAcoes(db.buscarPorNumero('processos', numero)),
+    });
+    db.atualizar('processos', numero, { painelMsgId: msgPainel.id });
   }
 
-  await auditoria.registrar(guild, { acao: 'Denúncia forçada', executorId: interaction.user.id, referencia: `Processo ${numero}`, motivo });
+  const canalRevisao = processo.revisaoArquivamentoCanalId ? await guild.channels.fetch(processo.revisaoArquivamentoCanalId).catch(() => null) : null;
+  if (canalRevisao) {
+    await canalRevisao.send({ content: `Denúncia forçada por <@${interaction.user.id}> — processo ${numero} reaberto pra instrução. Revisão encerrada.` });
+    await canais.arquivarCanal(canalRevisao);
+  }
+
+  await andamentos.registrar(guild, numero, {
+    tipo: 'revisao_arquivamento_decidida', titulo: '📋 Denúncia forçada em revisão de arquivamento',
+    detalhe: `Procurador <@${interaction.user.id}> forçou a denúncia. Motivo: ${motivo}`,
+    executorId: interaction.user.id, metadata: { resultado: 'Denuncia forcada', novoJuiz: juizId },
+  });
   await processoCmd.postarOuAtualizarDiario(guild, numero);
 
   return interaction.reply({ content: `Denúncia forçada. Processo ${numero} agora em Instrução com <@${juizId}> como Juiz.`, ephemeral: true });
@@ -185,6 +268,75 @@ async function forcarDenuncia(interaction) {
 async function forcarDenunciaDireto(interaction, numero) {
   const motivo = interaction.fields.getTextInputValue('motivo');
   return executarForcarDenuncia(interaction, numero, motivo);
+}
+
+// Contraparte de "Forçar denúncia" — faltava um jeito de o Procurador simplesmente concordar
+// com o arquivamento do Promotor. Sem isso, `revisaoArquivamento` ficava travado em 'Pendente'
+// pra sempre (nenhuma ação disponível resolvia esse estado) e o Delegado nem podia pedir uma
+// nova revisão depois (bloqueado pelo guard de "já existe pedido pendente"). Modal com motivo
+// pra ficar simétrico com "Forçar denúncia" — os dois desfechos da mesma decisão merecem o
+// mesmo nível de fundamentação e o mesmo documento formal nos autos.
+function abrirModalManterArquivamento(interaction, numero) {
+  if (!temCargo(interaction, 'Procurador') && !isAdmin(interaction)) {
+    return interaction.reply({ content: 'Só Procuradores podem decidir uma revisão de arquivamento.', ephemeral: true });
+  }
+  const modal = new ModalBuilder().setCustomId(`painel:modal:supervisao:manterarquivamento:${numero}`).setTitle('Manter arquivamento');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Motivo').setStyle(TextInputStyle.Short).setRequired(true)),
+  );
+  return interaction.showModal(modal);
+}
+
+async function manterArquivamento(interaction, numero) {
+  const motivo = interaction.fields.getTextInputValue('motivo');
+  if (!temCargo(interaction, 'Procurador') && !isAdmin(interaction)) {
+    return interaction.reply({ content: 'Só Procuradores podem decidir uma revisão de arquivamento.', ephemeral: true });
+  }
+  const guild = await resolverGuild(interaction);
+  if (!guild) return interaction.reply({ content: 'Não consegui identificar o servidor — tente pelo /painel direto no Discord.', ephemeral: true });
+
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (processo.revisaoArquivamento !== 'Pendente') {
+    return interaction.reply({ content: 'Essa revisão já foi decidida ou não existe.', ephemeral: true });
+  }
+
+  db.atualizar('processos', numero, { revisaoArquivamento: 'Decidida' });
+
+  const canalRevisao = processo.revisaoArquivamentoCanalId ? await guild.channels.fetch(processo.revisaoArquivamentoCanalId).catch(() => null) : null;
+  if (canalRevisao) {
+    await canalRevisao.send({ content: `Arquivamento do processo ${numero} mantido pelo Procurador <@${interaction.user.id}>.` });
+    await canais.arquivarCanal(canalRevisao);
+  }
+
+  // Peça formal da decisão (igual parecer do MP) — antes ia só texto solto no canal.
+  const nomeProcurador = await documentoPng.nomeExibicao(guild, interaction.user.id);
+  const nomeReuTxt = (processo.reus || []).length
+    ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(guild, id)))).join(' e ')
+    : 'o(a) indiciado(a)';
+  const crimeDescricao = (processo.crimes || []).map(c => `${c.nome} (art. ${c.artigo})`).join(', ') || 'crime não especificado';
+  const pngDecisao = await documentoPng.gerarDocumentoPNG({
+    tipoDocumento: 'decisao_revisao_manter', orgaoEmissor: 'ministerio_publico', subunidade: '1ª Promotoria de Justiça Criminal',
+    tituloDocumento: 'DECISÃO EM REVISÃO DE ARQUIVAMENTO', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),
+    destinatario: 'Autos', corpoTexto: motivo, nomeReu: nomeReuTxt, crimeDescricao,
+    nomeAssinante: nomeProcurador, cargoAssinante: 'Procurador de Justiça',
+  }).catch(err => { console.error('Falha ao gerar PNG da decisão (manter arquivamento):', err.message); return null; });
+
+  const canalProcesso = await guild.channels.fetch(processo.canalId).catch(() => null);
+  if (canalProcesso) {
+    await canalProcesso.send({
+      content: `📋 O Procurador <@${interaction.user.id}> revisou o pedido do Delegado e manteve o arquivamento deste processo.`,
+      ...(pngDecisao ? { files: [{ attachment: pngDecisao, name: `Decisao-Revisao-${numero}.png` }] } : {}),
+    });
+  }
+
+  await andamentos.registrar(guild, numero, {
+    tipo: 'revisao_arquivamento_decidida', titulo: '📋 Arquivamento mantido em revisão',
+    detalhe: `Procurador <@${interaction.user.id}> manteve o arquivamento. Motivo: ${motivo}`,
+    executorId: interaction.user.id, metadata: { resultado: 'Mantido' },
+  });
+
+  return interaction.reply({ content: `Arquivamento do processo ${numero} mantido.`, ephemeral: true });
 }
 
 // ---- Filas pendentes ----
@@ -227,7 +379,9 @@ module.exports = {
   podeSupervisionar,
   abrirModalTrocarJuiz, trocarJuiz,
   abrirModalTrocarPromotor, trocarPromotor,
+  abrirModalTrocarDesembargador, trocarDesembargador,
   abrirModalForcarDenuncia, forcarDenuncia,
   abrirModalForcarDenunciaDireto, forcarDenunciaDireto,
+  abrirModalManterArquivamento, manterArquivamento,
   filasPendentes,
 };

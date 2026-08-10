@@ -18,4 +18,17 @@ function temCargo(interaction, cargo) {
   return rh.temCargo(interaction.user.id, cargo);
 }
 
-module.exports = { isAdmin, temCargo };
+// Distinto de propósito de isAdmin(): isAdmin() aceita QUALQUER conta com permissão de
+// Administrator do Discord (o dono do servidor tem isso automaticamente) — foi exatamente essa
+// generalidade que causou o bug real de um Delegado conseguir aprovar medida (a conta de quem
+// testava tinha Administrator). isSuperStaff() só aceita quem tem a role "Staff Salve"
+// especificamente, atribuída à mão — não vem de graça com Administrator nem com dono do
+// servidor. Usado só nas decisões de mérito com responsável definido (aprovar/negar/referendar
+// medida, sentença, decisão de petição/apelação) — é o único lugar onde um "coringa" com
+// acesso irrestrito de verdade foi pedido explicitamente.
+function isSuperStaff(interaction) {
+  if (!interaction.member) return false;
+  return !!(config.roleSuperStaffId && interaction.member.roles.cache.has(config.roleSuperStaffId));
+}
+
+module.exports = { isAdmin, temCargo, isSuperStaff };

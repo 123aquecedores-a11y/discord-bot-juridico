@@ -1,8 +1,23 @@
 const { ChannelType, PermissionFlagsBits, OverwriteType } = require('discord.js');
 const config = require('../config');
+const estado = require('./estado');
 
 function slugCanal(numero) {
   return numero.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+}
+
+// Cria a categoria na primeira vez que é preciso e guarda o ID em `estado` (mesmo mecanismo
+// da mensagem fixa do painel) — assim novos módulos que precisam de categoria própria não
+// dependem de configuração manual no .env, só nascem organizados sozinhos.
+async function obterOuCriarCategoria(guild, chaveEstado, nome) {
+  const idSalvo = estado.obter(chaveEstado);
+  if (idSalvo) {
+    const existente = await guild.channels.fetch(idSalvo).catch(() => null);
+    if (existente) return existente.id;
+  }
+  const categoria = await guild.channels.create({ name: nome, type: ChannelType.GuildCategory });
+  estado.definir(chaveEstado, categoria.id);
+  return categoria.id;
 }
 
 // Cria um canal privado dentro de uma categoria, visível só pros IDs de usuário passados
@@ -11,13 +26,20 @@ function slugCanal(numero) {
 // tipo checando se o ID está em cache, e como o bot roda só com o intent "Guilds" (sem
 // GuildMembers), qualquer pessoa que não interagiu com o bot recentemente não está em cache,
 // e a criação do canal quebra com "Supplied parameter is not a cached User or Role".
-async function criarCanalTicket(guild, { categoriaId, prefixo, numero, membros = [] }) {
+// bloquearConversa (spec-andamentos-processuais_4.md, seção 8.7): canal só tem interação via
+// botão/select/modal, sem bate-papo livre — nega SendMessages pra todo mundo (menos o bot).
+// Clicar botão, escolher select e enviar modal NÃO exigem SendMessages no Discord (só digitar
+// mensagem exige), então os componentes continuam funcionando normalmente mesmo bloqueado.
+// A única exceção real é aguardarAnexoPDF, que depende de mensagem de verdade pra pegar o
+// anexo — ele mesmo libera SendMessages pontualmente pra quem está anexando (ver anexoPdf.js).
+async function criarCanalTicket(guild, { categoriaId, prefixo, numero, membros = [], bloquearConversa = false }) {
+  const permissaoMembro = bloquearConversa
+    ? { allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] }
+    : { allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] };
+
   const overwrites = [
     { id: guild.roles.everyone, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
-    ...membros.map(id => ({
-      id, type: OverwriteType.Member,
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-    })),
+    ...membros.map(id => ({ id, type: OverwriteType.Member, ...permissaoMembro })),
   ];
   if (config.staffRoleId) {
     overwrites.push({
@@ -40,11 +62,22 @@ async function criarCanalTicket(guild, { categoriaId, prefixo, numero, membros =
 // por passar o type explícito), o Discord recusa a permission overwrite — isso não pode
 // derrubar o fluxo inteiro (abrir processo, aprovar habilitação etc.), só significa que essa
 // pessoa específica não recebeu acesso.
+//
+// Detecta sozinho se o canal é "bloqueado" (seção 8.7) olhando se já existe alguma permission
+// overwrite de membro negando SendMessages — a maioria de quem entra num processo (Juiz
+// sorteado, advogado habilitado, réu identificado depois) chega por AQUI, não pelos `membros`
+// passados na criação do canal, então sem essa checagem o bloqueio valeria só pra quem abriu
+// o canal e ninguém mais.
+function canalTemConversaBloqueada(canal) {
+  return canal.permissionOverwrites.cache.some(o => o.type === OverwriteType.Member && o.deny.has(PermissionFlagsBits.SendMessages));
+}
+
 async function adicionarMembro(canal, discordId) {
+  const bloqueado = canalTemConversaBloqueada(canal);
   try {
     await canal.permissionOverwrites.edit(discordId, {
       ViewChannel: true,
-      SendMessages: true,
+      SendMessages: !bloqueado,
       ReadMessageHistory: true,
     }, { type: OverwriteType.Member });
     return true;
@@ -88,4 +121,4 @@ async function reabrirCanal(canal, membros) {
   }
 }
 
-module.exports = { criarCanalTicket, adicionarMembro, arquivarCanal, reabrirCanal };
+module.exports = { criarCanalTicket, adicionarMembro, arquivarCanal, reabrirCanal, obterOuCriarCategoria, canalTemConversaBloqueada };

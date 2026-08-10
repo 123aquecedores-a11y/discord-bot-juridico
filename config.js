@@ -41,4 +41,32 @@ module.exports = {
 
   // Categoria dos tickets de reconsideração (Delegado -> Procurador, quando o Promotor nega medida)
   categoriaReconsideracoesId: process.env.CATEGORIA_RECONSIDERACOES_ID || null,
+
+  // Categoria dos tickets de consulta SISBAJUS (busca de ficha — Promotor pra cima)
+  categoriaSisbajusId: process.env.CATEGORIA_SISBAJUS_ID || null,
+
+  // Canal onde o bot da Polícia Civil posta requerimentos via webhook — vira medida provisória
+  // automaticamente (ver utils/integracaoPoliciaCivil.js)
+  canalRequerimentoPoliciaCivilId: process.env.CANAL_REQUERIMENTO_POLICIA_CIVIL_ID || null,
+
+  // Webhook pra onde a decisão judicial de um mandado originado da Polícia Civil é devolvida
+  // (ver utils/devolutivaPoliciaCivil.js)
+  webhookDevolutivaPoliciaCivilUrl: process.env.WEBHOOK_DEVOLUTIVA_POLICIA_CIVIL_URL || null,
+
+  // Cargo "Staff Salve" — override total, deliberado e restrito a quem tem essa role
+  // especificamente (NÃO qualquer Administrator do Discord). Ver isSuperStaff em
+  // utils/permissoes.js e o motivo dessa distinção lá.
+  roleSuperStaffId: process.env.ROLE_SUPER_STAFF_ID || null,
+
+  // Webhook pra onde vão os pedidos de certidão de antecedentes (Juiz/Promotor/Desembargador/
+  // Procurador — ver utils/certidoes.js)
+  webhookCertidoesUrl: process.env.WEBHOOK_CERTIDOES_URL || null,
+
+  // Webhook do canal dedicado ao Ministério Público — requisição, recomendação e inquérito
+  // civil (atribuições exclusivas do MP, art. 129 CF — ver utils/ministerioPublico.js)
+  webhookMinisterioPublicoUrl: process.env.WEBHOOK_MINISTERIO_PUBLICO_URL || null,
+
+  // Prazo de contestação no processo civil (dias corridos, contados da citação) — pontual e
+  // específico desse trecho do fluxo, não é o prazo geral de julgamento (ver utils/prazos.js).
+  prazoContestacaoDias: Number(process.env.PRAZO_CONTESTACAO_DIAS) || 15,
 };
