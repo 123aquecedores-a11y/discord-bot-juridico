@@ -11,6 +11,14 @@ const {
 const ficha = require('./utils/ficha');
 const integracaoPoliciaCivil = require('./utils/integracaoPoliciaCivil');
 
+// Reset controlado do banco (backup automático antes de apagar) — só quando RESETAR_BANCO=1.
+// Roda antes do login/ready, então o banco já está limpo quando o ready handler faz suas
+// leituras. Depois de resetar, remova a env RESETAR_BANCO pra não reexecutar em cada restart.
+if (process.env.RESETAR_BANCO === '1') {
+  try { require('./scripts/reset-db')(); }
+  catch (e) { console.error('[reset-db] falhou:', e); }
+}
+
 const DEZ_MIN_MS = 10 * 60 * 1000;
 
 // GuildMembers é intent privilegiada — precisa estar habilitada em "Server Members Intent"
