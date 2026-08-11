@@ -1,5 +1,16 @@
 const fs = require('fs');
 const path = require('path');
+
+// [diagnóstico] Loga o limite de memória do container (cgroup) e o RSS inicial — pra confirmar
+// se o crash silencioso (SIGKILL logo após "Fazendo login") é OOM por container pequeno.
+try {
+  let lim = 'desconhecido';
+  try { lim = fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim(); }
+  catch { try { lim = fs.readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf8').trim(); } catch {} }
+  const limMB = /^\d+$/.test(lim) ? `${Math.round(Number(lim) / 1048576)} MB` : lim;
+  console.log(`[mem] limite do container: ${limMB} | RSS inicial: ${Math.round(process.memoryUsage().rss / 1048576)} MB`);
+} catch {}
+
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const config = require('./config');
 const {
