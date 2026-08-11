@@ -11,6 +11,17 @@ const {
 const ficha = require('./utils/ficha');
 const integracaoPoliciaCivil = require('./utils/integracaoPoliciaCivil');
 
+// Rede de segurança: no Node moderno, uma promessa rejeitada sem .catch DERRUBA o processo
+// inteiro (unhandledRejection → exit). Num handler solto (ex: um canal.send que falha, uma
+// chamada de API que rejeita) isso reiniciava o bot em loop e o motivo se perdia no buffer.
+// Aqui a gente LOGA o motivo e NÃO deixa o processo morrer — o bot continua de pé.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason instanceof Error ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err instanceof Error ? err.stack : err);
+});
+
 // Reset controlado do banco (backup automático antes de apagar) — só quando RESETAR_BANCO=1.
 // Roda antes do login/ready, então o banco já está limpo quando o ready handler faz suas
 // leituras. Depois de resetar, remova a env RESETAR_BANCO pra não reexecutar em cada restart.
@@ -161,4 +172,11 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-client.login(config.token);
+client.on('error', (err) => console.error('[client error]', err instanceof Error ? err.message : err));
+client.on('shardError', (err) => console.error('[shardError]', err instanceof Error ? err.message : err));
+client.on('shardDisconnect', (event, id) => console.error(`[shardDisconnect] shard ${id} fechou: code=${event?.code} reason=${event?.reason}`));
+
+console.log('Fazendo login no Discord...');
+client.login(config.token)
+  .then(() => console.log('login() resolveu — aguardando evento ready...'))
+  .catch((err) => console.error('[login FALHOU]', err instanceof Error ? err.stack : err));
