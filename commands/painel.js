@@ -604,7 +604,11 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   if (modulo === 'pessoal') {
     if (acao === 'pendencias') return minhasPendencias(interaction);
     if (acao === 'abrirmenu') {
-      return interaction.reply({ embeds: [embedMenuPrincipal()], components: botoesMenuPrincipal(interaction), files: anexoBrasao(), ephemeral: true });
+      // Defer PRIMEIRO (ACK instantâneo, sem arquivo) e só depois editReply com o brasão: o
+      // upload do anexo junto do reply passava dos 3s no host (Railway trial, latência US-West)
+      // e o Discord marcava "não respondeu a tempo" (10062). Deferindo, a janela vira 15 min.
+      await interaction.deferReply({ ephemeral: true });
+      return interaction.editReply({ embeds: [embedMenuPrincipal()], components: botoesMenuPrincipal(interaction), files: anexoBrasao() });
     }
   }
 
@@ -1254,7 +1258,12 @@ async function router(interaction) {
   if (interaction.isButton()) {
     if (tipo === 'menu') {
       const alvo = partes[2];
-      if (alvo === 'home') return interaction.update({ embeds: [embedMenuPrincipal()], components: botoesMenuPrincipal(interaction), files: anexoBrasao() });
+      // deferUpdate + editReply (em vez de update direto) pelo mesmo motivo do abrirmenu: o
+      // upload do brasão junto do update estoura os 3s no host lento. Deferir dá 15 min.
+      if (alvo === 'home') {
+        await interaction.deferUpdate();
+        return interaction.editReply({ embeds: [embedMenuPrincipal()], components: botoesMenuPrincipal(interaction), files: anexoBrasao() });
+      }
       return abrirSubmenu(interaction, alvo);
     }
     if (tipo === 'acao') {
