@@ -1,17 +1,18 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const crimes = require('../data/crimes.json');
+const { penaTexto, crimeLabel } = require('../utils/crimesTexto');
 
 function embedCrime(crime) {
   return new EmbedBuilder()
-    .setTitle(`${crime.nome} (Art. ${crime.artigo})`)
-    .setColor(crime.esfera === 'militar' ? 0x95a5a6 : 0xc0392b)
+    .setTitle(crimeLabel(crime))
+    .setColor(crime.apuracao === 'corregedoria' ? 0x95a5a6 : 0xc0392b)
     .addFields(
-      { name: 'Capítulo', value: crime.capitulo, inline: true },
-      { name: 'Esfera', value: crime.esfera === 'militar' ? 'Militar (CPM)' : 'Civil', inline: true },
-      { name: 'Afiançável', value: crime.afiancavel ? 'Sim' : 'Não', inline: true },
-      { name: 'Pena sugerida', value: `${crime.pena_meses} meses`, inline: true },
-      { name: 'Multa sugerida', value: `$${crime.multa}`, inline: true },
-      { name: 'Descrição', value: crime.descricao },
+      { name: 'Título', value: crime.titulo, inline: true },
+      { name: 'Pena', value: penaTexto(crime), inline: true },
+      { name: 'Elegível a atenuantes', value: crime.elegivel_atenuante ? 'Sim' : 'Não', inline: true },
+      { name: 'Multa / medida', value: crime.multa_medida_obs },
+      { name: 'Fiança sugerida (referência)', value: crime.fianca_sugerida || 'Não informada' },
+      { name: 'Conduta resumida', value: crime.conduta_resumida },
       { name: 'ID pra usar em /processo penal', value: `\`${crime.id}\`` },
     );
 }
@@ -37,9 +38,9 @@ module.exports = {
   async autocomplete(interaction) {
     const foco = interaction.options.getFocused().toLowerCase();
     const resultados = crimes
-      .filter(c => c.nome.toLowerCase().includes(foco) || c.artigo.toLowerCase().includes(foco) || c.id.includes(foco))
+      .filter(c => c.nome.toLowerCase().includes(foco) || c.codigo_artigo.toLowerCase().includes(foco) || c.id.includes(foco))
       .slice(0, 25)
-      .map(c => ({ name: `${c.nome} (Art. ${c.artigo})`.slice(0, 100), value: c.id }));
+      .map(c => ({ name: crimeLabel(c).slice(0, 100), value: c.id }));
     await interaction.respond(resultados);
   },
 

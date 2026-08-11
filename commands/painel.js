@@ -9,6 +9,7 @@ const config = require('../config');
 const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
 const rh = require('../utils/rh');
 const crimes = require('../data/crimes.json');
+const { crimeLabel } = require('../utils/crimesTexto');
 const processoCmd = require('./processo');
 const medidaCmd = require('./medida');
 const mandadoCmd = require('./mandado');
@@ -210,6 +211,7 @@ function submenuPeticao(interaction) {
       botaoSe(podeProtocolar, 'painel:acao:peticao:abrirportearma', 'Porte de Arma', ButtonStyle.Success),
       botaoSe(podeProtocolar, 'painel:acao:peticao:abrirtrocanome', 'Troca de Nome', ButtonStyle.Success),
       botaoSe(podeProtocolar, 'painel:acao:peticao:abrirlimpezaficha', 'Limpeza de Ficha', ButtonStyle.Success),
+      botaoSe(podeProtocolar, 'painel:acao:peticao:abriralvaraevento', 'Alvará de Evento', ButtonStyle.Success),
     ),
     !podeProtocolar ? new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('painel:disabled').setLabel('Só Advogados protocolam petições').setStyle(ButtonStyle.Secondary).setDisabled(true)) : null,
     botaoVoltar(),
@@ -639,6 +641,8 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'requererprovas') return processoCmd.requererNovasProvas(interaction, extra);
     if (acao === 'concluirinstrucao') return processoCmd.concluirInstrucaoNovamente(interaction, extra);
     if (acao === 'regdepoimento') return processoCmd.abrirSelectTestemunha(interaction, extra);
+    if (acao === 'continuarsentencapenal') return processoCmd.continuarSentencaPenal(interaction, extra);
+    if (acao === 'pularsentencapenal') return processoCmd.pularSentencaPenal(interaction, extra);
   }
 
   if (modulo === 'habilitacao') {
@@ -669,6 +673,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'abrirportearma') return peticaoCmd.abrirModalPorteArma(interaction);
     if (acao === 'abrirtrocanome') return peticaoCmd.abrirModalTrocaNome(interaction);
     if (acao === 'abrirlimpezaficha') return peticaoCmd.abrirModalLimpezaFicha(interaction);
+    if (acao === 'abriralvaraevento') return peticaoCmd.abrirModalAlvaraEvento(interaction);
     if (acao === 'confirmardeferir') return peticaoCmd.confirmarDeferimento(interaction, extra);
     if (acao === 'cancelardecisao') return peticaoCmd.cancelarDecisao(interaction);
     if (acao === 'maisdados') return peticaoCmd.abrirModalMaisDados(interaction, extra);
@@ -890,20 +895,18 @@ async function tratarSelect(interaction, modulo, campo, extra) {
   if (modulo === 'processo' && campo === 'resultado') {
     const numero = extra;
     const resultado = interaction.values[0];
-    const modal = new ModalBuilder().setCustomId(`painel:modal:processo:sentenca:${numero}#${resultado}`).setTitle('Sentença');
-    modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('texto').setLabel('Fundamentação e decisão').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
-    ));
-    // Pena e regime só fazem sentido numa condenação — sentença absolutória e cível não têm
-    // esses dados, e o modal do Discord não tem como esconder campo depois de criado, só
-    // decide o conjunto de campos na hora de montar (resultado já é conhecido aqui).
-    if (resultado === 'Condenado') {
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pena').setLabel('Pena (ex: 6 anos de reclusão)').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('regime').setLabel('Regime inicial (ex: semiaberto)').setStyle(TextInputStyle.Short).setRequired(true)),
-      );
+    const processoResultado = db.buscarPorNumero('processos', numero);
+    // Penal + Condenado passa pela tela de apoio (faixa de pena, fiança de referência e
+    // checklist de atenuantes) antes do modal — as demais combinações (Absolvido, cível) vão
+    // direto pro modal, como sempre foi.
+    if (processoResultado && processoResultado.tipo === 'Penal' && resultado === 'Condenado') {
+      return processoCmd.mostrarResumoSentencaPenal(interaction, numero);
     }
-    return interaction.showModal(modal);
+    return interaction.showModal(processoCmd.modalSentenca(numero, resultado));
+  }
+
+  if (modulo === 'processo' && campo === 'atenuantes') {
+    return processoCmd.atualizarAtenuantesSentenca(interaction, extra);
   }
 
   if (modulo === 'rh' && campo === 'cargo') {
@@ -1018,7 +1021,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'crimepick' && acao === 'buscar') {
     const termo = interaction.fields.getTextInputValue('termo').toLowerCase();
     const resultados = crimes
-      .filter(c => c.nome.toLowerCase().includes(termo) || c.artigo.toLowerCase().includes(termo) || c.id.includes(termo))
+      .filter(c => c.nome.toLowerCase().includes(termo) || c.codigo_artigo.toLowerCase().includes(termo) || c.id.includes(termo))
       .slice(0, 25);
     if (resultados.length === 0) return interaction.reply({ content: 'Nenhum crime encontrado com esse termo. Tente de novo.', ephemeral: true });
     return interaction.reply({ content: `${resultados.length} resultado(s) — selecione um ou mais:`, components: [crimePicker.selectResultados(resultados)], ephemeral: true });
@@ -1125,6 +1128,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'peticao' && acao === 'porte-arma') return peticaoCmd.processarModalPorteArma(interaction);
   if (modulo === 'peticao' && acao === 'troca-nome') return peticaoCmd.processarModalTrocaNome(interaction);
   if (modulo === 'peticao' && acao === 'limpeza-ficha') return peticaoCmd.processarModalLimpezaFicha(interaction);
+  if (modulo === 'peticao' && acao === 'alvara-evento') return peticaoCmd.processarModalAlvaraEvento(interaction);
   if (modulo === 'peticao' && acao === 'maisdados') return peticaoCmd.processarMaisDados(interaction, extra);
   if (modulo === 'peticao' && acao === 'vincularmanual') return peticaoCmd.processarVincularManual(interaction, extra);
 
@@ -1193,14 +1197,14 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'crime' && acao === 'buscar') {
     const termo = interaction.fields.getTextInputValue('termo').toLowerCase();
     const resultados = crimes
-      .filter(c => c.nome.toLowerCase().includes(termo) || c.artigo.toLowerCase().includes(termo) || c.id.includes(termo))
+      .filter(c => c.nome.toLowerCase().includes(termo) || c.codigo_artigo.toLowerCase().includes(termo) || c.id.includes(termo))
       .slice(0, 25);
     if (resultados.length === 0) return interaction.reply({ content: 'Nenhum crime encontrado.', ephemeral: true });
     if (resultados.length === 1) return interaction.reply({ embeds: [crimeCmd.embedCrime(resultados[0])], ephemeral: true });
 
     const row = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder().setCustomId('painel:select:crime:resultado').setPlaceholder('Selecione o crime')
-        .addOptions(resultados.map(c => ({ label: `${c.nome} (Art. ${c.artigo})`.slice(0, 100), value: c.id }))),
+        .addOptions(resultados.map(c => ({ label: crimeLabel(c).slice(0, 100), value: c.id }))),
     );
     return interaction.reply({ content: `${resultados.length} resultados encontrados:`, components: [row], ephemeral: true });
   }

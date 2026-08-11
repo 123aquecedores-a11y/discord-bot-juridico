@@ -8,10 +8,11 @@ const {
 const crimes = require('../data/crimes.json');
 const rascunhos = require('./rascunhoCrimes');
 const { truncar } = require('./texto');
+const { crimeLabel } = require('./crimesTexto');
 
 function embedRascunho(rascunho) {
   const lista = rascunho.crimes.map(id => crimes.find(c => c.id === id)).filter(Boolean);
-  const txt = lista.length ? lista.map(c => `• ${c.nome} (Art. ${c.artigo})`).join('\n') : '*nenhum crime adicionado ainda*';
+  const txt = lista.length ? lista.map(c => `• ${crimeLabel(c)}`).join('\n') : '*nenhum crime adicionado ainda*';
   return new EmbedBuilder()
     .setTitle('📁 Novo processo penal — crimes')
     .setColor(0xe67e22)
@@ -50,7 +51,7 @@ function selectResultados(resultados) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder().setCustomId('painel:select:crimepick:resultado').setPlaceholder('Selecione um ou mais crimes')
       .setMinValues(1).setMaxValues(resultados.length)
-      .addOptions(resultados.map(c => ({ label: `${c.nome} (Art. ${c.artigo})`.slice(0, 100), value: c.id }))),
+      .addOptions(resultados.map(c => ({ label: crimeLabel(c).slice(0, 100), value: c.id }))),
   );
 }
 

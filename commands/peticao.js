@@ -18,7 +18,7 @@ const documentoPng = require('../services/gerarDocumentoPNG');
 const { aguardarAnexoPDF } = require('../utils/anexoPdf');
 const anexos = require('../utils/anexos');
 
-const TIPO_LABEL = { PorteArma: 'Porte de Arma', TrocaNome: 'Troca de Nome', LimpezaFicha: 'Limpeza de Ficha' };
+const TIPO_LABEL = { PorteArma: 'Porte de Arma', TrocaNome: 'Troca de Nome', LimpezaFicha: 'Limpeza de Ficha', AlvaraEvento: 'Alvará de Evento' };
 
 // Referência exibida pro Juiz — o bot não classifica sozinho, exige julgamento sobre prova.
 const TABELA_RISCO = [
@@ -32,7 +32,16 @@ const DOCUMENTOS_NECESSARIOS = {
   PorteArma: 'Certidão de antecedentes criminais negativa, certidão de não constar como investigado, e provas do risco (B.O., prints, laudos etc).',
   TrocaNome: 'Certidão de não constar como investigado.',
   LimpezaFicha: 'Declaração do empregador (vínculo nos últimos 15 dias) e certidão de não constar como investigado.',
+  AlvaraEvento: 'Certidão de não constar como investigado, e roteiro/plano do evento (local, horário e estrutura de segurança prevista).',
 };
+
+// Art. 66, incisos I e II — só informativo no card do pedido (não muda o fluxo de aprovação,
+// a fiscalização em si é ação de RP fora do bot, ver Art. 69/70).
+function classificarLotacao(pessoas) {
+  if (pessoas >= 25) return { rotulo: 'muito alta', inciso: 'II' };
+  if (pessoas >= 15) return { rotulo: 'alta', inciso: 'I' };
+  return null;
+}
 
 // Porte ativo agora é rastreado pelo CPF do cliente, não pelo Discord de quem protocolou
 // (o Advogado) — dois advogados diferentes pedindo pro mesmo cliente têm que enxergar o
@@ -248,6 +257,36 @@ async function criarPeticaoLimpezaFicha({ guild, requerenteId, cpfCliente, nomeC
   return { numero, canal };
 }
 
+// Alvará de Evento (Decreto 003/2026) — "cliente" aqui é o organizador do evento, mesmo padrão
+// de rastreio por CPF dos outros três tipos. Lotação (Art. 66, I/II) é só um selo informativo
+// no card do pedido; não bloqueia nem muda o rito de decisão do Juiz.
+async function criarPeticaoAlvaraEvento({ guild, requerenteId, cpfCliente, nomeCliente, nomeEvento, localEvento, numeroPessoas }) {
+  const { numero, canal } = await abrirTicketPeticao({
+    guild, tipo: 'AlvaraEvento', sigla: 'AE', requerenteId,
+    dados: { cpfCliente, nomeCliente, enderecoCliente: localEvento, nomeEvento, localEvento, numeroPessoas },
+  });
+
+  const lotacao = classificarLotacao(numeroPessoas);
+  const embed = embedPeticao(db.buscarPorNumero('peticoes', numero))
+    .addFields(
+      { name: 'Evento', value: truncar(nomeEvento), inline: true },
+      { name: 'Local', value: truncar(localEvento), inline: true },
+      {
+        name: 'Número estimado de pessoas',
+        value: lotacao ? `${numeroPessoas} — ⚠️ lotação ${lotacao.rotulo} (Art. 66, inciso ${lotacao.inciso})` : `${numeroPessoas}`,
+      },
+      { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorCPF(cpfCliente)) },
+    );
+
+  await canal.send({ embeds: [embed] });
+  await canal.send({
+    content: `📋 **Checklist de documentos exigidos:**\n${DOCUMENTOS_NECESSARIOS.AlvaraEvento}`,
+    components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero))],
+  });
+  await auditoria.registrar(guild, { acao: 'Petição de alvará de evento aberta', executorId: requerenteId, referencia: `${numero}: CPF ${cpfCliente} — "${nomeEvento}" (${numeroPessoas} pessoas)` });
+  return { numero, canal };
+}
+
 // ---- Follow-ups pós-criação: vincular Discord do cliente (obrigatório) + endereço adicional ----
 // Modal do Discord só aceita 5 campos de texto — CPF, nome e endereço já lotam o modal, então
 // o vínculo com uma conta de Discord (que exigiria um select, não um campo de texto) acontece
@@ -403,6 +442,44 @@ function abrirModalLimpezaFicha(interaction) {
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('justificativa').setLabel('Justificativa (obrigatório da 2ª vez)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(400)),
   );
   return interaction.showModal(modal);
+}
+
+// Art. 68 — mesma checagem de habilitação (cargo Advogado) já usada pros outros três tipos de
+// petição administrativa; não existe um cadastro de habilitação separado pra isso.
+function abrirModalAlvaraEvento(interaction) {
+  if (!temCargo(interaction, 'Advogado')) {
+    return interaction.reply({ content: 'Só Advogados podem protocolar alvará de evento, em nome do organizador (Art. 68).', ephemeral: true });
+  }
+  const modal = new ModalBuilder().setCustomId('painel:modal:peticao:alvara-evento').setTitle('Alvará de evento — dados do pedido');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cpf').setLabel('CPF do organizador').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do organizador').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('evento').setLabel('Nome/descrição do evento').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('local').setLabel('Local do evento').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pessoas').setLabel('Número estimado de pessoas').setStyle(TextInputStyle.Short).setRequired(true)),
+  );
+  return interaction.showModal(modal);
+}
+
+async function processarModalAlvaraEvento(interaction) {
+  const pessoasTexto = interaction.fields.getTextInputValue('pessoas');
+  const numeroPessoas = parseInt(pessoasTexto, 10);
+  if (!Number.isFinite(numeroPessoas) || numeroPessoas < 0 || String(numeroPessoas) !== pessoasTexto.trim()) {
+    return interaction.reply({ content: `"${pessoasTexto}" não é um número válido de pessoas. Abra a petição de novo e informe só o número (ex: 20).`, ephemeral: true });
+  }
+
+  const cpf = interaction.fields.getTextInputValue('cpf');
+  await interaction.deferReply({ ephemeral: true });
+  const local = interaction.fields.getTextInputValue('local');
+  const { numero, canal } = await criarPeticaoAlvaraEvento({
+    guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+    nomeCliente: interaction.fields.getTextInputValue('nome'),
+    nomeEvento: interaction.fields.getTextInputValue('evento'),
+    localEvento: local, numeroPessoas,
+  });
+  ficha.adicionarEndereco(cpf, local, numero);
+  await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
+  return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
 }
 
 async function processarModalPorteArma(interaction) {
@@ -714,7 +791,13 @@ module.exports = {
       .addStringOption(o => o.setName('cpf').setDescription('CPF do cliente').setRequired(true))
       .addStringOption(o => o.setName('nome').setDescription('Nome completo do cliente').setRequired(true))
       .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true))
-      .addStringOption(o => o.setName('justificativa').setDescription('Obrigatório a partir da 2ª vez deste CPF'))),
+      .addStringOption(o => o.setName('justificativa').setDescription('Obrigatório a partir da 2ª vez deste CPF')))
+    .addSubcommand(sub => sub.setName('alvara-evento').setDescription('Advogado protocola alvará de evento em nome do organizador (Art. 68, Decreto 003/2026)')
+      .addStringOption(o => o.setName('cpf').setDescription('CPF do organizador').setRequired(true))
+      .addStringOption(o => o.setName('nome').setDescription('Nome completo do organizador').setRequired(true))
+      .addStringOption(o => o.setName('evento').setDescription('Nome/descrição do evento').setRequired(true))
+      .addStringOption(o => o.setName('local').setDescription('Local do evento').setRequired(true))
+      .addIntegerOption(o => o.setName('pessoas').setDescription('Número estimado de pessoas no evento').setRequired(true).setMinValue(0))),
 
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
@@ -778,10 +861,25 @@ module.exports = {
       await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
       return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
     }
+
+    if (sub === 'alvara-evento') {
+      const cpf = interaction.options.getString('cpf');
+      await interaction.deferReply({ ephemeral: true });
+      const local = interaction.options.getString('local');
+      const { numero, canal } = await criarPeticaoAlvaraEvento({
+        guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+        nomeCliente: interaction.options.getString('nome'),
+        nomeEvento: interaction.options.getString('evento'),
+        localEvento: local, numeroPessoas: interaction.options.getInteger('pessoas'),
+      });
+      ficha.adicionarEndereco(cpf, local, numero);
+      await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
+      return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
+    }
   },
 
-  abrirModalPorteArma, abrirModalTrocaNome, abrirModalLimpezaFicha,
-  processarModalPorteArma, processarModalTrocaNome, processarModalLimpezaFicha,
+  abrirModalPorteArma, abrirModalTrocaNome, abrirModalLimpezaFicha, abrirModalAlvaraEvento,
+  processarModalPorteArma, processarModalTrocaNome, processarModalLimpezaFicha, processarModalAlvaraEvento,
   decidir,
   confirmarDeferimento,
   cancelarDecisao,

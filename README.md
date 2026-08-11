@@ -7,7 +7,7 @@ Bot Discord (Node.js + discord.js v14) com três fluxos automatizados por botõe
 - **`/medida solicitar`** — Delegado pede medida provisória (busca, prisão preventiva etc.) ao MP. Vira um ticket com botões **Aprovar/Negar**. Se aprovado, sorteia juiz automaticamente; o juiz só tem o botão **Referendar** (formaliza, não julga mérito) — ao clicar, o mandado é **emitido automaticamente pelo Juiz**, com botão **Cumprir** liberado só pro Delegado. Se negado, Delegado pode **Juntar indícios e recorrer** ao mesmo Promotor.
 - **`/processo penal`** — Delegado abre inquérito com uma ou mais tipificações (concurso de crimes). Delegado e Promotor entram automaticamente no canal-ticket. Promotor decide **Oferecer denúncia** (sorteia juiz) ou **Arquivar** (encerra direto). Réu é opcional na abertura (`/processo vincular-reu` adiciona depois) e só ganha acesso ao canal quando um Advogado se habilita como defesa.
 - **`/processo civil`** — Advogado abre com petição inicial; sorteia juiz na hora; banca de defesa se habilita depois (`/processo habilitar` via botão).
-- **`/crime buscar`** — consulta a base de ~78 tipificações extraída do Código Penal do servidor (autocomplete pelo nome/artigo), usada como referência de pena/multa sugerida — o juiz sempre define a pena final na sentença.
+- **`/crime buscar`** — consulta a base de 126 tipificações extraída do Código Penal do servidor (autocomplete pelo nome/artigo), usada como referência de faixa de pena/fiança sugerida — o juiz sempre define a pena final na sentença.
 - **`/rh contratar|demitir|licenca|listar`** — só Staff/Administração. Define quem tem qual cargo jurídico (Delegado/Promotor/Juiz/Advogado), o que também controla o Role do Discord e quem entra no sorteio de juiz.
 - **`/oficio criar`** — vinculado a um processo, postado direto no canal dele.
 - **`/mandado ver|listar`** — consulta (mandados agora nascem automaticamente do referendo de uma medida, não são mais criados manualmente).
@@ -40,7 +40,7 @@ discord-bot-juridico/
 ├── index.js                 # roteia slash commands, botões, modais, autocomplete
 ├── deploy-commands.js
 ├── config.js
-├── data/crimes.json          # ~78 tipificações do Código Penal do servidor
+├── data/crimes.json          # 126 tipificações do Código Penal do servidor (Títulos I-XII)
 ├── database/db.js            # camada JSON genérica (processos, medidas, mandados, oficios, rh)
 ├── utils/
 │   ├── numeracao.js           # PROC-0001, MED-0001, MAND-0001, OFI-0001

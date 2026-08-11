@@ -9,6 +9,7 @@ const { truncar } = require('./texto');
 const andamentos = require('./andamentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const documentos = require('./documentos');
+const { crimeLabel } = require('./crimesTexto');
 // processoCmd é requerido sob demanda (não no topo do arquivo) de propósito: processo.js -> medida.js
 // -> supervisao.js -> processo.js forma um ciclo, e um require no topo aqui pega o module.exports
 // de processo.js ainda incompleto (objeto vazio, dependendo da ordem em que os arquivos carregam
@@ -223,7 +224,7 @@ async function executarForcarDenuncia(interaction, numero, motivo) {
   const nomeReuTxt = (processo.reus || []).length
     ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(guild, id)))).join(' e ')
     : 'o(a) indiciado(a)';
-  const crimeDescricao = (processo.crimes || []).map(c => `${c.nome} (art. ${c.artigo})`).join(', ') || 'crime não especificado';
+  const crimeDescricao = (processo.crimes || []).map(c => crimeLabel(c)).join(', ') || 'crime não especificado';
   const pngDecisao = await documentoPng.gerarDocumentoPNG({
     tipoDocumento: 'decisao_revisao_forcar', orgaoEmissor: 'ministerio_publico', subunidade: '1ª Promotoria de Justiça Criminal',
     tituloDocumento: 'DECISÃO EM REVISÃO DE ARQUIVAMENTO', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),
@@ -320,7 +321,7 @@ async function manterArquivamento(interaction, numero) {
   const nomeReuTxt = (processo.reus || []).length
     ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(guild, id)))).join(' e ')
     : 'o(a) indiciado(a)';
-  const crimeDescricao = (processo.crimes || []).map(c => `${c.nome} (art. ${c.artigo})`).join(', ') || 'crime não especificado';
+  const crimeDescricao = (processo.crimes || []).map(c => crimeLabel(c)).join(', ') || 'crime não especificado';
   const pngDecisao = await documentoPng.gerarDocumentoPNG({
     tipoDocumento: 'decisao_revisao_manter', orgaoEmissor: 'ministerio_publico', subunidade: '1ª Promotoria de Justiça Criminal',
     tituloDocumento: 'DECISÃO EM REVISÃO DE ARQUIVAMENTO', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),

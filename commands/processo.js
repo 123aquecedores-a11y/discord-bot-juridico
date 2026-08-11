@@ -6,6 +6,9 @@ const rh = require('../utils/rh');
 const canais = require('../utils/canais');
 const config = require('../config');
 const crimes = require('../data/crimes.json');
+const { penaTexto, crimeLabel } = require('../utils/crimesTexto');
+const { ATENUANTES, labelsDe } = require('../utils/atenuantes');
+const rascunhoSentenca = require('../utils/rascunhoSentenca');
 const { truncar } = require('../utils/texto');
 const auditoria = require('../utils/auditoria');
 const documentos = require('../utils/documentos');
@@ -34,7 +37,7 @@ function resolverCrimes(texto) {
 }
 
 function embedProcesso(p) {
-  const crimesTxt = truncar((p.crimes || []).map(c => `• ${c.nome} (Art. ${c.artigo}) — sugestão: ${c.pena_meses} meses / $${c.multa}`).join('\n') || '—');
+  const crimesTxt = truncar((p.crimes || []).map(c => `• ${crimeLabel(c)} — pena: ${penaTexto(c)}${c.fianca_sugerida ? ` | fiança ref.: ${c.fianca_sugerida}` : ''}`).join('\n') || '—');
   const reusTxt = (p.reus || []).length ? p.reus.map(id => `<@${id}>`).join(', ') : '*A identificar*';
   const aprovadas = (p.habilitacoes || []).filter(h => h.status === 'Aprovado');
   const advogadosTxt = aprovadas.length ? aprovadas.map(h => `<@${h.advogadoId}> (defende <@${h.reuId}>)`).join('\n') : '—';
@@ -80,6 +83,79 @@ function botoesDenuncia(numero) {
   );
 }
 
+// Modal final da sentença — extraído pra ser reaproveitado tanto pelo caminho direto
+// (Absolvido/Procedente/Improcedente, sem tela de apoio) quanto pelos botões "Continuar"/"Pular
+// sugestões" da tela de apoio à condenação (ver montarPainelSentencaPenal).
+function modalSentenca(numero, resultado) {
+  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:sentenca:${numero}#${resultado}`).setTitle('Sentença');
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('texto').setLabel('Fundamentação e decisão').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+  ));
+  // Pena e regime só fazem sentido numa condenação — sentença absolutória e cível não têm
+  // esses dados, e o modal do Discord não tem como esconder campo depois de criado, só
+  // decide o conjunto de campos na hora de montar (resultado já é conhecido aqui).
+  if (resultado === 'Condenado') {
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pena').setLabel('Pena (ex: 6 anos de reclusão)').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('regime').setLabel('Regime inicial (ex: semiaberto)').setStyle(TextInputStyle.Short).setRequired(true)),
+    );
+  }
+  return modal;
+}
+
+// Tela de apoio antes do modal de condenação (spec-atualizacao-codigo-penal-e-sentenca.md,
+// seção 4) — por crime do processo, mostra faixa de pena e fiança sugerida (só referência,
+// nunca preenche nada sozinho) e, se algum crime for elegivel_atenuante, um checklist opcional
+// de atenuantes. Tudo aqui é apoio qualitativo: pena, regime e texto final continuam sendo
+// digitados manualmente no modal seguinte. O aviso de teto de 45 meses é só informativo — não
+// bloqueia o Juiz de sentenciar acima disso quando há decisão fundamentada.
+function montarPainelSentencaPenal(processo, atenuantesSelecionadas) {
+  const crimesDoProcesso = processo.crimes || [];
+  const foraDoTeto = c => c.sem_custodia || c.apuracao === 'corregedoria';
+  const somaTeto = crimesDoProcesso.filter(c => !foraDoTeto(c)).reduce((acc, c) => acc + (c.pena_max_meses || 0), 0);
+  const ultrapassaTeto = somaTeto > 45;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`⚖️ Sentença — Processo ${processo.numero} (Condenação)`)
+    .setColor(ultrapassaTeto ? 0xe67e22 : 0x2ecc71)
+    .setDescription('Faixa de pena e fiança de cada crime, só como referência. Marque atenuantes se cabível (opcional) e siga pra sentença — pena, regime e texto final continuam manuais.');
+
+  for (const c of crimesDoProcesso) {
+    embed.addFields({
+      name: crimeLabel(c),
+      value: `Pena: ${penaTexto(c)}\nFiança sugerida (referência): ${c.fianca_sugerida || 'não informada'}`,
+    });
+  }
+
+  embed.addFields({
+    name: 'Teto de custódia sem julgamento (45 meses)',
+    value: ultrapassaTeto
+      ? `⚠️ Soma das penas máximas: ${somaTeto} meses — ultrapassa o teto de 45. Havendo sentença fundamentada, a pena pode superar o teto normalmente; a fixação final é do Juízo.`
+      : `Soma das penas máximas: ${somaTeto} meses (dentro do teto de 45).`,
+  });
+
+  const algumElegivel = crimesDoProcesso.some(c => c.elegivel_atenuante);
+  const components = [];
+  if (algumElegivel) {
+    components.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder().setCustomId(`painel:select:processo:atenuantes:${processo.numero}`)
+        .setPlaceholder('Atenuantes aplicáveis (opcional)')
+        .setMinValues(0).setMaxValues(ATENUANTES.length)
+        .addOptions(ATENUANTES.map(a => ({ label: a.label, value: a.value, default: atenuantesSelecionadas.includes(a.value) }))),
+    ));
+    if (atenuantesSelecionadas.length) {
+      embed.addFields({ name: 'Atenuantes marcadas', value: labelsDe(atenuantesSelecionadas).join(', ') });
+    }
+  }
+
+  components.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`painel:acao:processo:continuarsentencapenal:${processo.numero}`).setLabel('✅ Continuar para sentença').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`painel:acao:processo:pularsentencapenal:${processo.numero}`).setLabel('⏭️ Pular sugestões e preencher direto').setStyle(ButtonStyle.Secondary),
+  ));
+
+  return { embeds: [embed], components };
+}
+
 // Parecer do MP (spec-atualizacoes-bot-juridico.md, seção 1) — mesmo campo único serve pra
 // Oferecer denúncia ou Arquivar, só muda o título e o que acontece depois da confirmação.
 function modalParecerMp(numero, acao) {
@@ -109,7 +185,7 @@ async function confirmarParecerMp(interaction, chave) {
       ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(interaction.guild, id)))).join(' e ')
       : 'o(a) indiciado(a)'
   );
-  const crimeDescricao = (processo.crimes || []).map(c => `${c.nome} (art. ${c.artigo})`).join(', ') || 'crime não especificado';
+  const crimeDescricao = (processo.crimes || []).map(c => crimeLabel(c)).join(', ') || 'crime não especificado';
   const nomePromotor = await documentoPng.nomeExibicao(interaction.guild, interaction.user.id);
   const tituloParecer = acao === 'oferecer' ? 'PARECER DO MINISTÉRIO PÚBLICO — OFERECIMENTO DE DENÚNCIA' : 'PARECER DO MINISTÉRIO PÚBLICO — ARQUIVAMENTO';
 
@@ -1968,6 +2044,39 @@ module.exports = {
     return interaction.reply({ content: 'Qual o resultado da sentença?', components: [row], ephemeral: true });
   },
 
+  // Disparado pelo select de resultado quando é Penal + Condenado — mostra a tela de apoio
+  // (faixa de pena, fiança de referência e checklist de atenuantes) antes do modal final.
+  async mostrarResumoSentencaPenal(interaction, numero) {
+    const processo = db.buscarPorNumero('processos', numero);
+    if (!processo) return interaction.update({ content: 'Processo não encontrado.', embeds: [], components: [] });
+    rascunhoSentenca.limpar(interaction.user.id, numero);
+    const { embeds, components } = montarPainelSentencaPenal(processo, []);
+    return interaction.update({ content: null, embeds, components });
+  },
+
+  // Select de atenuantes da tela de apoio — só guarda o estado e redesenha o mesmo painel
+  // (nada é gravado no processo ainda; isso só acontece na submissão do modal de sentença).
+  async atualizarAtenuantesSentenca(interaction, numero) {
+    const processo = db.buscarPorNumero('processos', numero);
+    if (!processo) return interaction.update({ content: 'Processo não encontrado.', embeds: [], components: [] });
+    rascunhoSentenca.definir(interaction.user.id, numero, interaction.values);
+    const { embeds, components } = montarPainelSentencaPenal(processo, interaction.values);
+    return interaction.update({ embeds, components });
+  },
+
+  // "Continuar para sentença" — mantém as atenuantes marcadas até aqui (se houver) e abre o
+  // modal final normalmente.
+  async continuarSentencaPenal(interaction, numero) {
+    return interaction.showModal(modalSentenca(numero, 'Condenado'));
+  },
+
+  // "Pular sugestões e preencher direto" — descarta qualquer atenuante marcada e vai direto
+  // pro modal, como se a tela de apoio nunca tivesse existido.
+  async pularSentencaPenal(interaction, numero) {
+    rascunhoSentenca.limpar(interaction.user.id, numero);
+    return interaction.showModal(modalSentenca(numero, 'Condenado'));
+  },
+
   async salvarSentenca(interaction, numero, resultado) {
     // Segunda trava (defesa em profundidade) — o clique em "Julgar" já checa isso, mas a
     // sentença de verdade só se consuma aqui, na submissão do modal; sem checar de novo, o
@@ -1978,11 +2087,18 @@ module.exports = {
       return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processoAlvo.juiz}>.`, ephemeral: true });
     }
 
-    const texto = interaction.fields.getTextInputValue('texto');
+    const textoDigitado = interaction.fields.getTextInputValue('texto');
     // Pena/regime só vêm no modal quando o resultado é Condenado (ver painel.js, select de
     // resultado) — getTextInputValue lançaria se o campo não existir nesse envio.
     const pena = resultado === 'Condenado' ? interaction.fields.getTextInputValue('pena') : null;
     const regime = resultado === 'Condenado' ? interaction.fields.getTextInputValue('regime') : null;
+
+    // Atenuantes marcadas na tela de apoio (se o Juiz passou por ela) — puramente qualitativo,
+    // só acrescenta a frase padrão no texto da sentença; nenhum cálculo de redução de pena.
+    const atenuantesSelecionadas = resultado === 'Condenado' ? rascunhoSentenca.obter(interaction.user.id, numero) : [];
+    const rotulosAtenuantes = labelsDe(atenuantesSelecionadas);
+    const texto = rotulosAtenuantes.length ? `${textoDigitado}\n\nAtenuada em razão de: ${rotulosAtenuantes.join(', ')}.` : textoDigitado;
+    rascunhoSentenca.limpar(interaction.user.id, numero);
 
     // Defer ANTES de gerar o PNG (Puppeteer) — sem isso, a janela de 3s do Discord pra
     // reconhecer a interação estoura enquanto o Chromium sobe (principalmente no primeiro uso
@@ -2003,7 +2119,7 @@ module.exports = {
         : 'o(a) réu(ré)'
     );
     const nomeAutor = processo.autorNome || (processo.autor ? await documentoPng.nomeExibicao(interaction.guild, processo.autor) : 'a parte autora');
-    const crimeDescricao = (processo.crimes || []).map(c => `${c.nome} (art. ${c.artigo})`).join(', ') || 'crime não especificado';
+    const crimeDescricao = (processo.crimes || []).map(c => crimeLabel(c)).join(', ') || 'crime não especificado';
 
     const TIPO_DOCUMENTO_SENTENCA = {
       'Penal:Condenado': 'sentenca_penal_condenatoria',
@@ -2058,6 +2174,7 @@ module.exports = {
   criarProcessoPenal,
   criarProcessoCivil,
   vincularReu,
+  modalSentenca,
   embedProcesso,
   embedCapaPublica,
   processoPublico,
