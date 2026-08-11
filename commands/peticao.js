@@ -671,8 +671,11 @@ async function processarDecisaoRisco(interaction, numero) {
   }
 
   const nivel = Number(interaction.values[0]);
+  // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
+  // Chromium sobe e a interação "falha" mesmo com a petição sendo deferida com sucesso.
+  await interaction.deferUpdate();
   await finalizarDecisao(interaction.guild, numero, 'Deferido', { nivelRisco: nivel }, interaction.user.id);
-  return interaction.update({ content: `Nível de risco ${nivel} registrado. Petição ${numero} deferida (porte válido por 15 dias).`, components: [] });
+  return interaction.editReply({ content: `Nível de risco ${nivel} registrado. Petição ${numero} deferida (porte válido por 15 dias).`, components: [] });
 }
 
 async function processarModalDecisao(interaction, numero, acao) {
@@ -684,8 +687,11 @@ async function processarModalDecisao(interaction, numero, acao) {
 
   const motivo = interaction.fields.getTextInputValue('motivo');
   const status = acao === 'indeferir' ? 'Indeferido' : 'Diligência';
+  // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
+  // Chromium sobe e a interação "falha" mesmo com a decisão sendo registrada com sucesso.
+  await interaction.deferReply({ ephemeral: true });
   await finalizarDecisao(interaction.guild, numero, status, { motivo }, interaction.user.id);
-  return interaction.reply({ content: `Petição ${numero}: ${status.toLowerCase()}.`, ephemeral: true });
+  return interaction.editReply({ content: `Petição ${numero}: ${status.toLowerCase()}.` });
 }
 
 module.exports = {

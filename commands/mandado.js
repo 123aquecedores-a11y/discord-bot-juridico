@@ -126,11 +126,14 @@ async function emitirMandado(interaction, chave) {
   const teor = interaction.fields.getTextInputValue('teor');
   const destinatario = resolverDestinatario(interaction, numero, processo, destinatarioRef);
 
+  // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
+  // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso.
+  await interaction.deferReply({ ephemeral: true });
   const resultado = await emitirMandadoNoProcesso({
     guild: interaction.guild, processo: db.buscarPorNumero('processos', numero), tipoRotulo: rotuloTipo(tipoValue, tipoLivre),
     teor, emitidoPorId: interaction.user.id, destinatario,
   });
-  return interaction.reply({ content: `Mandado ${resultado.numero} emitido e juntado ao processo ${numero}.`, ephemeral: true });
+  return interaction.editReply({ content: `Mandado ${resultado.numero} emitido e juntado ao processo ${numero}.` });
 }
 
 // Reaproveitada por commands/medida.js quando o Promotor solicita medida e o Juiz defere

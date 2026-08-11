@@ -675,6 +675,9 @@ module.exports = {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode referendá-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
     const fundamentacaoJuiz = interaction.fields.getTextInputValue('fundamentacao');
+    // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
+    // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso.
+    await interaction.deferReply({ ephemeral: true });
     db.atualizar('medidas', numero, { status: 'Deferida', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString() });
 
     const numeroMandado = proximoNumero(db, 'mandados', 'MO');
@@ -740,7 +743,7 @@ module.exports = {
     await devolutivaPoliciaCivil.enviarDevolutivaMandado(medidaAtualizada, {
       decisao: 'Deferido', fundamentacao: fundamentacaoJuiz, juizId: medida.juiz, numeroMandado, pngBuffer: pngMandado,
     });
-    return interaction.reply({ content: `Medida ${numero} referendada. Mandado ${numeroMandado} emitido.`, ephemeral: true });
+    return interaction.editReply({ content: `Medida ${numero} referendada. Mandado ${numeroMandado} emitido.` });
   },
 
   async abrirModalNegarJuiz(interaction, numero) {

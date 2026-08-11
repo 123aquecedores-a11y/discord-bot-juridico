@@ -99,6 +99,10 @@ async function confirmarParecerMp(interaction, chave) {
     return interaction.reply({ content: `Só o Promotor responsável por este processo pode decidir — no caso, <@${processo.promotor}>.`, ephemeral: true });
   }
 
+  // Defer antes do PNG (Puppeteer) — mesma razão de salvarSentenca: sem isso a janela de 3s
+  // do Discord estoura enquanto o Chromium sobe, e a interação "falha" mesmo com tudo certo.
+  await interaction.deferReply({ ephemeral: true });
+
   const parecer = interaction.fields.getTextInputValue('parecer');
   const nomeReu = processo.reuNome || (
     (processo.reus || []).length
@@ -142,7 +146,7 @@ async function confirmarParecerMp(interaction, chave) {
     const excluir = [processo.delegado, processo.promotor, ...(processo.reus || [])];
     const juizId = rh.sortearJuiz({ excluirIds: excluir });
     if (!juizId) {
-      return interaction.reply({ content: `Parecer registrado no processo ${numero}, mas não há Juiz ativo disponível para sorteio — a denúncia fica pendente até haver um.`, ephemeral: true });
+      return interaction.editReply({ content: `Parecer registrado no processo ${numero}, mas não há Juiz ativo disponível para sorteio — a denúncia fica pendente até haver um.` });
     }
 
     db.atualizar('processos', numero, { status: 'Instrução', juiz: juizId, juizDesde: new Date().toISOString() });
@@ -162,7 +166,7 @@ async function confirmarParecerMp(interaction, chave) {
 
     await auditoria.registrar(interaction.guild, { acao: 'Denúncia oferecida', executorId: interaction.user.id, referencia: `Processo ${numero} → Juiz <@${juizId}>` });
     await postarOuAtualizarDiario(interaction.guild, numero);
-    return interaction.reply({ content: `Denúncia oferecida no processo ${numero}. Juiz sorteado: <@${juizId}>.`, ephemeral: true });
+    return interaction.editReply({ content: `Denúncia oferecida no processo ${numero}. Juiz sorteado: <@${juizId}>.` });
   }
 
   db.atualizar('processos', numero, { status: 'Arquivado' });
@@ -171,7 +175,7 @@ async function confirmarParecerMp(interaction, chave) {
     await canal.send({ content: `<@${processo.delegado}>`, components: [botaoPedirRevisao(numero)] });
   }
   await auditoria.registrar(interaction.guild, { acao: 'Processo arquivado (MP)', executorId: interaction.user.id, referencia: `Processo ${numero}` });
-  return interaction.reply({ content: `Processo ${numero} arquivado.`, ephemeral: true });
+  return interaction.editReply({ content: `Processo ${numero} arquivado.` });
 }
 
 // Botões liberados assim que o processo tem Juiz sorteado (civil desde a abertura, penal
@@ -1338,6 +1342,9 @@ async function confirmarIntimacaoGenerica(interaction, chave) {
 
   const teor = interaction.fields.getTextInputValue('teor');
   const parte = (processo.partes || []).find(p => p.id === destinatarioRef);
+  // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
+  // Chromium sobe e a interação "falha" mesmo com a intimação sendo emitida com sucesso.
+  await interaction.deferReply({ ephemeral: true });
   await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: parte?.discordId || null, destinatarioNome: parte?.nome || null, teor });
 
   await andamentos.registrar(interaction.guild, numero, {
@@ -1346,7 +1353,7 @@ async function confirmarIntimacaoGenerica(interaction, chave) {
     executorId: interaction.user.id, metadata: { destinatarioId: parte?.discordId || null, destinatarioNome: parte?.nome || null, ehCitacao: false },
   });
   await repostarPainel(interaction.guild, numero);
-  return interaction.reply({ content: 'Intimação emitida e postada no canal do processo.', ephemeral: true });
+  return interaction.editReply({ content: 'Intimação emitida e postada no canal do processo.' });
 }
 
 async function abrirModalReceberEIntimar(interaction, numero) {
@@ -1373,6 +1380,9 @@ async function emitirIntimacao(interaction, numero) {
   // CITAÇÃO (com prazo automático de contestação) quando o civil ainda está na fase pré-citação.
   const ehCitacaoCivil = processo.tipo === 'Civil' && processo.status === 'Aguardando defesa';
 
+  // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
+  // Chromium sobe e a interação "falha" mesmo com a intimação/citação sendo emitida com sucesso.
+  await interaction.deferReply({ ephemeral: true });
   const canal = await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: destId, teor });
 
   let prazoContestacaoAte = null;
@@ -1404,7 +1414,7 @@ async function emitirIntimacao(interaction, numero) {
   });
   await repostarPainel(interaction.guild, numero);
 
-  return interaction.reply({ content: 'Intimação emitida e postada no canal do processo.', ephemeral: true });
+  return interaction.editReply({ content: 'Intimação emitida e postada no canal do processo.' });
 }
 
 // ---- Arquivar petição inicial (civil) ----
@@ -1973,6 +1983,13 @@ module.exports = {
     // resultado) — getTextInputValue lançaria se o campo não existir nesse envio.
     const pena = resultado === 'Condenado' ? interaction.fields.getTextInputValue('pena') : null;
     const regime = resultado === 'Condenado' ? interaction.fields.getTextInputValue('regime') : null;
+
+    // Defer ANTES de gerar o PNG (Puppeteer) — sem isso, a janela de 3s do Discord pra
+    // reconhecer a interação estoura enquanto o Chromium sobe (principalmente no primeiro uso
+    // depois do bot subir, ou num container com menos CPU), e o usuário vê "a interação falhou"
+    // mesmo com a sentença tendo sido salva. Não-ephemeral: a sentença é pública no canal.
+    await interaction.deferReply();
+
     db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaEm: new Date().toISOString() });
 
     const processo = db.buscarPorNumero('processos', numero);
@@ -2010,12 +2027,10 @@ module.exports = {
       cargoAssinante: 'Juiz de Direito',
     }).catch(err => { console.error('Falha ao gerar PNG da sentença:', err.message); return null; });
 
-    await interaction.reply({
+    const msgSentenca = await interaction.editReply({
       content: documentos.textoSentenca(processo), embeds: [embedProcesso(processo)], components: [botaoRecorrer(numero)],
       ...(pngSentenca ? { files: [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] } : {}),
-      fetchReply: true,
     });
-    const msgSentenca = await interaction.fetchReply().catch(() => null);
     const anexoUrlSentenca = msgSentenca?.attachments?.first()?.url || null;
 
     // Se o processo nasceu de uma medida pedida pela Polícia Civil (codigoExterno), devolve o

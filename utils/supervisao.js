@@ -212,6 +212,9 @@ async function executarForcarDenuncia(interaction, numero, motivo) {
   const juizId = rh.sortearJuiz({ excluirIds: [processo.delegado, processo.promotor].filter(Boolean) });
   if (!juizId) return interaction.reply({ content: 'Não há Juiz ativo disponível para sorteio.', ephemeral: true });
 
+  // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
+  // Chromium sobe e a interação "falha" mesmo com a denúncia sendo forçada com sucesso.
+  await interaction.deferReply({ ephemeral: true });
   db.atualizar('processos', numero, { status: 'Instrução', juiz: juizId, juizDesde: new Date().toISOString(), revisaoArquivamento: 'Decidida' });
 
   // Peça formal da decisão do Procurador (igual parecer do MP) — antes ia só texto solto no
@@ -256,7 +259,7 @@ async function executarForcarDenuncia(interaction, numero, motivo) {
   });
   await processoCmd.postarOuAtualizarDiario(guild, numero);
 
-  return interaction.reply({ content: `Denúncia forçada. Processo ${numero} agora em Instrução com <@${juizId}> como Juiz.`, ephemeral: true });
+  return interaction.editReply({ content: `Denúncia forçada. Processo ${numero} agora em Instrução com <@${juizId}> como Juiz.` });
 }
 
 async function forcarDenuncia(interaction) {
@@ -301,6 +304,9 @@ async function manterArquivamento(interaction, numero) {
     return interaction.reply({ content: 'Essa revisão já foi decidida ou não existe.', ephemeral: true });
   }
 
+  // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
+  // Chromium sobe e a interação "falha" mesmo com a decisão sendo registrada com sucesso.
+  await interaction.deferReply({ ephemeral: true });
   db.atualizar('processos', numero, { revisaoArquivamento: 'Decidida' });
 
   const canalRevisao = processo.revisaoArquivamentoCanalId ? await guild.channels.fetch(processo.revisaoArquivamentoCanalId).catch(() => null) : null;
@@ -336,7 +342,7 @@ async function manterArquivamento(interaction, numero) {
     executorId: interaction.user.id, metadata: { resultado: 'Mantido' },
   });
 
-  return interaction.reply({ content: `Arquivamento do processo ${numero} mantido.`, ephemeral: true });
+  return interaction.editReply({ content: `Arquivamento do processo ${numero} mantido.` });
 }
 
 // ---- Filas pendentes ----

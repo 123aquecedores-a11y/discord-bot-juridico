@@ -1173,6 +1173,9 @@ async function tratarModal(interaction, modulo, acao, extra) {
     // extra vem preenchido quando o modal nasceu sem o campo "processo" (painel ciente de
     // contexto — ver abrirModalOficio) — sem isso, teria que chamar getTextInputValue num
     // campo que não existe nesse envio, o que lança erro.
+    // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
+    // Chromium sobe e a interação "falha" mesmo com o ofício sendo expedido com sucesso.
+    await interaction.deferReply({ ephemeral: true });
     const resultado = await oficioCmd.criarOficio({
       guild: interaction.guild,
       processoNumero: extra || interaction.fields.getTextInputValue('processo'),
@@ -1183,8 +1186,8 @@ async function tratarModal(interaction, modulo, acao, extra) {
       emitidoPorTag: interaction.user.tag,
       instituicao: oficioCmd.instituicaoDoEmissor(interaction),
     });
-    if (resultado.erro) return interaction.reply({ content: resultado.erro, ephemeral: true });
-    return interaction.reply({ content: `Ofício ${resultado.numero} expedido em ${resultado.canal}.`, ephemeral: true });
+    if (resultado.erro) return interaction.editReply({ content: resultado.erro });
+    return interaction.editReply({ content: `Ofício ${resultado.numero} expedido em ${resultado.canal}.` });
   }
 
   if (modulo === 'crime' && acao === 'buscar') {
