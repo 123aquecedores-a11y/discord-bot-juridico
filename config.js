@@ -36,6 +36,10 @@ module.exports = {
   // Canal com o /painel fixo (mensagem persistente, sempre a mesma, editada em vez de repostada)
   canalPainelId: process.env.CANAL_PAINEL_ID || null,
 
+  // Canal onde caem as solicitações de cargo (auto-atendimento de contratação) pra staff
+  // aprovar/negar. Se não configurado, cai no canal de auditoria (ver commands/rh.js).
+  canalContratacoesId: process.env.CANAL_CONTRATACOES_ID || null,
+
   // Categoria pra onde processos/medidas/apelações/petições concluídos são movidos ao arquivar
   categoriaArquivadosId: process.env.CATEGORIA_ARQUIVADOS_ID || null,
 

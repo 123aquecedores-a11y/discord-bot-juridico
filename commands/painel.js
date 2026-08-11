@@ -90,6 +90,7 @@ function botoesMenuPrincipal(interaction) {
     ),
     linha(
       botaoSe(true, 'painel:acao:pessoal:pendencias', '📌 Minhas pendências', ButtonStyle.Secondary),
+      botaoSe(true, 'painel:acao:cargo:solicitar', '🪪 Solicitar cargo', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:menu:rh', '👥 RH', ButtonStyle.Secondary),
     ),
   ].filter(Boolean);
@@ -601,6 +602,14 @@ async function arquivarManual(interaction, modulo, numero) {
 async function executarAcaoBotao(interaction, modulo, acao, extra) {
   if (acao === 'arquivarmanual') return arquivarManual(interaction, modulo, extra);
 
+  if (modulo === 'cargo') {
+    if (acao === 'solicitar') {
+      return interaction.reply({ content: 'Escolha o cargo que você quer solicitar:', components: [rhCmd.selectCargoDesejado()], ephemeral: true });
+    }
+    if (acao === 'aprovar') return rhCmd.aprovarSolicitacao(interaction, extra);
+    if (acao === 'negar') return rhCmd.negarSolicitacao(interaction, extra);
+  }
+
   if (modulo === 'pessoal') {
     if (acao === 'pendencias') return minhasPendencias(interaction);
     if (acao === 'abrirmenu') {
@@ -913,6 +922,12 @@ async function tratarSelect(interaction, modulo, campo, extra) {
     return processoCmd.atualizarAtenuantesSentenca(interaction, extra);
   }
 
+  // Auto-atendimento de contratação: escolheu o cargo desejado → abre o modal do nome do
+  // personagem (showModal precisa vir direto do select, sem defer antes).
+  if (modulo === 'cargo' && campo === 'desejado') {
+    return interaction.showModal(rhCmd.modalSolicitacao(interaction.values[0]));
+  }
+
   if (modulo === 'rh' && campo === 'cargo') {
     const usuarioId = extra;
     const cargo = interaction.values[0];
@@ -1029,6 +1044,12 @@ async function tratarModal(interaction, modulo, acao, extra) {
       .slice(0, 25);
     if (resultados.length === 0) return interaction.reply({ content: 'Nenhum crime encontrado com esse termo. Tente de novo.', ephemeral: true });
     return interaction.reply({ content: `${resultados.length} resultado(s) — selecione um ou mais:`, components: [crimePicker.selectResultados(resultados)], ephemeral: true });
+  }
+
+  // Auto-atendimento de contratação: preencheu o nome do personagem → cria a solicitação
+  // pendente e manda pro canal da staff. `acao` aqui é 'solicitar', `extra` é o cargo escolhido.
+  if (modulo === 'cargo' && acao === 'solicitar') {
+    return rhCmd.solicitarCargo(interaction, extra);
   }
 
   if (modulo === 'processo' && acao === 'partetardia') {

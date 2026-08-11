@@ -12,11 +12,13 @@ function temCargo(discordId, cargo) {
   return !!r && r.cargo === cargo;
 }
 
-function contratar(discordId, cargo) {
+function contratar(discordId, cargo, nomePersonagem = null) {
   // desativa cadastro anterior (se houver) e cria um novo
   const dados = db.buscarUm('rh', r => r.discordId === discordId && r.ativo);
   if (dados) db.atualizarPorFiltro('rh', r => r.discordId === discordId && r.ativo, { ativo: false });
-  return db.inserir('rh', { discordId, cargo, ativo: true, licenca: false });
+  // nomePersonagem: guardado aqui pra alimentar a ficha funcional do judiciário (Parte 6) e
+  // pra montar o apelido "Cargo Nome" no auto-atendimento de contratação (commands/rh.js).
+  return db.inserir('rh', { discordId, cargo, ativo: true, licenca: false, nomePersonagem: nomePersonagem || (dados && dados.nomePersonagem) || null });
 }
 
 function demitir(discordId) {
