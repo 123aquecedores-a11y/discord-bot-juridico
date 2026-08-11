@@ -27,19 +27,30 @@ function tabelaVazia(tabela) {
   return tabela === 'instituicoes' ? INSTITUICOES_SEMENTE.map(i => ({ ...i })) : [];
 }
 
+// Cache em memória do banco inteiro. ANTES, carregar() relia + reparseava o dados.json inteiro
+// (dezenas de MB) a CADA operação de leitura, e cada handler faz várias leituras — num host
+// com CPU limitada isso passava dos 3s e o Discord marcava "não respondeu a tempo" (10062) em
+// praticamente qualquer ação, mesmo com a ação dando certo. Como o bot roda 1 réplica (processo
+// único), manter o banco em memória é coerente: lê do disco uma vez, serve da RAM depois.
+// salvar() continua escrevendo no disco (write-through), então um restart relê o estado correto.
+let cache = null;
+
 function carregar() {
+  if (cache) return cache;
   if (!fs.existsSync(DB_PATH)) {
-    const inicial = Object.fromEntries(TABELAS.map(t => [t, tabelaVazia(t)]));
-    fs.writeFileSync(DB_PATH, JSON.stringify(inicial, null, 2));
-    return inicial;
+    cache = Object.fromEntries(TABELAS.map(t => [t, tabelaVazia(t)]));
+    fs.writeFileSync(DB_PATH, JSON.stringify(cache, null, 2));
+    return cache;
   }
   const dados = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
   // garante que tabelas novas existam em bancos antigos (com semente, se a tabela tiver uma)
   for (const t of TABELAS) if (!dados[t]) dados[t] = tabelaVazia(t);
-  return dados;
+  cache = dados;
+  return cache;
 }
 
 function salvar(dados) {
+  cache = dados;
   fs.writeFileSync(DB_PATH, JSON.stringify(dados, null, 2));
 }
 
