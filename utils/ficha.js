@@ -151,7 +151,7 @@ function peticoesDoRG(rg) {
 
 // Processo/medida não coletam RG (só petição coleta) — por isso o cruzamento aqui é pelos
 // IDs de Discord já vinculados à ficha, não pelo RG. Pega tanto quem já foi réu/autor num
-// processo quanto quem já foi alvo de uma medida provisória.
+// processo quanto quem já foi alvo de uma medida cautelar.
 function registrosRelacionados(registro) {
   const ids = registro?.discordIds || [];
   if (ids.length === 0) return { processos: [], medidas: [] };

@@ -1,7 +1,8 @@
 const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const db = require('../database/db');
 const { proximoNumeroClassico } = require('../utils/numeracao');
-const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
+const { temCargo, isAdmin, isSuperStaff, papelInstitucional } = require('../utils/permissoes');
+const ministerioPublico = require('../utils/ministerioPublico');
 const { truncar } = require('../utils/texto');
 const auditoria = require('../utils/auditoria');
 const documentos = require('../utils/documentos');
@@ -12,6 +13,7 @@ const { aguardarAnexoPDF } = require('../utils/anexoPdf');
 const anexos = require('../utils/anexos');
 const andamentos = require('../utils/andamentos');
 const processoCmd = require('./processo');
+const analiseDocumento = require('../utils/analiseDocumento');
 
 const CATEGORIA_OFICIOS_CHAVE = 'categoriaOficiosId';
 const CATEGORIA_OFICIOS_NOME = '✉️ Ofícios';
@@ -31,14 +33,12 @@ const CARGO_POR_INSTITUICAO = {
 // Ofício pode sair de três instituições diferentes — o cabeçalho do documento segue quem
 // realmente assina, mesma lógica já usada em certidão (certidoes.js).
 function instituicaoDoEmissor(interaction) {
-  if (temCargo(interaction, 'Promotor') || temCargo(interaction, 'Procurador')) return 'MINISTÉRIO PÚBLICO';
-  if (temCargo(interaction, 'Delegado')) return 'POLÍCIA CIVIL';
-  return 'PODER JUDICIÁRIO';
+  return papelInstitucional(interaction); // Frente 4a.3 — fonte única do mapa cargo→instituição
 }
 
 function podeEmitirOficio(interaction) {
-  return temCargo(interaction, 'Delegado') || temCargo(interaction, 'Promotor') || temCargo(interaction, 'Procurador')
-    || temCargo(interaction, 'Juiz') || isAdmin(interaction);
+  // Frente 4a.4 — reusa ehMembroDoMP (isAdmin || Promotor || Procurador) em vez de reinlinar.
+  return temCargo(interaction, 'Delegado') || ministerioPublico.ehMembroDoMP(interaction) || temCargo(interaction, 'Juiz');
 }
 
 function botaoArquivarOficio(numero) {
@@ -77,7 +77,9 @@ async function cumprirOficio(interaction, numero) {
   });
 
   db.atualizar('oficios', numero, { status: 'Cumprido', cumpridoPor: interaction.user.id, cumpridoEm: new Date().toISOString() });
-  await interaction.followUp({ content: `📎 Ofício ${numero} cumprido por <@${interaction.user.id}> — PDF juntado aos autos.` });
+  // IA "cartório" faz a análise estruturada da resposta do ofício (best-effort).
+  const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'resposta_oficio', pdfUrl: anexo.url });
+  await interaction.followUp({ content: `📎 Ofício ${numero} cumprido por <@${interaction.user.id}> — PDF juntado aos autos.`, embeds: embedAnalise ? [embedAnalise] : [] });
 
   // O ticket do ofício já sabe que foi cumprido, mas quem acompanha o processo (Juiz, defesa
   // habilitada) só ficava sabendo se fosse conferir o canal do ofício à parte — sem isso, o
@@ -94,7 +96,8 @@ async function cumprirOficio(interaction, numero) {
           { name: 'Cumprido por', value: `<@${interaction.user.id}>`, inline: true },
           { name: 'Documento', value: `[${anexo.nomeArquivo}](${anexo.url})` },
         );
-      await canalProcesso.send({ embeds: [embedCumprimento] });
+      await canalProcesso.send({ embeds: [embedCumprimento, ...(embedAnalise ? [embedAnalise] : [])] });
+      if (embedAnalise && processo.juiz) await canalProcesso.send({ content: `<@${processo.juiz}> — resposta de ofício juntada aos autos, com análise do cartório acima.` });
     }
     await andamentos.registrar(interaction.guild, oficio.processoNumero, {
       tipo: 'oficio_respondido', titulo: '📥 Resposta de ofício anexada aos autos',
@@ -108,12 +111,16 @@ async function cumprirOficio(interaction, numero) {
 }
 
 async function criarOficio({ guild, processoNumero, destinatario, assunto, conteudo, emitidoPorId, emitidoPorTag, instituicao, aguardaRetorno = true }) {
-  const processo = db.buscarPorNumero('processos', processoNumero);
-  if (!processo) return { erro: 'Processo não encontrado.' };
+  // Ofício avulso (sem processo): campo em branco vira null e o expediente segue sem vínculo —
+  // antes, qualquer ofício exigia um processo existente, então "avulso" dava "Processo não
+  // encontrado". Se veio um número mas ele não existe, aí sim é erro de digitação.
+  const numeroProc = (processoNumero || '').trim() || null;
+  const processo = numeroProc ? db.buscarPorNumero('processos', numeroProc) : null;
+  if (numeroProc && !processo) return { erro: `Processo ${numeroProc} não encontrado. Deixe o campo em branco para um ofício avulso.` };
 
   const numero = proximoNumeroClassico(db, 'oficios', 'OFI');
   const texto = documentos.textoOficio({
-    numero, processoNumero, destinatario, assunto, conteudo,
+    numero, processoNumero: numeroProc, destinatario, assunto, conteudo,
     autorId: emitidoPorId, instituicao: instituicao || 'PODER JUDICIÁRIO',
   });
 
@@ -151,28 +158,31 @@ async function criarOficio({ guild, processoNumero, destinatario, assunto, conte
     await devolutivaPoliciaCivil.enviarOficioPoliciaCivil({ numero, destinatario, assunto, texto, pngBuffer: pngOficio });
   }
 
-  db.inserir('oficios', { numero, processoNumero, destinatario, assunto, conteudo, emitidoPor: emitidoPorId, canalId: canal.id, status: 'Pendente', aguardaRetorno });
+  db.inserir('oficios', { numero, processoNumero: numeroProc, destinatario, assunto, conteudo, emitidoPor: emitidoPorId, canalId: canal.id, status: 'Pendente', aguardaRetorno });
 
   // Continua registrado nos autos do processo — o ofício é parte do caso, mesmo tendo agora um
-  // canal próprio só pra acompanhar a correspondência.
-  const embed = new EmbedBuilder()
-    .setTitle(`✉️ Ofício ${numero}`)
-    .setColor(0x9b59b6)
-    .addFields(
-      { name: 'Destinatário', value: truncar(destinatario), inline: true },
-      { name: 'Acompanhamento', value: `<#${canal.id}>`, inline: true },
-      { name: 'Assunto', value: truncar(assunto) },
-    )
-    .setFooter({ text: `Emitido por ${emitidoPorTag}` });
-  const canalProcesso = await guild.channels.fetch(processo.canalId).catch(() => null);
-  if (canalProcesso) await canalProcesso.send({ embeds: [embed] });
+  // canal próprio só pra acompanhar a correspondência. Ofício avulso não tem autos onde registrar,
+  // então esses passos são pulados (vive só no próprio ticket).
+  if (processo) {
+    const embed = new EmbedBuilder()
+      .setTitle(`✉️ Ofício ${numero}`)
+      .setColor(0x9b59b6)
+      .addFields(
+        { name: 'Destinatário', value: truncar(destinatario), inline: true },
+        { name: 'Acompanhamento', value: `<#${canal.id}>`, inline: true },
+        { name: 'Assunto', value: truncar(assunto) },
+      )
+      .setFooter({ text: `Emitido por ${emitidoPorTag}` });
+    const canalProcesso = await guild.channels.fetch(processo.canalId).catch(() => null);
+    if (canalProcesso) await canalProcesso.send({ embeds: [embed] });
 
-  await andamentos.registrar(guild, processoNumero, {
-    tipo: 'oficio_emitido', titulo: `📜 Ofício ${numero} emitido`,
-    detalhe: `Para: ${destinatario}\nAssunto: ${assunto}`,
-    executorId: emitidoPorId, metadata: { oficioNumero: numero, instituicao: instituicao || null },
-  });
-  await processoCmd.repostarPainel(guild, processoNumero);
+    await andamentos.registrar(guild, numeroProc, {
+      tipo: 'oficio_emitido', titulo: `📜 Ofício ${numero} emitido`,
+      detalhe: `Para: ${destinatario}\nAssunto: ${assunto}`,
+      executorId: emitidoPorId, metadata: { oficioNumero: numero, instituicao: instituicao || null },
+    });
+    await processoCmd.repostarPainel(guild, numeroProc);
+  }
   return { numero, canal };
 }
 
@@ -181,7 +191,7 @@ module.exports = {
     .setName('oficio')
     .setDescription('Emite ofícios vinculados a um processo')
     .addSubcommand(sub => sub.setName('criar').setDescription('Cria um ofício')
-      .addStringOption(o => o.setName('processo').setDescription('Número do processo vinculado').setRequired(true).setAutocomplete(true))
+      .addStringOption(o => o.setName('processo').setDescription('Número do processo (vazio = ofício avulso)').setRequired(false).setAutocomplete(true))
       .addStringOption(o => o.setName('destinatario').setDescription('Destinatário').setRequired(true))
       .addStringOption(o => o.setName('assunto').setDescription('Assunto').setRequired(true))
       .addStringOption(o => o.setName('conteudo').setDescription('Conteúdo').setRequired(true))

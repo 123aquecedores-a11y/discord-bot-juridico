@@ -12,8 +12,10 @@ module.exports = {
   categoriaProcessosCiveisId: process.env.CATEGORIA_PROCESSOS_CIVEIS_ID || null,
   categoriaMedidasId: process.env.CATEGORIA_MEDIDAS_ID || null,
 
-  // Canal público onde a capa dos processos é postada/atualizada
-  canalDiarioOficialId: process.env.CANAL_DIARIO_OFICIAL_ID || null,
+  // Canal público "Advogar - Pegar Casos" onde a capa dos processos é postada/atualizada (é onde
+  // o advogado se habilita/entra no caso). Lê a env nova; a antiga (CANAL_DIARIO_OFICIAL_ID) segue
+  // valendo como fallback pra não quebrar quem já tinha configurado. A chave interna mantém o nome.
+  canalDiarioOficialId: process.env.CANAL_ADVOGAR_PEGAR_CASOS_ID || process.env.CANAL_DIARIO_OFICIAL_ID || null,
 
   // Roles do Discord atribuídos automaticamente pelo /rh contratar
   roleDelegadoId: process.env.ROLE_DELEGADO_ID || null,
@@ -49,9 +51,15 @@ module.exports = {
   // Categoria dos tickets de consulta SISBAJUS (busca de ficha — Promotor pra cima)
   categoriaSisbajusId: process.env.CATEGORIA_SISBAJUS_ID || null,
 
-  // Canal onde o bot da Polícia Civil posta requerimentos via webhook — vira medida provisória
+  // Canal onde o bot da Polícia Civil posta requerimentos via webhook — vira medida cautelar
   // automaticamente (ver utils/integracaoPoliciaCivil.js)
   canalRequerimentoPoliciaCivilId: process.env.CANAL_REQUERIMENTO_POLICIA_CIVIL_ID || null,
+
+  // Id do webhook ESPECÍFICO da Polícia Civil que posta requerimentos (Frente 2.1). Quando
+  // definido, o bot só aceita requerimentos vindos exatamente desse webhook — fecha a brecha de
+  // alguém criar outro webhook no mesmo canal (ou vazar a URL) e forjar pedidos atribuídos a um
+  // Delegado arbitrário. Sem ele, cai no comportamento antigo (só canal + ter webhookId).
+  webhookRequerimentoPoliciaCivilId: process.env.WEBHOOK_REQUERIMENTO_POLICIA_CIVIL_ID || null,
 
   // Webhook pra onde a decisão judicial de um mandado originado da Polícia Civil é devolvida
   // (ver utils/devolutivaPoliciaCivil.js)

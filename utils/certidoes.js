@@ -11,20 +11,19 @@ const documentos = require('./documentos');
 const auditoria = require('./auditoria');
 const canais = require('./canais');
 const { proximoNumeroClassico } = require('./numeracao');
-const { temCargo, isAdmin } = require('./permissoes');
+const { temCargo, papelInstitucional } = require('./permissoes');
+const ministerioPublico = require('./ministerioPublico');
 
 const CATEGORIA_CERTIDOES_CHAVE = 'categoriaCertidoesId';
 const CATEGORIA_CERTIDOES_NOME = '📄 Certidões';
 
 function podeSolicitarCertidao(interaction) {
-  return isAdmin(interaction)
-    || temCargo(interaction, 'Juiz') || temCargo(interaction, 'Desembargador')
-    || temCargo(interaction, 'Promotor') || temCargo(interaction, 'Procurador');
+  // Frente 4a.4 — reusa ehMembroDoMP (isAdmin || Promotor || Procurador) no lugar do reinline.
+  return ministerioPublico.ehMembroDoMP(interaction) || temCargo(interaction, 'Juiz') || temCargo(interaction, 'Desembargador');
 }
 
 function instituicaoDoSolicitante(interaction) {
-  if (temCargo(interaction, 'Promotor') || temCargo(interaction, 'Procurador')) return 'MINISTÉRIO PÚBLICO';
-  return 'PODER JUDICIÁRIO';
+  return papelInstitucional(interaction); // Frente 4a.3 — fonte única (Delegado não pede certidão)
 }
 
 function botaoArquivarCertidao(numero) {

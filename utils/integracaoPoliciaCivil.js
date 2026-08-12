@@ -1,5 +1,5 @@
 // Integração com o bot da Polícia Civil: requerimentos chegam via webhook nesse canal como
-// embed, e viram medida provisória de verdade automaticamente, reaproveitando o mesmo
+// embed, e viram medida cautelar de verdade automaticamente, reaproveitando o mesmo
 // solicitarMedida() que o /painel já usa — nasce com Delegado já vinculado (acesso ao canal +
 // marcado) e Promotor sorteado, pronta pra decisão do MP. Não reage a mensagem comum, só a
 // mensagens de fato enviadas por um webhook (message.webhookId), pra não confundir conversa
@@ -12,11 +12,7 @@ const auditoria = require('./auditoria');
 const ficha = require('./ficha');
 const dossie = require('./dossie');
 const anexos = require('./anexos');
-
-function extrairMencao(texto) {
-  const m = texto && texto.match(/<@!?(\d+)>/);
-  return m ? m[1] : null;
-}
+const { extrairMencao } = require('./texto');
 
 function campoDoEmbed(embed, nomeCampo) {
   const campo = (embed.fields || []).find(f => f.name.trim().toLowerCase() === nomeCampo.toLowerCase());
@@ -79,9 +75,25 @@ async function processarEncerramentoInquerito(message, embed) {
   });
 }
 
+let avisouWebhookNaoConfigurado = false;
+
 async function processarRequerimento(message) {
   if (message.channelId !== config.canalRequerimentoPoliciaCivilId) return;
   if (!message.webhookId || message.embeds.length === 0) return;
+
+  // Frente 2.1 — autenticidade além do "tem webhookId": se o id do webhook esperado da Polícia
+  // Civil estiver configurado, exige que seja EXATAMENTE ele (rejeita e loga o resto — possível
+  // forjação). Sem o id configurado, mantém o comportamento antigo, mas avisa (1x) que a validação
+  // forte está desligada, pra não ficar uma brecha silenciosa.
+  if (config.webhookRequerimentoPoliciaCivilId) {
+    if (message.webhookId !== config.webhookRequerimentoPoliciaCivilId) {
+      console.warn(`[integracaoPC] Requerimento REJEITADO — webhook ${message.webhookId} ≠ esperado (possível forjação de pedido da Polícia Civil).`);
+      return;
+    }
+  } else if (!avisouWebhookNaoConfigurado) {
+    avisouWebhookNaoConfigurado = true;
+    console.warn('[integracaoPC] WEBHOOK_REQUERIMENTO_POLICIA_CIVIL_ID não configurado — validação forte de autenticidade DESLIGADA (qualquer webhook nesse canal é aceito). Defina o id do webhook da Polícia Civil no .env pra fechar a brecha (Frente 2.1).');
+  }
 
   const embed = message.embeds[0];
 

@@ -7,8 +7,8 @@ const config = require('../config');
 const canais = require('../utils/canais');
 const rh = require('../utils/rh');
 const { proximoNumero } = require('../utils/numeracao');
-const { temCargo, isSuperStaff } = require('../utils/permissoes');
-const { truncar } = require('../utils/texto');
+const { temCargo, isSuperStaff, isAdmin } = require('../utils/permissoes');
+const { truncar, extrairMencaoOuId } = require('../utils/texto');
 const cruzamento = require('../utils/cruzamento');
 const ficha = require('../utils/ficha');
 const auditoria = require('../utils/auditoria');
@@ -17,6 +17,7 @@ const certidoes = require('../utils/certidoes');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const { aguardarAnexoPDF } = require('../utils/anexoPdf');
 const anexos = require('../utils/anexos');
+const analiseDocumento = require('../utils/analiseDocumento');
 
 const TIPO_LABEL = { PorteArma: 'Porte de Arma', TrocaNome: 'Troca de Nome', LimpezaFicha: 'Limpeza de Ficha', AlvaraEvento: 'Alvará de Evento' };
 
@@ -52,13 +53,21 @@ function porteAtivo(rgCliente) {
 }
 
 function embedPeticao(p) {
+  // Frente 5.4 — reincidência (2ª vez ou mais) vira AVISO FORTE pro julgador em vez de exigir
+  // justificativa do requerente: card fica vermelho e abre com um alerta no topo. É data-driven
+  // (primeiraVez === false), então aparece em QUALQUER render do card — criação e hora de decidir.
+  const reincidente = p.primeiraVez === false;
   const embed = new EmbedBuilder()
     .setTitle(`📄 Petição ${p.numero} — ${TIPO_LABEL[p.tipo]}`)
-    .setColor(0x16a085)
-    .addFields(
-      { name: 'Advogado(a)', value: `<@${p.requerenteId}>`, inline: true },
-      { name: 'Status', value: p.status, inline: true },
-    );
+    .setColor(reincidente ? 0xc0392b : 0x16a085);
+  if (reincidente) {
+    const oQue = p.tipo === 'TrocaNome' ? 'troca de nome' : (p.tipo === 'LimpezaFicha' ? 'limpeza de ficha' : 'pedido deste tipo');
+    embed.setDescription(`🚨 **REINCIDÊNCIA — ATENÇÃO DO JULGADOR**\nEste RG **já teve ${oQue} deferida antes**. O requerente não declara justificativa no formulário; se precisar do motivo ou de documento, converta em **diligência** (botão abaixo) antes de decidir.`);
+  }
+  embed.addFields(
+    { name: 'Advogado(a)', value: `<@${p.requerenteId}>`, inline: true },
+    { name: 'Status', value: p.status, inline: true },
+  );
   if (p.rgCliente) {
     embed.addFields(
       { name: 'Cliente', value: p.nomeCliente || '—', inline: true },
@@ -92,7 +101,9 @@ async function anexarDocumentoPeticao(interaction, numero) {
     atoOrigemId: numero, protocoloVinculado: numero,
   });
 
-  await interaction.followUp({ content: `📎 [${anexo.nomeArquivo}](${anexo.url}) juntado à petição ${numero}.` });
+  // IA "cartório" faz a análise estruturada do documento (best-effort).
+  const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'documento_peticao', pdfUrl: anexo.url });
+  await interaction.followUp({ content: `📎 [${anexo.nomeArquivo}](${anexo.url}) juntado à petição ${numero}.`, embeds: embedAnalise ? [embedAnalise] : [] });
 }
 
 function botoesDecisao(numero) {
@@ -182,21 +193,21 @@ async function protocolarPeticao(guild, numero) {
 // Advogado vincula depois (follow-up com UserSelectMenu), o que também é o que faz o
 // cruzamento automático de antecedentes funcionar de verdade.
 
-async function criarPeticaoPorteArma({ guild, requerenteId, rgCliente, nomeCliente, enderecoCliente, declaracao, relacaoOcorrencias }) {
+async function criarPeticaoPorteArma({ guild, requerenteId, rgCliente, nomeCliente, enderecoCliente }) {
   const { numero, canal } = await abrirTicketPeticao({
     guild, tipo: 'PorteArma', sigla: 'PA', requerenteId,
-    dados: { rgCliente, nomeCliente, enderecoCliente, declaracao, relacaoOcorrencias: relacaoOcorrencias || null },
+    dados: { rgCliente, nomeCliente, enderecoCliente },
   });
 
   const ativo = porteAtivo(rgCliente);
+  // Declaração de maioridade/residência e relação de ocorrências agora vêm no PDF (Frente 5.4);
+  // o card mantém só os apoios que o SISTEMA calcula (porte ativo, cruzamento, tabela de risco).
   const embed = embedPeticao(db.buscarPorNumero('peticoes', numero))
     .addFields(
-      { name: 'Declaração (maioridade/residência)', value: truncar(declaracao) },
       { name: 'Já possui porte ativo?', value: ativo ? `⚠️ Sim — ${ativo.numero}, válido até <t:${Math.floor(new Date(ativo.validadeAte).getTime() / 1000)}:D>` : 'Não' },
       { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorRG(rgCliente)) },
       { name: 'Referência — nível de risco', value: truncar(TABELA_RISCO) },
     );
-  if (relacaoOcorrencias) embed.addFields({ name: 'Relação de ocorrências', value: truncar(relacaoOcorrencias) });
 
   await canal.send({ embeds: [embed] });
   await canal.send({
@@ -207,12 +218,14 @@ async function criarPeticaoPorteArma({ guild, requerenteId, rgCliente, nomeClien
   return { numero, canal };
 }
 
-async function criarPeticaoTrocaNome({ guild, requerenteId, rgCliente, nomeAtual, nomeNovo, enderecoCliente, justificativa, jaUsouGratuita }) {
+async function criarPeticaoTrocaNome({ guild, requerenteId, rgCliente, nomeAtual, nomeNovo, enderecoCliente, jaUsouGratuita }) {
   const { numero, canal } = await abrirTicketPeticao({
     guild, tipo: 'TrocaNome', sigla: 'TN', requerenteId,
-    dados: { rgCliente, nomeCliente: nomeNovo, nomeAtual, nomeNovo, enderecoCliente, justificativa: justificativa || null, primeiraVez: !jaUsouGratuita },
+    dados: { rgCliente, nomeCliente: nomeNovo, nomeAtual, nomeNovo, enderecoCliente, primeiraVez: !jaUsouGratuita },
   });
 
+  // Justificativa saiu do formulário (Frente 5.4) — vai no PDF. A reincidência vira aviso forte no
+  // card (embedPeticao, via primeiraVez === false); aqui fica só a nota da gratuidade (1ª vez).
   const embed = embedPeticao(db.buscarPorNumero('peticoes', numero))
     .addFields(
       { name: 'Nome atual', value: nomeAtual, inline: true },
@@ -220,7 +233,6 @@ async function criarPeticaoTrocaNome({ guild, requerenteId, rgCliente, nomeAtual
       { name: 'Primeira troca deste RG (gratuita)?', value: jaUsouGratuita ? '⚠️ Não — é a 2ª vez ou mais' : 'Sim' },
       { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorRG(rgCliente)) },
     );
-  if (justificativa) embed.addFields({ name: 'Justificativa', value: truncar(justificativa) });
 
   await canal.send({ embeds: [embed] });
   await canal.send({
@@ -231,22 +243,23 @@ async function criarPeticaoTrocaNome({ guild, requerenteId, rgCliente, nomeAtual
   return { numero, canal };
 }
 
-// Limpeza de ficha exige justificativa a partir da 2ª vez, igual troca de nome — mas porte de
-// arma NÃO (a renovação de 15 em 15 dias é rotina, exigir justificativa toda vez só atrapalha).
-async function criarPeticaoLimpezaFicha({ guild, requerenteId, rgCliente, nomeCliente, enderecoCliente, justificativa, jaTeveAntes }) {
+// Limpeza de ficha e troca de nome rastreiam reincidência (jaTeveAntes/jaTrocou): a 2ª vez não
+// exige mais justificativa do requerente (Frente 5.4) — vira aviso forte pro julgador, que pede
+// esclarecimento por diligência se quiser. Porte de arma nem rastreia (renovação é rotina).
+async function criarPeticaoLimpezaFicha({ guild, requerenteId, rgCliente, nomeCliente, enderecoCliente, jaTeveAntes }) {
   const { numero, canal } = await abrirTicketPeticao({
     guild, tipo: 'LimpezaFicha', sigla: 'LF', requerenteId,
-    dados: { rgCliente, nomeCliente, enderecoCliente, justificativa: justificativa || null, primeiraVez: !jaTeveAntes },
+    dados: { rgCliente, nomeCliente, enderecoCliente, primeiraVez: !jaTeveAntes },
   });
 
+  // Justificativa saiu do formulário (Frente 5.4) — vai no PDF. A reincidência vira aviso forte no
+  // card (embedPeticao, via primeiraVez === false); aqui ficam só os apoios calculados pelo sistema.
   const temNovoAntecedente = cruzamento.temNovoAntecedenteEmPorRG(rgCliente, null, 15);
   const embed = embedPeticao(db.buscarPorNumero('peticoes', numero))
     .addFields(
-      { name: 'Já teve limpeza de ficha deferida antes?', value: jaTeveAntes ? '⚠️ Sim — é a 2ª vez ou mais' : 'Não' },
       { name: 'Novo antecedente nos últimos 15 dias?', value: temNovoAntecedente ? '⚠️ Sim — indeferimento sumário indicado' : '✅ Não' },
       { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorRG(rgCliente)) },
     );
-  if (justificativa) embed.addFields({ name: 'Justificativa', value: truncar(justificativa) });
 
   await canal.send({ embeds: [embed] });
   await canal.send({
@@ -294,6 +307,53 @@ async function criarPeticaoAlvaraEvento({ guild, requerenteId, rgCliente, nomeCl
 // se a pessoa fechar a mensagem, e o Juiz consegue ver que ainda falta antes de decidir.
 // É obrigatório: sem vincular, a petição não pode ser deferida nem indeferida (ver `decidir`).
 
+// Frente 1.2 — reversibilidade dos estados terminais automáticos. Quando um timer cancela (vínculo
+// não feito em 1h) ou indefere (diligência não cumprida em 24h) uma petição, o canal NÃO some
+// (arquivar só bloqueia envio, mantém a visibilidade), e fica ali um botão "Reabrir" pra Supervisão
+// ou Staff ressuscitar o caso — voltando ao status anterior com prazo novo. Casos legítimos não
+// morrem só porque os jogadores não estavam online no timer.
+function podeReabrir(interaction) {
+  return isAdmin(interaction) || isSuperStaff(interaction) || temCargo(interaction, 'Desembargador') || temCargo(interaction, 'Procurador');
+}
+
+function botaoReabrirCaso(numero) {
+  return new ButtonBuilder().setCustomId(`painel:acao:peticao:reabrir:${numero}`).setLabel('♻️ Reabrir caso (Supervisão/Staff)').setStyle(ButtonStyle.Secondary);
+}
+
+async function reabrirCaso(interaction, numero) {
+  if (!podeReabrir(interaction)) {
+    return interaction.reply({ content: 'Só a Supervisão (Desembargador/Procurador) ou a Staff podem reabrir um caso encerrado por decurso de prazo.', ephemeral: true });
+  }
+  const p = db.buscarPorNumero('peticoes', numero);
+  if (!p) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
+  const canal = p.canalId ? await interaction.guild.channels.fetch(p.canalId).catch(() => null) : null;
+
+  if (p.status === 'Cancelada — prazo de vínculo expirado') {
+    db.atualizar('peticoes', numero, { status: 'Aguardando vínculo', criado_em: new Date().toLocaleString('pt-BR'), lembreteVinculoEnviado: false });
+    if (canal) {
+      await canais.reabrirCanal(canal, [p.requerenteId].filter(Boolean));
+      const rowUser = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`painel:userselect:peticao:vincularcliente#${numero}`).setPlaceholder('Selecione o cliente no Discord'));
+      const rowManual = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`painel:acao:peticao:vincularmanual:${numero}`).setLabel('Cliente ainda não está no servidor').setStyle(ButtonStyle.Secondary));
+      await canal.send({ content: `♻️ **Petição reaberta** por <@${interaction.user.id}> (Supervisão/Staff). <@${p.requerenteId}>, vincule novamente a conta do cliente — há novo prazo de 1 (uma) hora.`, components: [rowUser, rowManual] });
+    }
+    return interaction.reply({ content: `Petição ${numero} reaberta — aguardando novo vínculo do cliente.`, ephemeral: true });
+  }
+
+  if (p.status === 'Indeferido' && p.indeferidoPorDiligencia) {
+    db.atualizar('peticoes', numero, { status: 'Diligência', diligenciaDesde: new Date().toISOString(), lembreteDiligenciaEnviado: false, indeferidoPorDiligencia: false });
+    if (canal) {
+      await canais.reabrirCanal(canal, [p.requerenteId, p.juiz].filter(Boolean));
+      await canal.send({
+        content: `♻️ **Petição reaberta** por <@${interaction.user.id}> (Supervisão/Staff). Diligência retomada — <@${p.requerenteId}>, cumpra a diligência (anexe o documento solicitado); ${p.juiz ? `<@${p.juiz}> ` : 'o Juízo '}decide em seguida. Novo prazo de 24 (vinte e quatro) horas.`,
+        components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero)), botoesDecisao(numero)],
+      });
+    }
+    return interaction.reply({ content: `Petição ${numero} reaberta — diligência retomada.`, ephemeral: true });
+  }
+
+  return interaction.reply({ content: `A petição ${numero} não está num estado reabrível automaticamente (status atual: "${p.status}"). Reabertura por prazo vale só para cancelamento por vínculo ou indeferimento por diligência.`, ephemeral: true });
+}
+
 async function enviarFollowUpsCadastro(interaction, numero, rgCliente, canal) {
   // O select nativo do Discord só lista quem já está no servidor — se o cliente ainda não
   // entrou, o Advogado não consegue selecionar ninguém e o vínculo trava. O botão ao lado
@@ -311,14 +371,6 @@ async function enviarFollowUpsCadastro(interaction, numero, rgCliente, canal) {
   });
 
   await perguntarMaisDados(interaction, numero, rgCliente);
-}
-
-function extrairMencaoOuId(texto) {
-  if (!texto) return null;
-  const t = texto.trim();
-  const m = t.match(/^<@!?(\d+)>$/);
-  if (m) return m[1];
-  return /^\d{15,25}$/.test(t) ? t : null;
 }
 
 function abrirModalVincularManual(interaction, numero) {
@@ -404,13 +456,13 @@ function abrirModalPorteArma(interaction) {
   if (!temCargo(interaction, 'Advogado')) {
     return interaction.reply({ content: 'Só Advogados podem protocolar porte de arma, em nome do cliente.', ephemeral: true });
   }
+  // Frente 5.4 — formulário só com IDENTIDADE. Declaração de maioridade/residência e relação de
+  // ocorrências são conteúdo da petição e vão no PDF anexado (checklist), não em campo de modal.
   const modal = new ModalBuilder().setCustomId('painel:modal:peticao:porte-arma').setTitle('Porte de arma — dados do cliente');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('endereco').setLabel('Endereço do cliente').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('declaracao').setLabel('Declaração: maioridade e residência fixa').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(400)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('relacao').setLabel('Relação de ocorrências (se repetição)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(400)),
   );
   return interaction.showModal(modal);
 }
@@ -419,13 +471,15 @@ function abrirModalTrocaNome(interaction) {
   if (!temCargo(interaction, 'Advogado')) {
     return interaction.reply({ content: 'Só Advogados podem protocolar troca de nome, em nome do cliente.', ephemeral: true });
   }
+  // Frente 5.4 — formulário só com IDENTIDADE. A justificativa (inclusive na reincidência) vai no
+  // PDF; o sistema detecta a 2ª vez sozinho e avisa o julgador, que pode pedir esclarecimento por
+  // diligência. Nome pretendido fica (é dado estruturado — vira o nome do cliente se deferido).
   const modal = new ModalBuilder().setCustomId('painel:modal:peticao:troca-nome').setTitle('Troca de nome — dados do cliente');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome_atual').setLabel('Nome atual do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome_novo').setLabel('Nome pretendido').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('endereco').setLabel('Endereço do cliente').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('justificativa').setLabel('Justificativa (obrigatório da 2ª vez)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(400)),
   );
   return interaction.showModal(modal);
 }
@@ -434,12 +488,14 @@ function abrirModalLimpezaFicha(interaction) {
   if (!temCargo(interaction, 'Advogado')) {
     return interaction.reply({ content: 'Só Advogados podem protocolar limpeza de ficha, em nome do cliente.', ephemeral: true });
   }
+  // Frente 5.4 — formulário só com IDENTIDADE. A justificativa (inclusive na reincidência) vai no
+  // PDF; o sistema detecta a 2ª vez sozinho e avisa o julgador, que pode pedir esclarecimento por
+  // diligência (fluxo já existente) — sem trava no formulário.
   const modal = new ModalBuilder().setCustomId('painel:modal:peticao:limpeza-ficha').setTitle('Limpeza de ficha — dados do cliente');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('endereco').setLabel('Endereço do cliente').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('justificativa').setLabel('Justificativa (obrigatório da 2ª vez)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(400)),
   );
   return interaction.showModal(modal);
 }
@@ -489,8 +545,6 @@ async function processarModalPorteArma(interaction) {
     guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
     nomeCliente: interaction.fields.getTextInputValue('nome'),
     enderecoCliente: interaction.fields.getTextInputValue('endereco'),
-    declaracao: interaction.fields.getTextInputValue('declaracao'),
-    relacaoOcorrencias: interaction.fields.getTextInputValue('relacao'),
   });
   ficha.adicionarEndereco(rg, interaction.fields.getTextInputValue('endereco'), numero);
   await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
@@ -499,12 +553,10 @@ async function processarModalPorteArma(interaction) {
 
 async function processarModalTrocaNome(interaction) {
   const rg = interaction.fields.getTextInputValue('rg');
-  const justificativa = interaction.fields.getTextInputValue('justificativa');
+  // Frente 5.4 — sem trava de 2ª vez no formulário. A reincidência continua sendo detectada pelo
+  // sistema (jaTrocouNomeAntes) e vira AVISO forte no card do julgador; a justificativa, se
+  // necessária, vem no PDF ou por diligência do juiz.
   const jaTrocou = ficha.jaTrocouNomeAntes(rg);
-  if (jaTrocou && !justificativa) {
-    return interaction.reply({ content: `Esse RG (${rg}) já teve uma troca de nome deferida antes — a partir da segunda vez é obrigatório preencher \`justificativa\` com o motivo da nova troca. Abra a petição de novo e preencha o campo.`, ephemeral: true });
-  }
-
   await interaction.deferReply({ ephemeral: true });
   const endereco = interaction.fields.getTextInputValue('endereco');
   const { numero, canal } = await criarPeticaoTrocaNome({
@@ -512,7 +564,7 @@ async function processarModalTrocaNome(interaction) {
     nomeAtual: interaction.fields.getTextInputValue('nome_atual'),
     nomeNovo: interaction.fields.getTextInputValue('nome_novo'),
     enderecoCliente: endereco,
-    justificativa, jaUsouGratuita: jaTrocou,
+    jaUsouGratuita: jaTrocou,
   });
   ficha.adicionarEndereco(rg, endereco, numero);
   await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
@@ -521,19 +573,17 @@ async function processarModalTrocaNome(interaction) {
 
 async function processarModalLimpezaFicha(interaction) {
   const rg = interaction.fields.getTextInputValue('rg');
-  const justificativa = interaction.fields.getTextInputValue('justificativa');
+  // Frente 5.4 — sem trava de 2ª vez no formulário. A reincidência continua sendo detectada pelo
+  // sistema (jaTeveLimpezaFichaDeferida) e vira AVISO forte no card do julgador; a justificativa,
+  // se necessária, vem no PDF ou por diligência do juiz.
   const jaTeveAntes = ficha.jaTeveLimpezaFichaDeferida(rg);
-  if (jaTeveAntes && !justificativa) {
-    return interaction.reply({ content: `Esse RG (${rg}) já teve limpeza de ficha deferida antes — a partir da segunda vez é obrigatório preencher \`justificativa\`.`, ephemeral: true });
-  }
-
   await interaction.deferReply({ ephemeral: true });
   const endereco = interaction.fields.getTextInputValue('endereco');
   const { numero, canal } = await criarPeticaoLimpezaFicha({
     guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
     nomeCliente: interaction.fields.getTextInputValue('nome'),
     enderecoCliente: endereco,
-    justificativa, jaTeveAntes,
+    jaTeveAntes,
   });
   ficha.adicionarEndereco(rg, endereco, numero);
   await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
@@ -778,20 +828,16 @@ module.exports = {
     .addSubcommand(sub => sub.setName('porte-arma').setDescription('Advogado protocola porte de arma do cliente (anexe os documentos depois, no canal)')
       .addStringOption(o => o.setName('rg').setDescription('RG do cliente').setRequired(true))
       .addStringOption(o => o.setName('nome').setDescription('Nome completo do cliente').setRequired(true))
-      .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true))
-      .addStringOption(o => o.setName('declaracao').setDescription('Declaração de maioridade civil e residência fixa').setRequired(true))
-      .addStringOption(o => o.setName('relacao_ocorrencias').setDescription('Relação objetiva das ocorrências, se alegar repetição')))
+      .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true)))
     .addSubcommand(sub => sub.setName('troca-nome').setDescription('Advogado protocola troca de nome do cliente (anexe a certidão depois, no canal)')
       .addStringOption(o => o.setName('rg').setDescription('RG do cliente').setRequired(true))
       .addStringOption(o => o.setName('nome_atual').setDescription('Nome completo atual do cliente').setRequired(true))
       .addStringOption(o => o.setName('nome_novo').setDescription('Nome completo pretendido').setRequired(true))
-      .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true))
-      .addStringOption(o => o.setName('justificativa').setDescription('Obrigatório a partir da 2ª troca deste RG')))
+      .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true)))
     .addSubcommand(sub => sub.setName('limpeza-ficha').setDescription('Advogado protocola limpeza de ficha do cliente (anexe os documentos depois, no canal)')
       .addStringOption(o => o.setName('rg').setDescription('RG do cliente').setRequired(true))
       .addStringOption(o => o.setName('nome').setDescription('Nome completo do cliente').setRequired(true))
-      .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true))
-      .addStringOption(o => o.setName('justificativa').setDescription('Obrigatório a partir da 2ª vez deste RG')))
+      .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true)))
     .addSubcommand(sub => sub.setName('alvara-evento').setDescription('Advogado protocola alvará de evento em nome do organizador (Art. 68, Decreto 003/2026)')
       .addStringOption(o => o.setName('rg').setDescription('RG do organizador').setRequired(true))
       .addStringOption(o => o.setName('nome').setDescription('Nome completo do organizador').setRequired(true))
@@ -812,8 +858,6 @@ module.exports = {
       const { numero, canal } = await criarPeticaoPorteArma({
         guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
         nomeCliente: interaction.options.getString('nome'), enderecoCliente: endereco,
-        declaracao: interaction.options.getString('declaracao'),
-        relacaoOcorrencias: interaction.options.getString('relacao_ocorrencias'),
       });
       ficha.adicionarEndereco(rg, endereco, numero);
       await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
@@ -822,12 +866,8 @@ module.exports = {
 
     if (sub === 'troca-nome') {
       const rg = interaction.options.getString('rg');
-      const justificativa = interaction.options.getString('justificativa');
+      // Frente 5.4 — sem trava de 2ª vez; reincidência vira aviso forte no card do julgador.
       const jaTrocou = ficha.jaTrocouNomeAntes(rg);
-      if (jaTrocou && !justificativa) {
-        return interaction.reply({ content: `Esse RG (${rg}) já teve uma troca de nome deferida antes — a partir da segunda vez é obrigatório informar \`justificativa\`.`, ephemeral: true });
-      }
-
       await interaction.deferReply({ ephemeral: true });
       const endereco = interaction.options.getString('endereco');
       const { numero, canal } = await criarPeticaoTrocaNome({
@@ -835,7 +875,7 @@ module.exports = {
         nomeAtual: interaction.options.getString('nome_atual'),
         nomeNovo: interaction.options.getString('nome_novo'),
         enderecoCliente: endereco,
-        justificativa, jaUsouGratuita: jaTrocou,
+        jaUsouGratuita: jaTrocou,
       });
       ficha.adicionarEndereco(rg, endereco, numero);
       await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
@@ -844,18 +884,14 @@ module.exports = {
 
     if (sub === 'limpeza-ficha') {
       const rg = interaction.options.getString('rg');
-      const justificativa = interaction.options.getString('justificativa');
+      // Frente 5.4 — sem trava de 2ª vez; reincidência vira aviso forte no card do julgador.
       const jaTeveAntes = ficha.jaTeveLimpezaFichaDeferida(rg);
-      if (jaTeveAntes && !justificativa) {
-        return interaction.reply({ content: `Esse RG (${rg}) já teve limpeza de ficha deferida antes — a partir da segunda vez é obrigatório informar \`justificativa\`.`, ephemeral: true });
-      }
-
       await interaction.deferReply({ ephemeral: true });
       const endereco = interaction.options.getString('endereco');
       const { numero, canal } = await criarPeticaoLimpezaFicha({
         guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
         nomeCliente: interaction.options.getString('nome'), enderecoCliente: endereco,
-        justificativa, jaTeveAntes,
+        jaTeveAntes,
       });
       ficha.adicionarEndereco(rg, endereco, numero);
       await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
@@ -891,4 +927,7 @@ module.exports = {
   abrirModalVincularManual, processarVincularManual,
   embedPeticao, botoesDecisao, solicitarCertidaoDaPeticao,
   anexarDocumentoPeticao,
+  botaoReabrirCaso, reabrirCaso,
+  // Exportadas pro simulador de demo (scripts/simuladorDemo.js) criar petições sem passar pelo modal.
+  criarPeticaoPorteArma, criarPeticaoTrocaNome, criarPeticaoLimpezaFicha, criarPeticaoAlvaraEvento,
 };

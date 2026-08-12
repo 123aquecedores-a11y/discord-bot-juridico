@@ -1,5 +1,6 @@
 // Job diário: prazo de 7 dias corridos pro Juiz julgar um processo em Instrução, contado a
 // partir da distribuição (juizDesde). Não mexe em revelia — isso continua manual do Juiz.
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const db = require('../database/db');
 const config = require('../config');
 const canais = require('./canais');
@@ -7,6 +8,36 @@ const rh = require('./rh');
 const { parseCriadoEm } = require('./data');
 const processoCmd = require('../commands/processo');
 const peticaoCmd = require('../commands/peticao');
+const { distribuirJuizAoCaso } = require('./distribuicaoJuiz');
+
+// Grace antes de avisar "sem Juiz disponível": um caso recém-aberto ganha ~1 ciclo do job (10min)
+// pra ser distribuído normalmente antes de o bot anunciar que não há julgador — evita alarme falso.
+const GRACE_SEM_JUIZ_MS = 9 * 60 * 1000;
+
+// Aviso (uma única vez por caso) de que o sorteio não achou Juiz elegível — não deixa o caso mudo.
+// Posta no canal do caso um recado claro + botão "Designar Juiz" (Supervisão/Staff) e cutuca a
+// Supervisão por DM (no-op se DMs desligadas). Marca `avisoSemJuizEnviado` pra não repetir; o flag
+// é limpo quando o caso finalmente recebe Juiz (ver distribuirJuizAoCaso).
+async function avisarCasoSemJuiz(client, guild, { tabela, numero, canalId }) {
+  const reg = db.buscarPorNumero(tabela, numero);
+  if (!reg || reg.avisoSemJuizEnviado) return;
+  const criado = parseCriadoEm(reg.criado_em);
+  if (criado && Date.now() - criado.getTime() < GRACE_SEM_JUIZ_MS) return; // ainda no grace
+  db.atualizar(tabela, numero, { avisoSemJuizEnviado: true });
+
+  const canal = canalId ? await guild.channels.fetch(canalId).catch(() => null) : null;
+  if (canal) {
+    await canal.send({
+      content: '⚖️ **Comunicação do Tribunal** — não há Juiz disponível na lotação neste momento. O sorteio é retentado automaticamente a cada 10 (dez) minutos e, assim que houver Juiz elegível, o caso será distribuído. Se preferir agilizar, a **Supervisão** (Desembargador/Procurador) ou a **Staff** pode designar um Juiz agora.',
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`painel:acao:supervisao:designarjulgador:${numero}`).setLabel('⚖️ Designar Juiz').setStyle(ButtonStyle.Primary),
+      )],
+    });
+  }
+  const avisoSup = `⚖️ **Comunicação do Tribunal** — o caso ${numero} está sem Juiz disponível (sorteio sem cargo elegível). Você pode designar um Juiz pelo botão no canal do caso ou por \`/painel\` > Supervisão.`;
+  for (const d of rh.listarPorCargo('Desembargador').filter(x => !x.licenca)) await dmSeguro(client, d.discordId, avisoSup);
+  for (const pr of rh.listarPorCargo('Procurador').filter(x => !x.licenca)) await dmSeguro(client, pr.discordId, avisoSup);
+}
 
 const PRAZO_JULGAMENTO_DIAS = 7;
 const DIA_MS = 24 * 60 * 60 * 1000;
@@ -135,7 +166,13 @@ async function verificarVinculosPendentes(client, guild) {
       db.atualizar('peticoes', p.numero, { status: 'Cancelada — prazo de vínculo expirado' });
       const canal = await guild.channels.fetch(p.canalId).catch(() => null);
       if (canal) {
-        await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${p.requerenteId}>, o prazo de 1 (uma) hora para vinculação do cliente a esta petição transcorreu in albis. Esta petição **não foi protocolada** e o presente canal será arquivado. Protocole nova petição quando dispuser dos dados completos.` });
+        // Frente 1.2: o canal é arquivado (bloqueia envio) mas NÃO some — fica o botão "Reabrir"
+        // pra Supervisão/Staff ressuscitar a petição com novo prazo, caso o cancelamento tenha
+        // sido só por os jogadores não estarem online no timer.
+        await canal.send({
+          content: `⏰ **Comunicação do Tribunal** — <@${p.requerenteId}>, o prazo de 1 (uma) hora para vinculação do cliente a esta petição transcorreu in albis. Esta petição **não foi protocolada** e o canal foi arquivado. A **Supervisão** ou a **Staff** pode reabri-la, ou protocole nova petição quando dispuser dos dados.`,
+          components: [new ActionRowBuilder().addComponents(peticaoCmd.botaoReabrirCaso(p.numero))],
+        });
         await canais.arquivarCanal(canal);
       }
       await dmSeguro(client, p.requerenteId, `⏰ **Comunicação do Tribunal** — a petição ${p.numero} foi cancelada por decurso de prazo: a vinculação do cliente não foi realizada dentro de 1 (uma) hora.`);
@@ -154,53 +191,32 @@ async function verificarVinculosPendentes(client, guild) {
 // Processo civil sem Juiz disponível na abertura ficava em "Aguardando sorteio de juiz" pra
 // sempre — nada nunca tentava sortear de novo. Roda junto do job frequente (10min): assim que
 // algum Juiz fica disponível, o processo é distribuído automaticamente.
-async function verificarProcessosSemJuiz(guild) {
+async function verificarProcessosSemJuiz(client, guild) {
   const processos = db.todos('processos', p => p.tipo === 'Civil' && p.status === 'Aguardando sorteio de juiz' && !p.juiz);
 
   for (const p of processos) {
     const juizId = rh.sortearJuiz({ excluirIds: [p.autor].filter(Boolean) });
-    if (!juizId) continue; // ainda ninguém disponível, tenta de novo no próximo ciclo
-
-    db.atualizar('processos', p.numero, { status: 'Aguardando defesa', juiz: juizId, juizDesde: new Date().toISOString() });
-    const canal = await guild.channels.fetch(p.canalId).catch(() => null);
-    if (canal) {
-      await canais.adicionarMembro(canal, juizId);
-      const processoAtualizado = db.buscarPorNumero('processos', p.numero);
-      const msgPainel = await canal.send({
-        content: `⚖️ **Comunicação do Tribunal** — <@${juizId}>, Vossa Senhoria foi distribuído(a), por sorteio, para este processo (que aguardava julgador disponível desde a abertura).`,
-        embeds: [processoCmd.embedProcesso(processoAtualizado)],
-        components: processoCmd.montarPainelAcoes(processoAtualizado),
-      });
-      db.atualizar('processos', p.numero, { painelMsgId: msgPainel.id });
+    if (!juizId) { // sem Juiz elegível — não deixa o caso mudo, tenta de novo no próximo ciclo
+      await avisarCasoSemJuiz(client, guild, { tabela: 'processos', numero: p.numero, canalId: p.canalId });
+      continue;
     }
-    await processoCmd.postarOuAtualizarDiario(guild, p.numero);
+    await distribuirJuizAoCaso(guild, { tabela: 'processos', numero: p.numero }, juizId, { origem: 'sorteio' });
   }
 }
 
 // Processo PENAL cuja denúncia foi oferecida sem Juiz disponível ficava preso pra sempre (não
 // havia retry como no civil). Roda no job frequente: assim que um Juiz elegível fica livre,
 // distribui e leva o processo pra Instrução, postando o painel completo pro Juiz atuar.
-async function verificarProcessosPenaisSemJuiz(guild) {
+async function verificarProcessosPenaisSemJuiz(client, guild) {
   const processos = db.todos('processos', p => p.tipo === 'Penal' && p.status === 'Denúncia oferecida - aguardando juiz' && !p.juiz);
 
   for (const p of processos) {
     const juizId = rh.sortearJuiz({ excluirIds: [p.delegado, p.promotor, ...(p.reus || [])].filter(Boolean) });
-    if (!juizId) continue;
-
-    db.atualizar('processos', p.numero, { status: 'Instrução', juiz: juizId, juizDesde: new Date().toISOString() });
-    const canal = await guild.channels.fetch(p.canalId).catch(() => null);
-    if (canal) {
-      await canais.adicionarMembro(canal, juizId);
-      const atual = db.buscarPorNumero('processos', p.numero);
-      const reusTxt = (p.reus || []).map(id => `<@${id}>`).join(', ') || 'réu(s) a identificar';
-      const msgPainel = await canal.send({
-        content: `⚖️ **Comunicação do Tribunal** — <@${juizId}>, Vossa Senhoria foi distribuído(a) por sorteio para este processo (denúncia já oferecida, que aguardava julgador). Cite-se ${reusTxt} para instrução e julgamento.`,
-        embeds: [processoCmd.embedProcesso(atual)],
-        components: processoCmd.montarPainelAcoes(atual),
-      });
-      db.atualizar('processos', p.numero, { painelMsgId: msgPainel.id });
+    if (!juizId) {
+      await avisarCasoSemJuiz(client, guild, { tabela: 'processos', numero: p.numero, canalId: p.canalId });
+      continue;
     }
-    await processoCmd.postarOuAtualizarDiario(guild, p.numero);
+    await distribuirJuizAoCaso(guild, { tabela: 'processos', numero: p.numero }, juizId, { origem: 'sorteio' });
   }
 }
 
@@ -216,9 +232,19 @@ async function verificarDiligenciasPendentes(client, guild) {
     const decorrido = agora - desde;
 
     if (decorrido >= PRAZO_DILIGENCIA_MS) {
+      // Marca a origem do indeferimento ANTES de finalizar, pra o botão "Reabrir" (Frente 1.2) só
+      // valer pra indeferimento AUTOMÁTICO por diligência — nunca pra um indeferimento de mérito do Juiz.
+      db.atualizar('peticoes', p.numero, { indeferidoPorDiligencia: true });
       await peticaoCmd.finalizarDecisao(guild, p.numero, 'Indeferido', {
         motivo: 'Diligência (documento/comprovação solicitada pelo Juízo) não foi cumprida dentro do prazo de 24h — pedido não sustentado por falta de prova.',
       }, null);
+      const canal = await guild.channels.fetch(p.canalId).catch(() => null);
+      if (canal) {
+        await canal.send({
+          content: '⏰ Indeferimento por decurso de prazo da diligência. A **Supervisão** ou a **Staff** pode reabrir a petição se a diligência ainda puder ser cumprida.',
+          components: [new ActionRowBuilder().addComponents(peticaoCmd.botaoReabrirCaso(p.numero))],
+        });
+      }
       await dmSeguro(client, p.requerenteId, `⏰ **Comunicação do Tribunal** — a petição ${p.numero} foi **indeferida** por decurso de prazo: a diligência determinada não foi cumprida dentro de 24 (vinte e quatro) horas.`);
       continue;
     }
@@ -239,23 +265,16 @@ async function verificarDiligenciasPendentes(client, guild) {
 // peticao.js) prometia sorteio automático assim que houvesse Juiz disponível, mas nada nunca
 // tentava de novo. Mesmo defeito já corrigido pra processo civil (verificarProcessosSemJuiz),
 // replicado aqui. Roda junto do job frequente (10min, ver index.js).
-async function verificarPeticoesSemJuiz(guild) {
+async function verificarPeticoesSemJuiz(client, guild) {
   const peticoes = db.todos('peticoes', p => p.status === 'Aguardando sorteio de juiz' && !p.juiz);
 
   for (const p of peticoes) {
     const juizId = rh.sortearJuiz({ excluirIds: [p.requerenteId, p.discordIdCliente].filter(Boolean) });
-    if (!juizId) continue; // ainda ninguém disponível, tenta de novo no próximo ciclo
-
-    db.atualizar('peticoes', p.numero, { status: 'Pendente', juiz: juizId });
-    const canal = await guild.channels.fetch(p.canalId).catch(() => null);
-    if (canal) {
-      await canais.adicionarMembro(canal, juizId);
-      await canal.send({
-        content: `⚖️ **Comunicação do Tribunal** — <@${juizId}>, Vossa Senhoria foi distribuído(a), por sorteio, para esta petição (que aguardava julgador disponível desde o protocolo).`,
-        embeds: [peticaoCmd.embedPeticao(db.buscarPorNumero('peticoes', p.numero))],
-        components: [peticaoCmd.botoesDecisao(p.numero)],
-      });
+    if (!juizId) { // sem Juiz elegível — avisa e tenta de novo no próximo ciclo
+      await avisarCasoSemJuiz(client, guild, { tabela: 'peticoes', numero: p.numero, canalId: p.canalId });
+      continue;
     }
+    await distribuirJuizAoCaso(guild, { tabela: 'peticoes', numero: p.numero }, juizId, { origem: 'sorteio' });
   }
 }
 

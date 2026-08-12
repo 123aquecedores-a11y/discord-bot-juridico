@@ -18,10 +18,16 @@ const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const dossie = require('../utils/dossie');
 const { aguardarAnexoPDF } = require('../utils/anexoPdf');
 const cartorio = require('../utils/cartorio');
+const preferencias = require('../utils/preferencias');
+const { RascunhoTTL } = require('../utils/rascunhoTtl');
+const revisaoIA = require('../utils/revisaoIA');
+const analiseDocumento = require('../utils/analiseDocumento');
 
-// Rascunho da decisão entre o modal e a publicação — guarda o texto da sentença enquanto o Juiz
-// decide se revisa por IA. Em memória (dura segundos); se sumir (restart), é só refazer no "Julgar".
-const rascunhoDecisao = new Map();
+// Rascunho da decisão entre o modal e a publicação — guarda o texto (sentença/parecer/acórdão/
+// razões) enquanto o autor decide se revisa por IA. Com TTL: se o fluxo for abandonado após o
+// "Revisar", a entrada expira sozinha (não vaza em memória) e a mensagem "a prévia expirou" passa
+// a ser verdade. Se sumir (restart/expiração), é só refazer a ação.
+const rascunhoDecisao = new RascunhoTTL();
 const chaveDecisao = (uid, numero) => `${uid}:${numero}`;
 const anexos = require('../utils/anexos');
 const mandadoCmd = require('./mandado');
@@ -42,9 +48,21 @@ function resolverCrimes(texto) {
   return ids.map(id => crimes.find(c => c.id === id)).filter(Boolean);
 }
 
+// Identidade do réu para exibição, unificada entre o painel do caso e a capa pública. Três casos:
+// penal → lista de @Discord; cível com Discord → nome + RG + @; cível só nome/RG (Parte 2, sem
+// Discord — identidade canônica no RP) → nome + RG. "A identificar" só quando não há nenhum dos dois.
+function descreverReu(p) {
+  if (p.reuNome) {
+    const disc = (p.reus || [])[0];
+    return `${p.reuNome}${p.reuRg ? ` — RG ${p.reuRg}` : ''}${disc ? ` (<@${disc}>)` : ''}`;
+  }
+  if ((p.reus || []).length) return p.reus.map(id => `<@${id}>`).join(', ');
+  return '*A identificar*';
+}
+
 function embedProcesso(p) {
   const crimesTxt = truncar((p.crimes || []).map(c => `• ${crimeLabel(c)} — pena: ${penaTexto(c)}${c.fianca_sugerida ? ` | fiança ref.: ${c.fianca_sugerida}` : ''}`).join('\n') || '—');
-  const reusTxt = (p.reus || []).length ? p.reus.map(id => `<@${id}>`).join(', ') : '*A identificar*';
+  const reusTxt = descreverReu(p);
   const aprovadas = (p.habilitacoes || []).filter(h => h.status === 'Aprovado');
   const advogadosTxt = aprovadas.length ? aprovadas.map(h => `<@${h.advogadoId}> (defende <@${h.reuId}>)`).join('\n') : '—';
 
@@ -79,13 +97,11 @@ function embedProcesso(p) {
   return embed;
 }
 
+// View do CATALOGO_ACOES (Frente 4a.1): mesma linha de botões da fase de denúncia, mas os customIds
+// vêm todos do catálogo (fonte única). Saída idêntica à de antes — só não duplica mais as strings.
 function botoesDenuncia(numero) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`processo:oferecer:${numero}`).setLabel('Oferecer denúncia').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`processo:arquivar:${numero}`).setLabel('Arquivar').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`painel:acao:processo:partetardia:${numero}`).setLabel('Identificar réu').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`painel:acao:processo:historicoclique:${numero}`).setLabel('📜 Histórico (autos)').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`painel:acao:processo:anexarrelatorio:${numero}`).setLabel('📎 Anexar relatório de inquérito').setStyle(ButtonStyle.Secondary),
+    ['oferecer_denuncia', 'arquivar_mp', 'identificar_reu', 'historico', 'anexar_relatorio'].map(id => botaoDoCatalogo(id, numero)),
   );
 }
 
@@ -173,6 +189,14 @@ function modalParecerMp(numero, acao) {
   return modal;
 }
 
+// Chave de rascunho do parecer do MP — namespaced com "parecer:" pra nunca colidir com o
+// rascunho da sentença (que usa `${uid}:${numero}` puro). Guarda também a `acao`
+// (oferecer/arquivar), que no fluxo antigo vinha embutida no customId do modal.
+const chaveParecer = (uid, numero) => `${uid}:parecer:${numero}`;
+
+// Submissão do modal do parecer: em vez de publicar direto, guarda o rascunho e oferece a
+// revisão por IA DENTRO do fluxo (mesmo padrão dos Fundamentos da sentença — Discord não
+// deixa botão dentro do modal, então é o passo logo após).
 async function confirmarParecerMp(interaction, chave) {
   const [numero, acao] = chave.split('#');
   const processo = db.buscarPorNumero('processos', numero);
@@ -181,11 +205,45 @@ async function confirmarParecerMp(interaction, chave) {
     return interaction.reply({ content: `Só o Promotor responsável por este processo pode decidir — no caso, <@${processo.promotor}>.`, ephemeral: true });
   }
 
+  const parecer = interaction.fields.getTextInputValue('parecer');
+  rascunhoDecisao.set(chaveParecer(interaction.user.id, numero), { texto: parecer, acao });
+  // Revisão automática ligada: pula a tela de escolha e já envia o texto revisado pela IA.
+  if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return executarParecerMp(interaction, numero, 'auto');
+  const rotulo = acao === 'oferecer' ? 'oferecimento de denúncia' : 'arquivamento';
+  return interaction.reply(revisaoIA.telaEscolha('parecermp', { extra: numero, titulo: 'Parecer do MP', rotulo, texto: parecer }));
+}
+
+// Gera a revisão por IA e mostra antes→depois; o Promotor escolhe qual enviar.
+async function revisarParecerTexto(interaction, numero) {
+  const d = rascunhoDecisao.get(chaveParecer(interaction.user.id, numero));
+  if (!d) return interaction.update({ content: 'A prévia do parecer expirou. Refaça a ação.', components: [] }).catch(() => {});
+  await interaction.deferUpdate();
+  const revisado = await cartorio.revisarTexto(d.texto).catch(() => null);
+  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('parecermp', numero));
+  d.textoRevisado = revisado;
+  return interaction.editReply(revisaoIA.telaAntesDepois('parecermp', { extra: numero, textoOriginal: d.texto, textoRevisado: revisado }));
+}
+
+// Commit do parecer (gera PNG, posta nos autos, sorteia juiz/arquiva). `usarRevisado` decide
+// se publica o texto original ou o revisado pela IA — a `acao` vem do próprio rascunho.
+async function executarParecerMp(interaction, numero, modo) {
+  const chaveP = chaveParecer(interaction.user.id, numero);
+  const d = rascunhoDecisao.get(chaveP);
+  if (!d) return interaction.reply({ content: 'A prévia do parecer expirou. Refaça a ação.', ephemeral: true }).catch(() => {});
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true }).catch(() => {});
+  if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Promotor responsável por este processo pode decidir — no caso, <@${processo.promotor}>.`, ephemeral: true }).catch(() => {});
+  }
+
   // Defer antes do PNG (Puppeteer) — mesma razão de salvarSentenca: sem isso a janela de 3s
   // do Discord estoura enquanto o Chromium sobe, e a interação "falha" mesmo com tudo certo.
   await interaction.deferReply({ ephemeral: true });
-
-  const parecer = interaction.fields.getTextInputValue('parecer');
+  rascunhoDecisao.delete(chaveP);
+  const acao = d.acao;
+  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.texto).catch(() => null);
+  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
+  const parecer = usarRevisado && d.textoRevisado ? d.textoRevisado : d.texto;
   const nomeReu = processo.reuNome || (
     (processo.reus || []).length
       ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(interaction.guild, id)))).join(' e ')
@@ -216,10 +274,6 @@ async function confirmarParecerMp(interaction, chave) {
   const urlParecer = mensagemParecer?.attachments?.first()?.url;
   if (urlParecer) {
     anexos.criarDocumento({ tipo: 'parecer_mp', url: urlParecer, nomeArquivo: `Parecer-MP-${numero}.png`, autorId: interaction.user.id, atoOrigemId: numero, protocoloVinculado: numero });
-  }
-
-  if (interaction.message) {
-    await interaction.message.edit({ embeds: [embedProcesso(processo)], components: [] }).catch(() => {});
   }
 
   if (acao === 'oferecer') {
@@ -264,22 +318,18 @@ async function confirmarParecerMp(interaction, chave) {
 }
 
 // Botões liberados assim que o processo tem Juiz sorteado (civil desde a abertura, penal
-// desde a denúncia oferecida). Habilitação de advogado agora passa pelo Diário Oficial,
+// desde a denúncia oferecida). Habilitação de advogado agora passa pelo canal "Advogar - Pegar Casos",
 // não por um botão de autoatendimento aqui.
 // Retorna DUAS linhas (a primeira já estava cheia, 5/5 — limite do Discord por ActionRow) —
 // quem chama precisa espalhar o array em vez de embrulhar num array só, ver call sites.
+// View do CATALOGO_ACOES (Frente 4a.1): mesmas linhas do painel do Juiz, com os customIds vindos
+// do catálogo (fonte única). Saída idêntica à de antes.
 function botoesJuiz(numero) {
   const linhas = [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`processo:julgar:${numero}`).setLabel('Julgar').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`painel:acao:processo:gerenciardefesa:${numero}`).setLabel('Gerenciar defesa').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`painel:acao:processo:partetardia:${numero}`).setLabel('Adicionar parte tardia').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`painel:acao:processo:intimar:${numero}`).setLabel('Emitir intimação').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`painel:acao:processo:arquivarmanual:${numero}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
+      ['julgar', 'gerenciar_defesa', 'parte_tardia', 'emitir_intimacao', 'arquivar_manual'].map(id => botaoDoCatalogo(id, numero)),
     ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`painel:acao:processo:historicoclique:${numero}`).setLabel('📜 Histórico (autos)').setStyle(ButtonStyle.Secondary),
-    ),
+    new ActionRowBuilder().addComponents(botaoDoCatalogo('historico', numero)),
   ];
 
   // Mandado/medida coercitiva só fazem sentido em processo penal (painel-contexto-e-tipo-mandado.md,
@@ -287,9 +337,9 @@ function botoesJuiz(numero) {
   // decide aqui olhando o processo de verdade em vez de espalhar esse "if" em cada call site.
   const processo = db.buscarPorNumero('processos', numero);
   if (processo?.tipo === 'Penal') {
-    const linha3 = new ActionRowBuilder().addComponents(mandadoCmd.botaoEmitirMandado(numero));
-    if (processo.promotor) linha3.addComponents(medidaCmd.botaoSolicitarMedidaDireta(numero));
-    linha3.addComponents(botaoRegistrarDepoimento(numero));
+    const linha3 = new ActionRowBuilder().addComponents(botaoDoCatalogo('emitir_mandado', numero));
+    if (processo.promotor) linha3.addComponents(botaoDoCatalogo('solicitar_medida', numero));
+    linha3.addComponents(botaoDoCatalogo('registrar_depoimento', numero));
     linhas.push(linha3);
   }
 
@@ -364,6 +414,15 @@ const CATALOGO_ACOES = [
     botao: (numero) => new ButtonBuilder().setCustomId(`painel:acao:processo:arquivarmanual:${numero}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
   },
 
+  // ---- Destravar caso preso sem julgador (Frente 1): só aparece quando o processo está parado
+  // esperando Juiz (sorteio não achou cargo elegível). Clique gateado à Supervisão/Staff no handler
+  // (supervisao.designarJulgador). Mesmo caminho oferecido pelo aviso automático de "sem Juiz". ----
+  {
+    id: 'designar_juiz', grupo: 1, cargo: ['Desembargador', 'Procurador'],
+    quando: (p) => p.status === 'Aguardando sorteio de juiz' || p.status === 'Denúncia oferecida - aguardando juiz',
+    botao: (numero) => new ButtonBuilder().setCustomId(`painel:acao:supervisao:designarjulgador:${numero}`).setLabel('⚖️ Designar Juiz').setStyle(ButtonStyle.Primary),
+  },
+
   // ---- Disponível em qualquer fase não-terminal (o gate de status já é aplicado antes) ----
   {
     id: 'historico', grupo: 2, cargo: ['qualquer'],
@@ -406,6 +465,15 @@ const CATALOGO_ACOES = [
     botao: (numero) => botaoPeticionar(numero),
   },
 ];
+
+// Fonte única do customId: pega o botão de uma ação pelo id do catálogo. É o que deixa
+// botoesDenuncia/botoesJuiz serem "views" do CATALOGO_ACOES (Frente 4a.1) — a string do customId
+// vive SÓ aqui no catálogo, então não tem como as três definições divergirem.
+function botaoDoCatalogo(id, numero) {
+  const acao = CATALOGO_ACOES.find(a => a.id === id);
+  if (!acao) throw new Error(`botaoDoCatalogo: ação "${id}" não existe no CATALOGO_ACOES`);
+  return acao.botao(numero);
+}
 
 // Monta o painel de ações a partir do catálogo acima, filtrando pelo tipo/status do processo e
 // empacotando por `grupo` em ActionRows (máx. 5 botões por linha, limite do Discord). Substitui
@@ -735,6 +803,15 @@ async function anexarPeticaoInicial(interaction, numero) {
   if (interaction.message) await interaction.message.edit({ components: componentesRestantes }).catch(() => {});
 
   await interaction.followUp({ content: `📎 Petição inicial anexada por <@${interaction.user.id}> — [${anexo.nomeArquivo}](${anexo.url}) juntado(a) aos autos.` });
+
+  // IA "cartório" lê a petição inicial e resume pro Juiz (best-effort). Se off/falhar, segue sem.
+  const canalPI = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+  if (canalPI) {
+    const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'peticao_inicial', pdfUrl: anexo.url });
+    if (processo.juiz || embedAnalise) {
+      await canalPI.send({ content: `${processo.juiz ? `<@${processo.juiz}> — ` : ''}petição inicial juntada aos autos.`, embeds: embedAnalise ? [embedAnalise] : [] });
+    }
+  }
   await auditoria.registrar(interaction.guild, { acao: 'Petição inicial anexada', executorId: interaction.user.id, referencia: numero });
 }
 
@@ -768,6 +845,17 @@ async function anexarRelatorioInquerito(interaction, numero) {
   if (interaction.message) await interaction.message.edit({ components: linhasAtualizadas }).catch(() => {});
 
   await interaction.followUp({ content: `📎 Relatório de inquérito anexado por <@${interaction.user.id}> — [${anexo.nomeArquivo}](${anexo.url}) juntado(a) aos autos.` });
+
+  // IA "cartório" faz a ANÁLISE ESTRUTURADA e fiel do relatório pro Promotor (spec_resumo_ia_
+  // documentos.md) — extração em embed, não resumo raso. Best-effort: se falhar/estiver off, o
+  // relatório já foi juntado; só avisa "resumo indisponível" quando a IA existe mas não respondeu.
+  const canalRel = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+  if (canalRel) {
+    const pingPromotor = processo.promotor ? `<@${processo.promotor}> — ` : '';
+    // gerarAnaliseEmbed sempre devolve embed (análise ou aviso visível de indisponibilidade — Frente 5.3).
+    const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'relatorio_inquerito', pdfUrl: anexo.url });
+    await canalRel.send({ content: `${pingPromotor}relatório de inquérito juntado aos autos.`, embeds: embedAnalise ? [embedAnalise] : [] });
+  }
   await auditoria.registrar(interaction.guild, { acao: 'Relatório de inquérito anexado', executorId: interaction.user.id, referencia: numero });
 }
 
@@ -809,7 +897,10 @@ async function anexarContestacao(interaction, chave) {
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) {
-    if (processo.juiz) await canal.send({ content: `<@${processo.juiz}> — contestação anexada, processo concluso para julgamento.` });
+    // IA "cartório" faz a análise estruturada da contestação pro Juiz (best-effort).
+    const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'contestacao', pdfUrl: anexo.url });
+    if (processo.juiz) await canal.send({ content: `<@${processo.juiz}> — contestação anexada, processo concluso para julgamento.`, embeds: embedAnalise ? [embedAnalise] : [] });
+    else if (embedAnalise) await canal.send({ content: 'Contestação juntada aos autos.', embeds: [embedAnalise] });
     // Dossiê de conclusão (dossie-conclusao-reabertura.md) — compila autor/réus/documentos dos
     // autos num cartão único, com o botão de Julgar já ali, sem o Juiz ter que garimpar o canal.
     await dossieJulgamento.postarDossie(canal, processoAtualizado, anexos.listarPorProtocolo(numero));
@@ -929,11 +1020,9 @@ function temAcessoTotal(interaction, processo) {
   return (processo.habilitacoes || []).some(h => h.advogadoId === uid && h.status === 'Aprovado');
 }
 
-// "Capa pública": os mesmos dados que aparecem no Diário Oficial — não o teor completo.
+// "Capa pública": os mesmos dados que aparecem no canal "Advogar - Pegar Casos" — não o teor completo.
 function embedCapaPublica(p) {
-  const reusTxt = p.reuNome
-    ? `${p.reuNome}${(p.reus || [])[0] ? ` (<@${p.reus[0]}>)` : ''}`
-    : ((p.reus || []).length ? p.reus.map(id => `<@${id}>`).join(', ') : '*A identificar*');
+  const reusTxt = descreverReu(p);
   const embed = new EmbedBuilder()
     .setTitle(`📁 Processo ${p.numero} (${p.tipo})`)
     .setColor(p.tipo === 'Penal' ? 0xe67e22 : 0x3498db)
@@ -953,7 +1042,7 @@ function botaoSolicitarHabilitacao(numero) {
   );
 }
 
-// Publica a capa no Diário Oficial na primeira vez que o processo se torna público, e
+// Publica a capa no canal "Advogar - Pegar Casos" na primeira vez que o processo se torna público, e
 // depois disso EDITA o mesmo post a cada mudança relevante (nunca duplica).
 async function postarOuAtualizarDiario(guild, numero) {
   if (!config.canalDiarioOficialId) return;
@@ -962,7 +1051,7 @@ async function postarOuAtualizarDiario(guild, numero) {
 
   const canal = await guild.channels.fetch(config.canalDiarioOficialId).catch(() => null);
   if (!canal || !canal.isTextBased?.()) {
-    console.error(`CANAL_DIARIO_OFICIAL_ID (${config.canalDiarioOficialId}) não é um canal de texto válido — capa do processo ${numero} não foi publicada.`);
+    console.error(`CANAL_ADVOGAR_PEGAR_CASOS_ID (${config.canalDiarioOficialId}) não é um canal de texto válido — capa do processo ${numero} não foi publicada.`);
     return;
   }
 
@@ -979,7 +1068,7 @@ async function postarOuAtualizarDiario(guild, numero) {
     const msg = await canal.send(payload);
     db.atualizar('processos', numero, { diarioMessageId: msg.id });
   } catch (err) {
-    console.error(`Falha ao publicar/atualizar Diário Oficial do processo ${numero}: ${err.message}`);
+    console.error(`Falha ao publicar/atualizar o canal "Advogar - Pegar Casos" do processo ${numero}: ${err.message}`);
   }
 }
 
@@ -1130,7 +1219,7 @@ async function confirmarParteTardia(interaction, chave) {
   }
 
   if (papel === 'reu') {
-    // Com Discord: reaproveita vincularReu (libera acesso ao canal, embed, Diário, auditoria).
+    // Com Discord: reaproveita vincularReu (libera acesso ao canal, embed, publicação em "Advogar - Pegar Casos", auditoria).
     if (discordId) {
       const resultado = await vincularReu({ guild: interaction.guild, numero, reusTexto: `<@${discordId}>`, executorId: interaction.user.id });
       if (resultado.erro) return interaction.reply({ content: resultado.erro, ephemeral: true });
@@ -1340,10 +1429,13 @@ async function removerHabilitacao(interaction, numero, habIdTexto) {
 // Texto formal vem de utils/documentos.js (textoIntimacao) — compartilhado com a diligência
 // de petição, que também precisa intimar alguém a fazer algo dentro de um prazo.
 
-function modalIntimacao(numero, { destinatarioId, teorPadrao } = {}) {
+function modalIntimacao(numero, { destinatarioId, destinatarioNome, teorPadrao } = {}) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:intimar:${numero}`).setTitle('Emitir intimação');
-  const campoDest = new TextInputBuilder().setCustomId('destinatario').setLabel('Menção @ do destinatário').setStyle(TextInputStyle.Short).setRequired(true);
+  // O réu já é conhecido desde a abertura (nome+RG, e @ só se tiver Discord). Por isso a menção é
+  // OPCIONAL (Frente 5.2): sem Discord, a citação sai identificada por nome+RG — nunca se pede @.
+  const campoDest = new TextInputBuilder().setCustomId('destinatario').setLabel('Menção @ do destinatário (opcional)').setStyle(TextInputStyle.Short).setRequired(false);
   if (destinatarioId) campoDest.setValue(`<@${destinatarioId}>`);
+  else if (destinatarioNome) campoDest.setPlaceholder(`${destinatarioNome} — sem Discord, deixe vazio`.slice(0, 100));
   const campoTeor = new TextInputBuilder().setCustomId('teor').setLabel('Teor da intimação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000);
   if (teorPadrao) campoTeor.setValue(teorPadrao);
   modal.addComponents(new ActionRowBuilder().addComponents(campoDest), new ActionRowBuilder().addComponents(campoTeor));
@@ -1480,17 +1572,28 @@ async function abrirModalReceberEIntimar(interaction, numero) {
     return interaction.reply({ content: `Só o Juiz deste processo pode receber a petição inicial — no caso, <@${processo.juiz}>.`, ephemeral: true });
   }
   const reuId = (processo.reus || [])[0];
+  // Sem Discord, o réu ainda é conhecido por nome+RG (gravados na abertura) — vira a dica do campo
+  // e o destinatário do documento, sem forçar o Juiz a arranjar um @ (Frente 5.2).
+  const reuNomeRg = processo.reuNome ? `${processo.reuNome}${processo.reuRg ? ` (RG ${processo.reuRg})` : ''}` : null;
   const teorPadrao = `Fica Vossa Senhoria citado(a) para, querendo, apresentar contestação no prazo de ${config.prazoContestacaoDias} dias corridos, contados desta citação, sob pena de revelia.`;
-  return interaction.showModal(modalIntimacao(numero, { destinatarioId: reuId, teorPadrao }));
+  return interaction.showModal(modalIntimacao(numero, { destinatarioId: reuId, destinatarioNome: reuNomeRg, teorPadrao }));
 }
 
 async function emitirIntimacao(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
 
-  const destId = extrairMencoes(interaction.fields.getTextInputValue('destinatario'))[0];
   const teor = interaction.fields.getTextInputValue('teor');
-  if (!destId) return interaction.reply({ content: 'Marque o destinatário com @menção.', ephemeral: true });
+  // Destinatário: @ digitado tem prioridade; sem @, cai no réu já guardado (Discord, se houver;
+  // senão nome+RG). Citação do réu não exige Discord (Frente 5.2) — só barra se não houver NENHUMA
+  // identidade (nem @ digitado, nem réu na abertura).
+  const destId = extrairMencoes(interaction.fields.getTextInputValue('destinatario'))[0] || (processo.reus || [])[0] || null;
+  const destinatarioNome = !destId && processo.reuNome
+    ? `${processo.reuNome}${processo.reuRg ? ` (RG ${processo.reuRg})` : ''}`
+    : null;
+  if (!destId && !destinatarioNome) {
+    return interaction.reply({ content: 'Não há destinatário identificado. Marque o destinatário com @menção, ou informe o réu (nome/RG) na abertura do processo.', ephemeral: true });
+  }
 
   // "Receber e intimar" (abertura do civil) usa o MESMO modal/customId que "Emitir intimação"
   // genérico — não dá pra distinguir pelo customId. O que diferencia é o momento: só é uma
@@ -1500,7 +1603,7 @@ async function emitirIntimacao(interaction, numero) {
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com a intimação/citação sendo emitida com sucesso.
   await interaction.deferReply({ ephemeral: true });
-  const canal = await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: destId, teor });
+  const canal = await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: destId, destinatarioNome, teor });
 
   let prazoContestacaoAte = null;
   if (ehCitacaoCivil) {
@@ -1524,10 +1627,11 @@ async function emitirIntimacao(interaction, numero) {
     }
   }
 
+  const destinatarioLabel = destId ? `<@${destId}>` : (destinatarioNome || 'não identificado');
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'intimacao_emitida', titulo: ehCitacaoCivil ? '✉️ Citação emitida' : '✉️ Intimação emitida',
-    detalhe: `Destinatário: <@${destId}>\nTeor: ${teor}`,
-    executorId: interaction.user.id, metadata: { destinatarioId: destId, ehCitacao: ehCitacaoCivil, prazoContestacaoAte },
+    detalhe: `Destinatário: ${destinatarioLabel}\nTeor: ${teor}`,
+    executorId: interaction.user.id, metadata: { destinatarioId: destId, destinatarioNome, ehCitacao: ehCitacaoCivil, prazoContestacaoAte },
   });
   await repostarPainel(interaction.guild, numero);
 
@@ -1656,6 +1760,15 @@ async function peticionar(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
 
+  // Frente 2.3 — só advogado PARTE do processo peticiona (antes: qualquer Advogado em qualquer
+  // processo). É parte: o advogado do autor no cível (processo.autor) OU um advogado com habilitação
+  // APROVADA (defesa) — mesmo critério de anexarContestacao. Staff Salve como reserva.
+  const ehAutor = !!processo.autor && processo.autor === interaction.user.id;
+  const ehHabilitado = (processo.habilitacoes || []).some(h => h.status === 'Aprovado' && h.advogadoId === interaction.user.id);
+  if (!ehAutor && !ehHabilitado && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: 'Você não é advogado habilitado neste processo. Para peticionar aqui, seja o advogado do autor (cível) ou solicite e obtenha a **habilitação da defesa** antes.', ephemeral: true });
+  }
+
   const anexo = await aguardarAnexoPDF(interaction);
   if (!anexo) return;
 
@@ -1676,11 +1789,11 @@ async function peticionar(interaction, numero) {
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal && processo.juiz) {
-    // IA "cartório" lê o PDF e resume pro Juiz (best-effort). Se estiver off/falhar, segue sem.
-    const resumo = await cartorio.resumirPdf(anexo.url, { tipoAto: 'petição avulsa' }).catch(() => null);
-    const despacho = resumo ? `\n\n📝 **Despacho do Cartório** *(resumo automático da IA — apoio, não é decisão)*\n> ${resumo.replace(/\n+/g, '\n> ')}` : '';
+    // IA "cartório" faz a análise estruturada do PDF pro Juiz (best-effort). Se off/falhar, segue sem.
+    const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'peticao_avulsa', pdfUrl: anexo.url });
     await canal.send({
-      content: `<@${processo.juiz}> — petição protocolada por <@${interaction.user.id}>.${despacho}`,
+      content: `<@${processo.juiz}> — petição protocolada por <@${interaction.user.id}>.`,
+      embeds: embedAnalise ? [embedAnalise] : [],
       components: [botoesDeferirIndeferirPeticao(numero, novoId)],
       files: [{ attachment: anexo.url, name: anexo.nomeArquivo }],
     });
@@ -1776,18 +1889,53 @@ async function abrirModalRecorrer(interaction, numero) {
   return interaction.showModal(modal);
 }
 
-async function criarApelacao(interaction, numero) {
+// Razões do recurso (Advogado) — mesmo padrão revisão-in-flow. O modal guarda as razões e
+// oferece a revisão por IA antes de protocolar a apelação (que cria canal e sorteia relator).
+const chaveRazoes = (uid, numero) => `${uid}:razoes:${numero}`;
+
+async function confirmarRazoes(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (processo.apelacaoNumero) return interaction.reply({ content: `Esse processo já tem recurso aberto: ${processo.apelacaoNumero}.`, ephemeral: true });
   if (!podeRecorrer(interaction, processo)) return interaction.reply({ content: explicarNegacaoRecurso(interaction, processo), ephemeral: true });
 
   const razoes = interaction.fields.getTextInputValue('razoes');
+  rascunhoDecisao.set(chaveRazoes(interaction.user.id, numero), { razoes });
+  // Revisão automática ligada: pula a tela de escolha e já protocola o texto revisado pela IA.
+  if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return criarApelacao(interaction, numero, 'auto');
+  return interaction.reply(revisaoIA.telaEscolha('razoes', { extra: numero, titulo: 'Razões do recurso', texto: razoes }));
+}
+
+async function revisarRazoesTexto(interaction, numero) {
+  const d = rascunhoDecisao.get(chaveRazoes(interaction.user.id, numero));
+  if (!d) return interaction.update({ content: 'A prévia do recurso expirou. Refaça a ação.', components: [] }).catch(() => {});
+  await interaction.deferUpdate();
+  const revisado = await cartorio.revisarTexto(d.razoes).catch(() => null);
+  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('razoes', numero));
+  d.textoRevisado = revisado;
+  return interaction.editReply(revisaoIA.telaAntesDepois('razoes', { extra: numero, textoOriginal: d.razoes, textoRevisado: revisado }));
+}
+
+async function criarApelacao(interaction, numero, modo) {
+  const chaveR = chaveRazoes(interaction.user.id, numero);
+  const d = rascunhoDecisao.get(chaveR);
+  if (!d) return interaction.reply({ content: 'A prévia do recurso expirou. Refaça a ação.', ephemeral: true }).catch(() => {});
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) { rascunhoDecisao.delete(chaveR); return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true }).catch(() => {}); }
+  if (processo.apelacaoNumero) { rascunhoDecisao.delete(chaveR); return interaction.reply({ content: `Esse processo já tem recurso aberto: ${processo.apelacaoNumero}.`, ephemeral: true }).catch(() => {}); }
+  if (!podeRecorrer(interaction, processo)) { rascunhoDecisao.delete(chaveR); return interaction.reply({ content: explicarNegacaoRecurso(interaction, processo), ephemeral: true }).catch(() => {}); }
+
+  // Defer antes de criar canal (operação lenta) — evita o estouro da janela de 3s do Discord.
+  await interaction.deferReply({ ephemeral: true });
+  rascunhoDecisao.delete(chaveR);
+  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.razoes).catch(() => null);
+  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
+  const razoes = usarRevisado && d.textoRevisado ? d.textoRevisado : d.razoes;
   const recorrenteId = interaction.user.id;
   const parteContrariaId = parteContrariaDoRecurso(processo);
 
   const desembargadorId = rh.sortearPorCargo('Desembargador');
-  if (!desembargadorId) return interaction.reply({ content: 'Não há Desembargador ativo cadastrado.', ephemeral: true });
+  if (!desembargadorId) return interaction.editReply({ content: 'Não há Desembargador ativo cadastrado. As razões não foram protocoladas — tente de novo quando houver um Desembargador.' });
 
   const numeroApelacao = proximoNumero(db, 'apelacoes', 'AP');
 
@@ -1840,7 +1988,7 @@ async function criarApelacao(interaction, numero) {
   // canal do processo original (que a essa altura já costuma estar arquivado pela sentença).
 
   await auditoria.registrar(interaction.guild, { acao: 'Recurso interposto', executorId: recorrenteId, referencia: `Processo ${numero} → Apelação ${numeroApelacao}` });
-  return interaction.reply({ content: `Recurso ${numeroApelacao} aberto em ${canal}.`, ephemeral: true });
+  return interaction.editReply({ content: `Recurso ${numeroApelacao} aberto em ${canal}.` });
 }
 
 async function validarDecisaoApelacao(interaction, numeroApelacao) {
@@ -1905,8 +2053,12 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
   const apelacao = await validarDecisaoApelacao(interaction, numeroApelacao);
   if (!apelacao) return;
 
-  if (interaction.isModalSubmit()) await interaction.deferReply({ ephemeral: true });
-  else await interaction.deferUpdate();
+  // Guard de defer idempotente: no modo "revisão automática" o executarAcordao já deu deferReply
+  // antes de revisar — sem esse guard, deferir de novo aqui lançaria (interação já reconhecida).
+  if (!interaction.deferred && !interaction.replied) {
+    if (interaction.isModalSubmit()) await interaction.deferReply({ ephemeral: true });
+    else await interaction.deferUpdate();
+  }
 
   const statusFinal = { manter: 'Mantida', reformar: 'Reformada', anular: 'Anulada' }[decisao];
   db.atualizar('apelacoes', numeroApelacao, { status: statusFinal });
@@ -1996,18 +2148,71 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
   return interaction.editReply({ embeds: [embedResultado], components: [] });
 }
 
+// Acórdão do Desembargador — mesmo padrão revisão-in-flow da sentença/parecer. O relator digita
+// a fundamentação no modal (manter/anular/reformar); em vez de finalizar direto, guardamos o
+// rascunho e oferecemos a revisão por IA antes de publicar o acórdão.
+const chaveAcordao = (uid, numApelacao) => `${uid}:acordao:${numApelacao}`;
+const ROTULO_DECISAO_ACORDAO = { manter: 'manter a sentença', anular: 'anular a sentença', reformar: 'reformar a sentença' };
+
+async function confirmarAcordao(interaction, numeroApelacao, decisao, extras = {}) {
+  const apelacao = await validarDecisaoApelacao(interaction, numeroApelacao);
+  if (!apelacao) return;
+  const fundamentacao = interaction.fields.getTextInputValue('fundamentacao');
+  rascunhoDecisao.set(chaveAcordao(interaction.user.id, numeroApelacao), { decisao, fundamentacao, novoResultado: extras.novoResultado || null });
+  // Revisão automática ligada: pula a tela de escolha e já publica o texto revisado pela IA.
+  if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return executarAcordao(interaction, numeroApelacao, 'auto');
+  const rotulo = ROTULO_DECISAO_ACORDAO[decisao] || decisao;
+  return interaction.reply(revisaoIA.telaEscolha('acordao', { extra: numeroApelacao, titulo: 'Fundamentação do relator', rotulo, texto: fundamentacao }));
+}
+
+async function revisarAcordaoTexto(interaction, numeroApelacao) {
+  const d = rascunhoDecisao.get(chaveAcordao(interaction.user.id, numeroApelacao));
+  if (!d) return interaction.update({ content: 'A prévia do acórdão expirou. Refaça a decisão.', components: [] }).catch(() => {});
+  await interaction.deferUpdate();
+  const revisado = await cartorio.revisarTexto(d.fundamentacao).catch(() => null);
+  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('acordao', numeroApelacao));
+  d.textoRevisado = revisado;
+  return interaction.editReply(revisaoIA.telaAntesDepois('acordao', { extra: numeroApelacao, textoOriginal: d.fundamentacao, textoRevisado: revisado }));
+}
+
+async function executarAcordao(interaction, numeroApelacao, modo) {
+  const chaveA = chaveAcordao(interaction.user.id, numeroApelacao);
+  const d = rascunhoDecisao.get(chaveA);
+  if (!d) return interaction.reply({ content: 'A prévia do acórdão expirou. Refaça a decisão.', ephemeral: true }).catch(() => {});
+  rascunhoDecisao.delete(chaveA);
+  // Modo automático: acusa o recebimento (defer) e revisa aqui, já que finalizarApelacao usa o
+  // texto logo em seguida. Fallback pro original se a IA não responder.
+  if (modo === 'auto') {
+    await interaction.deferReply({ ephemeral: true });
+    if (!d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.fundamentacao).catch(() => null);
+  }
+  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
+  const fundamentacao = usarRevisado && d.textoRevisado ? d.textoRevisado : d.fundamentacao;
+  return finalizarApelacao(interaction, numeroApelacao, d.decisao, { fundamentacao, novoResultado: d.novoResultado });
+}
+
 // Publicação da sentença (após o Juiz escolher revisar ou não) — lê o rascunho, gera o PNG e
 // posta. `usarRevisado` decide entre o texto revisado pela IA e o original.
-async function executarSentenca(interaction, numero, usarRevisado) {
+async function executarSentenca(interaction, numero, modo) {
   const chave = chaveDecisao(interaction.user.id, numero);
   const d = rascunhoDecisao.get(chave);
   if (!d) return interaction.reply({ content: 'A prévia da sentença expirou. Refaça pelo botão "Julgar".', ephemeral: true }).catch(() => {});
+  // Trava própria (defesa em profundidade, igual aos outros 4 executores) — o commit da sentença
+  // se consuma AQUI, então revalida o Juiz antes de publicar, não só no salvarSentenca.
+  const processoAlvo = db.buscarPorNumero('processos', numero);
+  if (!processoAlvo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true }).catch(() => {});
+  if (interaction.user.id !== processoAlvo.juiz && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processoAlvo.juiz}>.`, ephemeral: true }).catch(() => {});
+  }
   rascunhoDecisao.delete(chave);
+
+  // Defer público ANTES do PNG (Puppeteer) — a sentença é pública no canal. No modo "revisão
+  // automática" a revisão pela IA acontece depois do defer (é lenta), com fallback pro original.
+  await interaction.deferReply();
+  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.texto).catch(() => null);
+  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
   const texto = usarRevisado && d.textoRevisado ? d.textoRevisado : d.texto;
   const { pena, regime, resultado } = d;
-
-  // Defer público ANTES do PNG (Puppeteer) — a sentença é pública no canal.
-  await interaction.deferReply();
   db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaEm: new Date().toISOString() });
 
   const processo = db.buscarPorNumero('processos', numero);
@@ -2063,7 +2268,7 @@ module.exports = {
       .addStringOption(o => o.setName('motivo').setDescription('Descrição objetiva dos fatos').setRequired(true))
       .addUserOption(o => o.setName('promotor').setDescription('Promotor responsável'))
       .addStringOption(o => o.setName('reus').setDescription('Menções @ dos réus, se já identificados'))
-      .addStringOption(o => o.setName('medida').setDescription('Número da medida provisória vinculada, se houver')))
+      .addStringOption(o => o.setName('medida').setDescription('Número da medida cautelar vinculada, se houver')))
     .addSubcommand(sub => sub.setName('civil').setDescription('Abre um processo civil — Advogado (anexe a petição inicial depois, no canal)')
       .addStringOption(o => o.setName('nome_acao').setDescription('Nome da ação (ex: Ação indenizatória de perdas e danos por acidente de trânsito)').setRequired(true))
       .addStringOption(o => o.setName('autor_nome').setDescription('Nome completo do autor').setRequired(true))
@@ -2234,14 +2439,9 @@ module.exports = {
     // Em vez de publicar direto, guarda o rascunho e oferece a revisão por IA DENTRO do fluxo
     // dos Fundamentos (Discord não deixa botão dentro do modal, então é o passo logo após).
     rascunhoDecisao.set(chaveDecisao(interaction.user.id, numero), { texto, pena, regime, resultado });
-    return interaction.reply({
-      content: `📝 **Fundamentos da sentença** *(prévia)*:\n> ${truncar(texto, 850).replace(/\n/g, '\n> ')}\n\nQuer que a **IA revise a redação** (gramática/clareza, **sem mudar o sentido**) antes de publicar? Você decide.`,
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`painel:acao:sentenca:revisar:${numero}`).setLabel('✨ Revisar com IA').setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId(`painel:acao:sentenca:publicar:${numero}`).setLabel('✅ Publicar assim').setStyle(ButtonStyle.Success),
-      )],
-      ephemeral: true,
-    });
+    // Revisão automática ligada: pula a tela de escolha e já publica o texto revisado pela IA.
+    if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return executarSentenca(interaction, numero, 'auto');
+    return interaction.reply(revisaoIA.telaEscolha('sentenca', { extra: numero, titulo: 'Fundamentos da sentença', texto }));
   },
 
   // Gera a revisão por IA e mostra antes→depois; o Juiz escolhe qual publicar.
@@ -2250,24 +2450,30 @@ module.exports = {
     if (!d) return interaction.update({ content: 'A prévia da sentença expirou. Refaça pelo botão "Julgar".', components: [] }).catch(() => {});
     await interaction.deferUpdate();
     const revisado = await cartorio.revisarTexto(d.texto).catch(() => null);
-    if (!revisado) {
-      return interaction.editReply({
-        content: '⚠️ A revisão por IA não está disponível agora. Pode publicar com o texto original.',
-        components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`painel:acao:sentenca:publicar:${numero}`).setLabel('✅ Publicar assim').setStyle(ButtonStyle.Success))],
-      });
-    }
+    if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('sentenca', numero));
     d.textoRevisado = revisado;
-    return interaction.editReply({
-      content: `**📄 Original:**\n> ${truncar(d.texto, 650).replace(/\n/g, '\n> ')}\n\n**✨ Revisado pela IA:**\n> ${truncar(revisado, 650).replace(/\n/g, '\n> ')}`,
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`painel:acao:sentenca:usarrevisado:${numero}`).setLabel('Usar revisado').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`painel:acao:sentenca:publicar:${numero}`).setLabel('Manter original').setStyle(ButtonStyle.Secondary),
-      )],
-    });
+    return interaction.editReply(revisaoIA.telaAntesDepois('sentenca', { extra: numero, textoOriginal: d.texto, textoRevisado: revisado }));
   },
 
   async publicarSentenca(interaction, numero) { return executarSentenca(interaction, numero, false); },
   async usarRevisadoSentenca(interaction, numero) { return executarSentenca(interaction, numero, true); },
+
+  // Parecer do MP — mesmo padrão revisão-in-flow da sentença.
+  revisarParecerTexto,
+  async publicarParecer(interaction, numero) { return executarParecerMp(interaction, numero, false); },
+  async usarRevisadoParecer(interaction, numero) { return executarParecerMp(interaction, numero, true); },
+
+  // Acórdão do Desembargador — mesmo padrão revisão-in-flow.
+  confirmarAcordao,
+  revisarAcordaoTexto,
+  async publicarAcordao(interaction, numeroApelacao) { return executarAcordao(interaction, numeroApelacao, false); },
+  async usarRevisadoAcordao(interaction, numeroApelacao) { return executarAcordao(interaction, numeroApelacao, true); },
+
+  // Razões do recurso (Advogado) — mesmo padrão revisão-in-flow.
+  confirmarRazoes,
+  revisarRazoesTexto,
+  async publicarRazoes(interaction, numero) { return criarApelacao(interaction, numero, false); },
+  async usarRevisadoRazoes(interaction, numero) { return criarApelacao(interaction, numero, true); },
 
   criarProcessoPenal,
   criarProcessoCivil,

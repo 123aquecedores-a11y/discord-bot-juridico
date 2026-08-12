@@ -4,8 +4,8 @@ const config = require('../config');
 const rh = require('./rh');
 const canais = require('./canais');
 const auditoria = require('./auditoria');
-const { temCargo, isAdmin } = require('./permissoes');
-const { truncar } = require('./texto');
+const { temCargo, isAdmin, isSuperStaff } = require('./permissoes');
+const { truncar, extrairMencao } = require('./texto');
 const andamentos = require('./andamentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const documentos = require('./documentos');
@@ -15,11 +15,6 @@ const { crimeLabel } = require('./crimesTexto');
 // de processo.js ainda incompleto (objeto vazio, dependendo da ordem em que os arquivos carregam
 // na inicialização), fazendo `processoCmd.botoesJuiz` virar undefined silenciosamente até alguém
 // clicar. Resolvendo dentro da função, o require só roda depois que todo o boot já terminou.
-
-function extrairMencao(texto) {
-  const m = texto && texto.match(/<@!?(\d+)>/);
-  return m ? m[1] : null;
-}
 
 // Botões clicados a partir de uma DM não têm interaction.guild (Discord não manda contexto de
 // servidor em interação de DM) — cai pro guild configurado, senão os cliques que chegam de
@@ -81,6 +76,55 @@ async function trocarJuiz(interaction) {
   });
 
   return interaction.reply({ content: `Juiz do processo ${numero} trocado para <@${novoJuizId}>.`, ephemeral: true });
+}
+
+// ---- Designar Juiz (Supervisão/Staff) a um caso que ficou SEM julgador ----
+// Diferente de "Trocar Juiz" (que exige um Juiz já atribuído): isto atribui um Juiz a um processo
+// ou petição preso porque o sorteio automático não achou cargo elegível. Gate: Supervisão
+// (Desembargador/Procurador) ou Staff — nunca abre pra qualquer um. É o caminho manual que o aviso
+// "sem Juiz disponível" (utils/prazos.js) oferece, pra o caso nunca congelar mudo.
+function podeDesignar(interaction) {
+  return podeSupervisionar(interaction) || isSuperStaff(interaction);
+}
+
+function abrirModalDesignarJulgador(interaction, numero) {
+  if (!podeDesignar(interaction)) {
+    return interaction.reply({ content: 'Só a Supervisão (Desembargador/Procurador) ou a Staff podem designar um Juiz a um caso sem julgador.', ephemeral: true });
+  }
+  const modal = new ModalBuilder().setCustomId(`painel:modal:supervisao:designarjulgador:${numero}`).setTitle(`Designar Juiz — ${numero}`.slice(0, 45));
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('novo').setLabel('Menção @ do Juiz a designar').setStyle(TextInputStyle.Short).setRequired(true)),
+  );
+  return interaction.showModal(modal);
+}
+
+async function designarJulgador(interaction, numero) {
+  if (!podeDesignar(interaction)) {
+    return interaction.reply({ content: 'Sem permissão para designar Juiz.', ephemeral: true });
+  }
+  const juizId = extrairMencao(interaction.fields.getTextInputValue('novo'));
+  if (!juizId) return interaction.reply({ content: 'Marque o Juiz com @menção.', ephemeral: true });
+  if (!rh.temCargo(juizId, 'Juiz')) return interaction.reply({ content: 'A pessoa indicada não é um Juiz ativo no quadro (RH).', ephemeral: true });
+
+  // O caso pode ser um processo OU uma petição administrativa (numeração diferente).
+  const processo = db.buscarPorNumero('processos', numero);
+  const peticao = processo ? null : db.buscarPorNumero('peticoes', numero);
+  const alvo = processo || peticao;
+  if (!alvo) return interaction.reply({ content: 'Caso não encontrado.', ephemeral: true });
+  if (alvo.juiz) return interaction.reply({ content: `Este caso já tem Juiz (<@${alvo.juiz}>). Para substituir, use "Trocar Juiz".`, ephemeral: true });
+  const tabela = processo ? 'processos' : 'peticoes';
+
+  await interaction.deferReply({ ephemeral: true });
+  const { distribuirJuizAoCaso } = require('./distribuicaoJuiz');
+  const guild = await resolverGuild(interaction);
+  const ok = await distribuirJuizAoCaso(guild, { tabela, numero }, juizId, { origem: 'designacao', designadoPor: interaction.user.id });
+  if (!ok) return interaction.editReply({ content: 'Não foi possível designar (o caso pode já ter Juiz agora).' });
+
+  await auditoria.registrar(guild, {
+    acao: 'Designação de Juiz', executorId: interaction.user.id,
+    referencia: `${tabela === 'peticoes' ? 'Petição' : 'Processo'} ${numero} → <@${juizId}>`,
+  });
+  return interaction.editReply({ content: `Juiz <@${juizId}> designado ao caso ${numero}.` });
 }
 
 // ---- Trocar Promotor (Procurador) ----
@@ -390,5 +434,6 @@ module.exports = {
   abrirModalForcarDenuncia, forcarDenuncia,
   abrirModalForcarDenunciaDireto, forcarDenunciaDireto,
   abrirModalManterArquivamento, manterArquivamento,
+  abrirModalDesignarJulgador, designarJulgador,
   filasPendentes,
 };

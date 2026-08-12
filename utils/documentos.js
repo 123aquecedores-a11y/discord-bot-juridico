@@ -148,7 +148,7 @@ function textoMandado({ numero, medida, fundamentacaoPromotor, fundamentacaoJuiz
 // Mandado emitido direto de dentro de um processo (painel-contexto-e-tipo-mandado.md, seção
 // 3) — sem medida nem inquérito por trás, então não dá pra reaproveitar textoMandado (que exige
 // o objeto `medida` inteiro). Mais enxuto: só o teor que o Juiz escreveu, sem a cadeia
-// Delegado→MP→Juízo que só existe no fluxo antigo de medida provisória.
+// Delegado→MP→Juízo que só existe no fluxo antigo de medida cautelar.
 function textoMandadoDireto({ numero, processoNumero, tipoRotulo, alvo, teor, juizId }) {
   return [
     '**PODER JUDICIÁRIO**',
@@ -168,7 +168,7 @@ function textoMandadoDireto({ numero, processoNumero, tipoRotulo, alvo, teor, ju
   ].join('\n');
 }
 
-// Sentença sobre o pedido de medida provisória — mesmo formato de textoSentenca/
+// Sentença sobre o pedido de medida cautelar — mesmo formato de textoSentenca/
 // textoSentencaPeticao (cabeçalho, vistos, fundamentação, dispositivo, publicação), usado na
 // devolutiva pra Polícia Civil (utils/devolutivaPoliciaCivil.js) pra a decisão chegar como um
 // ato judicial de verdade, não só um resumo em campos de embed.
@@ -179,13 +179,13 @@ function textoSentencaMandado({ medida, decisao, fundamentacao, numeroMandado, j
 
   return [
     '**PODER JUDICIÁRIO**',
-    `**Medida Provisória nº ${medida.numero}**`,
+    `**Medida Cautelar nº ${medida.numero}**`,
     '',
     '**SENTENÇA**',
     '',
     codigoExterno
-      ? `Vistos, relatados e examinados os autos do pedido de medida provisória em epígrafe, advindo do Inquérito Policial nº ${codigoExterno}.`
-      : 'Vistos, relatados e examinados os autos do pedido de medida provisória em epígrafe.',
+      ? `Vistos, relatados e examinados os autos do pedido de medida cautelar em epígrafe, advindo do Inquérito Policial nº ${codigoExterno}.`
+      : 'Vistos, relatados e examinados os autos do pedido de medida cautelar em epígrafe.',
     '',
     `**Tipo:** ${medida.tipo}`,
     `**Alvo:** ${truncar(medida.alvo, 300)}`,
@@ -341,7 +341,7 @@ function textoOficio({ numero, processoNumero, destinatario, assunto, conteudo, 
   return [
     `**${instituicao}**`,
     `**Ofício nº ${numero}**`,
-    `*Referente ao processo nº ${processoNumero}*`,
+    processoNumero ? `*Referente ao processo nº ${processoNumero}*` : '*Expediente avulso (não vinculado a processo)*',
     '',
     `Ao(À) ${destinatario},`,
     '',

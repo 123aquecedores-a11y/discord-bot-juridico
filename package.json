@@ -1,7 +1,7 @@
 {
   "name": "discord-bot-juridico",
   "version": "3.0.0",
-  "description": "Bot Discord jurídico de RP — processos penais/civis, medidas provisórias e RH por cargo",
+  "description": "Bot Discord jurídico de RP — processos penais/civis, medidas cautelares e RH por cargo",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {

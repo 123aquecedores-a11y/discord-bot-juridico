@@ -58,6 +58,11 @@ client.once('ready', async () => {
   if (process.env.SIMULAR === '1') {
     require('./scripts/simulador').run(client, guild).catch(err => console.error('[simulador] erro:', err));
   }
+  // Demo completa ponta a ponta (só quando SIMULAR_DEMO=1) — encena ~40 cenários fazendo o papel de
+  // cada cargo, pro operador assistir sozinho. Ver scripts/simuladorDemo.js. Arquiva tudo no fim.
+  if (process.env.SIMULAR_DEMO === '1') {
+    require('./scripts/simuladorDemo').run(client, guild).catch(err => console.error('[simuladorDemo] erro:', err));
+  }
 
   const rodarChecagens = () => {
     verificarPrazosJulgamento(client, guild).catch(err => console.error('Erro na checagem diária de prazos:', err));
@@ -72,16 +77,15 @@ client.once('ready', async () => {
   // diário — rodam a cada 10min.
   const rodarChecagensFrequentes = () => {
     verificarVinculosPendentes(client, guild).catch(err => console.error('Erro na checagem de vínculos pendentes:', err));
-    verificarProcessosSemJuiz(guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (civil):', err));
-    verificarProcessosPenaisSemJuiz(guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (penal):', err));
-    verificarPeticoesSemJuiz(guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (petição):', err));
+    verificarProcessosSemJuiz(client, guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (civil):', err));
+    verificarProcessosPenaisSemJuiz(client, guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (penal):', err));
+    verificarPeticoesSemJuiz(client, guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (petição):', err));
     verificarDiligenciasPendentes(client, guild).catch(err => console.error('Erro na checagem de diligências pendentes:', err));
     verificarMedidasAguardandoMP(client, guild).catch(err => console.error('Erro na checagem de medidas aguardando MP:', err));
     verificarMedidasAguardandoJuiz(client, guild).catch(err => console.error('Erro na checagem de medidas aguardando Juiz:', err));
     verificarMandadosPendentes(client, guild).catch(err => console.error('Erro na checagem de mandados pendentes:', err));
     verificarApelacoesPendentes(client, guild).catch(err => console.error('Erro na checagem de apelações pendentes:', err));
     verificarPrazosContestacao(client, guild).catch(err => console.error('Erro na checagem de prazos de contestação:', err));
-    if (painel?.limparCanalPainelPeriodico) painel.limparCanalPainelPeriodico(guild).catch(err => console.error('Erro ao limpar canal do painel:', err));
   };
   rodarChecagensFrequentes();
   setInterval(rodarChecagensFrequentes, DEZ_MIN_MS);
@@ -99,11 +103,9 @@ client.on('guildMemberAdd', async member => {
   if (sincronizado) console.log(`Apelido sincronizado automaticamente pra ${member.id} ao entrar no servidor.`);
 });
 
-// Só a integração com a Polícia Civil continua ouvindo mensagens novas — a auto-limpeza de
-// 3min do canal do painel (mensagem real e resposta ephemeral) foi removida a pedido do
-// operador. A limpeza do canal do painel volta a ser só a varredura periódica de 10min
-// (limparCanalPainelPeriodico, chamada no job frequente abaixo) + a limpeza que roda toda vez
-// que o painel fixo é postado/editado (postarPainelFixo).
+// Só a integração com a Polícia Civil continua ouvindo mensagens novas — a auto-limpeza do canal
+// do painel foi removida a pedido do operador. A única faxina que sobrou é a dedup de painéis
+// duplicados do próprio bot, que roda quando o painel fixo é postado/editado (postarPainelFixo).
 client.on('messageCreate', message => {
   if (message.channelId !== config.canalRequerimentoPoliciaCivilId) return;
   integracaoPoliciaCivil.processarRequerimento(message).catch(err => console.error('Erro na integração com a Polícia Civil:', err));
@@ -145,7 +147,7 @@ client.on('interactionCreate', async interaction => {
       const comando = client.commands.get(modulo);
       const mapa = {
         medida: { aprovar: 'aprovar', negar: 'negar', recorrer: 'recorrer', referendar: 'referendar', cumprir: 'cumprirMandado', abrirprocesso: 'abrirProcesso', anexarindicios: 'anexarIndicios' },
-        processo: { oferecer: 'oferecer', arquivar: 'arquivar', habilitar: 'habilitar', julgar: 'julgar' },
+        processo: { oferecer: 'oferecer', arquivar: 'arquivar', julgar: 'julgar' },
       };
       const nomeHandler = mapa[modulo]?.[acao];
       if (comando && nomeHandler && comando[nomeHandler]) {
@@ -158,9 +160,8 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isModalSubmit()) {
       const [modulo, acao, numero] = interaction.customId.split(':');
       const comando = client.commands.get(modulo);
-      if (modulo === 'processo' && acao === 'sentenca' && comando?.salvarSentenca) {
-        await comando.salvarSentenca(interaction, numero);
-      }
+      // Obs.: o modal de sentença é emitido com prefixo `painel:` (modalSentenca em processo.js),
+      // então é tratado por tratarModal no painel.js — não há modal `processo:sentenca` "nu".
       if (modulo === 'medida' && acao === 'processomodal' && comando?.criarProcessoModal) {
         await comando.criarProcessoModal(interaction, numero);
       }

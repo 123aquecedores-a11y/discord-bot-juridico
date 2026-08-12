@@ -26,12 +26,23 @@ const { selectTipoMedidaCoercitiva, rotuloTipo } = require('../utils/tiposMedida
 const partesProcesso = require('../utils/partesProcesso');
 const mandadoCmd = require('./mandado');
 const andamentos = require('../utils/andamentos');
+const cartorio = require('../utils/cartorio');
+const preferencias = require('../utils/preferencias');
+const { RascunhoTTL } = require('../utils/rascunhoTtl');
+const revisaoIA = require('../utils/revisaoIA');
+const analiseDocumento = require('../utils/analiseDocumento');
+
+// Rascunho da fundamentação do Juiz (referendo/negativa) — guarda o texto entre o envio do modal
+// e a decisão de revisar por IA ou publicar direto (mesmo padrão revisão-in-flow da sentença).
+// Com TTL: entrada abandonada expira sozinha (não vaza em memória).
+const rascunhoFundMedida = new RascunhoTTL();
+const chaveFundMedida = (uid, numero) => `${uid}:fundmedida:${numero}`;
 
 const TIPOS_MEDIDA = ['Busca e Apreensão', 'Prisão Preventiva', 'Interceptação Telefônica', 'Quebra de Sigilo Bancário', 'Outra'];
 
 function embedMedida(medida) {
   return new EmbedBuilder()
-    .setTitle(`📋 Medida Provisória ${medida.numero}`)
+    .setTitle(`📋 Medida Cautelar ${medida.numero}`)
     .setColor(0xe67e22)
     .addFields(
       { name: 'Tipo', value: medida.tipo, inline: true },
@@ -45,6 +56,20 @@ function embedMedida(medida) {
       { name: 'Promotor', value: `<@${medida.promotor}>`, inline: true },
       ...(medida.juiz ? [{ name: 'Juiz sorteado', value: `<@${medida.juiz}>`, inline: true }] : []),
     );
+}
+
+// Frente 4a.5 — embed da listagem de medidas, fonte única (era duplicado no /painel e no /medida listar).
+function embedListaMedidas(rows) {
+  return new EmbedBuilder().setTitle('📋 Medidas cautelares').setColor(0xe67e22)
+    .setDescription(rows.map(m => `**${m.numero}** — ${m.tipo} — *${m.status}*`).join('\n'));
+}
+
+// Frente 2.2 — sigilo do inquérito: só as partes da medida (Delegado/Promotor/Juiz) e Staff podem
+// ver o teor (tipo, alvo, RG, motivo/indícios). Sem isso, o `embedMedida` vazava dados sensíveis
+// da fase pré-processual pra qualquer um que soubesse o número (o autocomplete lista todos).
+function temAcessoMedida(interaction, medida) {
+  if (isAdmin(interaction) || isSuperStaff(interaction)) return true;
+  return [medida.delegado, medida.promotor, medida.juiz].filter(Boolean).includes(interaction.user.id);
 }
 
 function botoesAnalise(numero) {
@@ -309,15 +334,15 @@ async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvo
   const componentesIniciais = semIndicios ? [botaoAnexarIndicios(numero)] : [botoesAnalise(numero)];
   await canal.send({ content: `<@${delegadoId}> <@${promotorFinal}>`, embeds: [embedMedida(medida)], components: componentesIniciais });
 
-  await auditoria.registrar(guild, { acao: 'Medida provisória solicitada', executorId: delegadoId, referencia: numero });
+  await auditoria.registrar(guild, { acao: 'Medida cautelar solicitada', executorId: delegadoId, referencia: numero });
   return { numero, canal };
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('medida')
-    .setDescription('Pedidos de medida provisória (fase de inquérito, antes de processo formal)')
-    .addSubcommand(sub => sub.setName('solicitar').setDescription('Solicita uma medida provisória ao MP')
+    .setDescription('Pedidos de medida cautelar (fase de inquérito, antes de processo formal)')
+    .addSubcommand(sub => sub.setName('solicitar').setDescription('Solicita uma medida cautelar ao MP')
       .addStringOption(o => {
         o.setName('tipo').setDescription('Tipo de medida').setRequired(true);
         TIPOS_MEDIDA.forEach(t => o.addChoices({ name: t, value: t }));
@@ -329,7 +354,7 @@ module.exports = {
       .addUserOption(o => o.setName('promotor').setDescription('Promotor responsável por analisar')))
     .addSubcommand(sub => sub.setName('ver').setDescription('Ver detalhes de uma medida')
       .addStringOption(o => o.setName('numero').setDescription('Número da medida').setRequired(true).setAutocomplete(true)))
-    .addSubcommand(sub => sub.setName('listar').setDescription('Lista medidas provisórias')
+    .addSubcommand(sub => sub.setName('listar').setDescription('Lista medidas cautelares')
       .addStringOption(o => o.setName('status').setDescription('Filtrar por status').addChoices(
         { name: 'Aguardando MP', value: 'Aguardando MP' },
         { name: 'Negada', value: 'Negada' },
@@ -341,7 +366,7 @@ module.exports = {
 
     if (sub === 'solicitar') {
       if (!temCargo(interaction, 'Delegado')) {
-        return interaction.reply({ content: 'Só Delegados podem solicitar medida provisória.', ephemeral: true });
+        return interaction.reply({ content: 'Só Delegados podem solicitar medida cautelar.', ephemeral: true });
       }
 
       await interaction.deferReply({ ephemeral: true });
@@ -363,18 +388,16 @@ module.exports = {
       const numero = interaction.options.getString('numero');
       const medida = db.buscarPorNumero('medidas', numero);
       if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-      return interaction.reply({ embeds: [embedMedida(medida)] });
+      // Gate de sigilo + resposta SEMPRE privada (antes era pública, vazava o teor no canal).
+      if (!temAcessoMedida(interaction, medida)) return interaction.reply({ content: 'Você não tem acesso ao teor desta medida — ela é sigilosa (fase de inquérito). Só as partes (Delegado/Promotor/Juiz) e a Staff podem consultá-la.', ephemeral: true });
+      return interaction.reply({ embeds: [embedMedida(medida)], ephemeral: true });
     }
 
     if (sub === 'listar') {
       const status = interaction.options.getString('status');
       const rows = db.todos('medidas', status ? m => m.status === status : null).slice(0, 15);
       if (rows.length === 0) return interaction.reply({ content: 'Nenhuma medida encontrada.', ephemeral: true });
-      const embed = new EmbedBuilder()
-        .setTitle('📋 Medidas provisórias')
-        .setColor(0xe67e22)
-        .setDescription(rows.map(m => `**${m.numero}** — ${m.tipo} — *${m.status}*`).join('\n'));
-      return interaction.reply({ embeds: [embed] });
+      return interaction.reply({ embeds: [embedListaMedidas(rows)], ephemeral: true });
     }
   },
 
@@ -668,16 +691,19 @@ module.exports = {
     return interaction.showModal(modal);
   },
 
-  async processarReferendo(interaction, numero) {
+  // fundamentacaoOverride vem do fluxo revisão-in-flow (texto já escolhido pelo Juiz, revisado
+   // ou não). Só lê do modal quando chamado direto na submissão (compatibilidade).
+  async processarReferendo(interaction, numero, fundamentacaoOverride) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
     if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode referendá-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
-    const fundamentacaoJuiz = interaction.fields.getTextInputValue('fundamentacao');
+    const fundamentacaoJuiz = fundamentacaoOverride !== undefined ? fundamentacaoOverride : interaction.fields.getTextInputValue('fundamentacao');
     // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
-    // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso.
-    await interaction.deferReply({ ephemeral: true });
+    // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso. Guard
+    // idempotente: no modo "revisão automática" o executarDecisaoMedida já deu deferReply.
+    if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
     db.atualizar('medidas', numero, { status: 'Deferida', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString() });
 
     const numeroMandado = proximoNumero(db, 'mandados', 'MO');
@@ -759,13 +785,14 @@ module.exports = {
     return interaction.showModal(modal);
   },
 
-  async negarJuiz(interaction, numero) {
+  async negarJuiz(interaction, numero, fundamentacaoOverride) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
     if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode decidi-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
-    const fundamentacaoJuiz = interaction.fields.getTextInputValue('fundamentacao');
+    const fundamentacaoJuiz = fundamentacaoOverride !== undefined ? fundamentacaoOverride : interaction.fields.getTextInputValue('fundamentacao');
+    if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
     db.atualizar('medidas', numero, { status: 'Indeferida pelo Juiz', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString() });
 
     if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
@@ -790,7 +817,52 @@ module.exports = {
     await devolutivaPoliciaCivil.enviarDevolutivaMandado(db.buscarPorNumero('medidas', numero), {
       decisao: 'Indeferido', fundamentacao: fundamentacaoJuiz, juizId: medida.juiz, numeroMandado: null,
     });
-    return interaction.reply({ content: `Medida ${numero} indeferida.`, ephemeral: true });
+    return interaction.editReply({ content: `Medida ${numero} indeferida.` });
+  },
+
+  // Submissão do modal de decisão do Juiz (referendo/negativa): guarda o rascunho e oferece a
+  // revisão por IA antes de publicar — mesmo padrão da sentença/acórdão. `tipo` ∈ referendo|negativa.
+  async confirmarDecisaoMedida(interaction, numero, tipo) {
+    const medida = db.buscarPorNumero('medidas', numero);
+    if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
+    if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
+      return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode decidi-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
+    }
+    const fundamentacao = interaction.fields.getTextInputValue('fundamentacao');
+    rascunhoFundMedida.set(chaveFundMedida(interaction.user.id, numero), { tipo, fundamentacao });
+    // Revisão automática ligada: pula a tela de escolha e já publica o texto revisado pela IA.
+    if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return module.exports.executarDecisaoMedida(interaction, `${numero}#${tipo}`, 'auto');
+    const rotulo = tipo === 'referendo' ? 'referendar — emitir mandado' : 'negar provimento';
+    return interaction.reply(revisaoIA.telaEscolha('medida', { extra: `${numero}#${tipo}`, titulo: 'Fundamentação do Juízo', rotulo, texto: fundamentacao }));
+  },
+
+  async revisarFundMedida(interaction, chave) {
+    const [numero] = chave.split('#');
+    const d = rascunhoFundMedida.get(chaveFundMedida(interaction.user.id, numero));
+    if (!d) return interaction.update({ content: 'A prévia da decisão expirou. Refaça a ação.', components: [] }).catch(() => {});
+    await interaction.deferUpdate();
+    const revisado = await cartorio.revisarTexto(d.fundamentacao).catch(() => null);
+    if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('medida', chave));
+    d.textoRevisado = revisado;
+    return interaction.editReply(revisaoIA.telaAntesDepois('medida', { extra: chave, textoOriginal: d.fundamentacao, textoRevisado: revisado }));
+  },
+
+  async executarDecisaoMedida(interaction, chave, modo) {
+    const [numero, tipo] = chave.split('#');
+    const chaveD = chaveFundMedida(interaction.user.id, numero);
+    const d = rascunhoFundMedida.get(chaveD);
+    if (!d) return interaction.reply({ content: 'A prévia da decisão expirou. Refaça a ação.', ephemeral: true }).catch(() => {});
+    rascunhoFundMedida.delete(chaveD);
+    // Modo automático: defer aqui e revisa antes de processarReferendo/negarJuiz (que reutilizam
+    // este defer via guard). Fallback pro texto original se a IA não responder.
+    if (modo === 'auto') {
+      await interaction.deferReply({ ephemeral: true });
+      if (!d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.fundamentacao).catch(() => null);
+    }
+    const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
+    const fundamentacao = usarRevisado && d.textoRevisado ? d.textoRevisado : d.fundamentacao;
+    if (tipo === 'referendo') return module.exports.processarReferendo(interaction, numero, fundamentacao);
+    return module.exports.negarJuiz(interaction, numero, fundamentacao);
   },
 
   async cumprirMandado(interaction, numero) {
@@ -822,7 +894,9 @@ module.exports = {
     const componentesArquivar = mandado.medidaNumero
       ? [new ActionRowBuilder().addComponents(botaoArquivarManual(mandado.medidaNumero))]
       : [];
-    await interaction.followUp({ content: `📎 Mandado ${numero} cumprido por <@${interaction.user.id}> — PDF juntado aos autos.`, components: componentesArquivar });
+    // IA "cartório" faz a análise estruturada do auto de cumprimento (best-effort).
+    const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'cumprimento_mandado', pdfUrl: anexo.url });
+    await interaction.followUp({ content: `📎 Mandado ${numero} cumprido por <@${interaction.user.id}> — PDF juntado aos autos.`, embeds: embedAnalise ? [embedAnalise] : [], components: componentesArquivar });
     if (mandado.processoVinculado) {
       await andamentos.registrar(interaction.guild, mandado.processoVinculado, {
         tipo: 'mandado_cumprido', titulo: `✅ Mandado cumprido`,
@@ -867,9 +941,11 @@ module.exports = {
     db.atualizar('medidas', numero, { status: 'Aguardando MP', aguardandoMpDesde: new Date().toISOString() });
     if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
     const medidaAtualizada = db.buscarPorNumero('medidas', numero);
+    // IA "cartório" analisa os indícios pro Promotor (best-effort). Vai como 2º embed junto do card.
+    const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'indicios_medida', pdfUrl: anexo.url });
     await interaction.followUp({
       content: `📎 Indícios anexados por <@${interaction.user.id}> — a medida ${numero} agora está na fila do Ministério Público.`,
-      embeds: [embedMedida(medidaAtualizada)], components: [botoesAnalise(numero)],
+      embeds: [embedMedida(medidaAtualizada), ...(embedAnalise ? [embedAnalise] : [])], components: [botoesAnalise(numero)],
     });
     await auditoria.registrar(interaction.guild, { acao: 'Indícios anexados ao pedido de medida', executorId: interaction.user.id, referencia: numero });
   },
@@ -921,7 +997,7 @@ module.exports = {
   },
 
   TIPOS_MEDIDA,
-  embedMedida,
+  embedMedida, temAcessoMedida, embedListaMedidas,
   solicitarMedida,
   botaoSolicitarMedidaDireta,
   abrirSolicitarMedidaDireta,

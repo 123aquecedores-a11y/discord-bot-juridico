@@ -9,7 +9,7 @@ const config = require('../config');
 const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
 const rh = require('../utils/rh');
 const crimes = require('../data/crimes.json');
-const { crimeLabel } = require('../utils/crimesTexto');
+const { crimeLabel, buscarCrimes } = require('../utils/crimesTexto');
 const processoCmd = require('./processo');
 const medidaCmd = require('./medida');
 const mandadoCmd = require('./mandado');
@@ -31,7 +31,7 @@ const { gerarBannerPainel } = require('../services/gerarBannerPainel');
 const { detectarProcessoDoCanal } = require('../utils/contextoProcesso');
 const instituicoes = require('../utils/instituicoes');
 const instituicaoCmd = require('./instituicao');
-const cartorio = require('../utils/cartorio');
+const preferencias = require('../utils/preferencias');
 
 // ---- Menu principal ----
 
@@ -74,8 +74,8 @@ function botoesMenuPrincipal(interaction) {
   const ehDelegado = temCargo(interaction, 'Delegado');
   const ehPromotor = temCargo(interaction, 'Promotor');
   const ehJuiz = temCargo(interaction, 'Juiz');
-  const ehAdvogado = temCargo(interaction, 'Advogado');
   const doInvestigativo = ehDelegado || ehPromotor || ehJuiz;
+  const revAutoLigada = preferencias.revisaoAutomaticaLigada(interaction.user.id);
 
   // Estilo uniforme (Secondary/cinza) em todo o menu de propósito — botão de bot só tem 5 estilos
   // fixos no Discord (sem cor customizada, sem fonte própria), e o azul vibrante do Primary lê
@@ -83,15 +83,12 @@ function botoesMenuPrincipal(interaction) {
   // a plataforma permite. Cores semânticas (verde/vermelho) ficam reservadas pra ações de
   // decisão de mérito (aprovar/negar), não pra navegação.
   return [
+    // Frente 3 — Petição virou item de Processo; Mandado e Ofício viraram itens de Medida (agrupador);
+    // Ficha do judiciário virou item de Supervisão; o botão "Revisar texto" saiu (só o toggle inline).
     linha(
       botaoSe(true, 'painel:menu:processo', '📁 Processo', ButtonStyle.Secondary),
-      botaoSe(doInvestigativo || staff, 'painel:menu:medida', '📋 Medida', ButtonStyle.Secondary),
-      botaoSe(doInvestigativo || staff, 'painel:menu:mandado', '📜 Mandado', ButtonStyle.Secondary),
-    ),
-    linha(
-      botaoSe(podeEmitirOficio(interaction), 'painel:menu:oficio', '✉️ Ofício', ButtonStyle.Secondary),
+      botaoSe(doInvestigativo || staff || podeEmitirOficio(interaction), 'painel:menu:medida', '📋 Medida / Mandado / Ofício', ButtonStyle.Secondary),
       botaoSe(true, 'painel:menu:crime', '🔍 Crime', ButtonStyle.Secondary),
-      botaoSe(ehAdvogado || staff, 'painel:menu:peticao', '📄 Petição', ButtonStyle.Secondary),
     ),
     linha(
       botaoSe(fichaCmd.podeConsultar(interaction), 'painel:menu:ficha', '🗂️ SISBAJUS', ButtonStyle.Secondary),
@@ -101,9 +98,14 @@ function botoesMenuPrincipal(interaction) {
     linha(
       botaoSe(true, 'painel:acao:pessoal:pendencias', '📌 Minhas pendências', ButtonStyle.Secondary),
       botaoSe(true, 'painel:acao:cargo:solicitar', '🪪 Solicitar cargo', ButtonStyle.Secondary),
-      botaoSe(true, 'painel:acao:cargo:ficha', '🏅 Ficha do judiciário', ButtonStyle.Secondary),
-      botaoSe(true, 'painel:acao:revisar:abrir', '✨ Revisar texto', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:menu:rh', '👥 RH', ButtonStyle.Secondary),
+    ),
+    // Preferência pessoal: quando LIGADA, a IA já revisa e publica a fundamentação sozinha (sem a
+    // tela de "Revisar/Publicar"). Rótulo reflete o estado atual de quem abriu o painel.
+    linha(
+      revAutoLigada
+        ? botaoSe(true, 'painel:acao:pessoal:revisaoauto', '✨ Revisão automática (IA): LIGADA', ButtonStyle.Success)
+        : botaoSe(true, 'painel:acao:pessoal:revisaoauto', '✨ Revisão automática (IA): desligada', ButtonStyle.Secondary),
     ),
   ].filter(Boolean);
 }
@@ -151,16 +153,26 @@ function submenuProcesso(interaction) {
       botaoSe(true, 'painel:acao:processo:listar', 'Listar recentes', ButtonStyle.Primary),
       botaoSe(true, 'painel:acao:processo:historico', 'Histórico (autos)', ButtonStyle.Secondary),
     ),
+    // Frente 3.1 — Petições administrativas agora ficam sob Processo (abre o submenu de petição).
+    linha(
+      botaoSe(temCargo(interaction, 'Advogado') || isAdmin(interaction), 'painel:menu:peticao', '📄 Petição administrativa', ButtonStyle.Secondary),
+    ),
     botaoVoltar(),
   ].filter(Boolean);
 }
 
 function submenuMedida(interaction) {
+  const doInvestigativo = temCargo(interaction, 'Delegado') || temCargo(interaction, 'Promotor') || temCargo(interaction, 'Juiz');
   return [
     linha(
       botaoSe(temCargo(interaction, 'Delegado'), 'painel:acao:medida:solicitar', 'Solicitar', ButtonStyle.Success),
       botaoSe(true, 'painel:acao:medida:ver', 'Ver', ButtonStyle.Primary),
       botaoSe(true, 'painel:acao:medida:listar', 'Listar recentes', ButtonStyle.Primary),
+    ),
+    // Frente 3.2 — Mandado e Ofício agora ficam sob Medida (agrupador); abrem os próprios submenus.
+    linha(
+      botaoSe(doInvestigativo || isAdmin(interaction), 'painel:menu:mandado', '📜 Mandado', ButtonStyle.Secondary),
+      botaoSe(podeEmitirOficio(interaction), 'painel:menu:oficio', '✉️ Ofício', ButtonStyle.Secondary),
     ),
     botaoVoltar(),
   ].filter(Boolean);
@@ -212,7 +224,11 @@ function submenuSupervisao(interaction) {
       botaoSe(temCargo(interaction, 'Desembargador') || isAdmin(interaction), 'painel:acao:supervisao:trocardesembargador', 'Trocar relator (apelação)', ButtonStyle.Primary),
       botaoSe(temCargo(interaction, 'Procurador') || isAdmin(interaction), 'painel:acao:supervisao:forcardenuncia', 'Forçar denúncia', ButtonStyle.Danger),
     ),
-    linha(botaoSe(true, 'painel:acao:supervisao:filas', 'Filas pendentes', ButtonStyle.Secondary)),
+    // Frente 3.3 — a Ficha do judiciário (funcional) passou a viver aqui, na Supervisão.
+    linha(
+      botaoSe(true, 'painel:acao:supervisao:filas', 'Filas pendentes', ButtonStyle.Secondary),
+      botaoSe(true, 'painel:acao:cargo:ficha', '🏅 Ficha do judiciário', ButtonStyle.Secondary),
+    ),
     botaoVoltar(),
   ].filter(Boolean);
 }
@@ -282,16 +298,7 @@ async function abrirSubmenu(interaction, modulo) {
   return interaction.update({ embeds: [embed], components: SUBMENUS[modulo](interaction) });
 }
 
-// ---- Listagens diretas ----
-
-function embedListaMedidas(rows) {
-  return new EmbedBuilder().setTitle('📋 Medidas provisórias').setColor(0xe67e22)
-    .setDescription(rows.map(m => `**${m.numero}** — ${m.tipo} — *${m.status}*`).join('\n'));
-}
-function embedListaMandados(rows) {
-  return new EmbedBuilder().setTitle('📜 Mandados').setColor(0x2ecc71)
-    .setDescription(rows.map(m => `**${m.numero}** — ${m.tipo} — *${m.status}*`).join('\n'));
-}
+// ---- Listagens diretas ---- (embeds de medida/mandado moram nos próprios módulos — Frente 4a.5)
 
 async function listarEResponder(interaction, tabela, embedFn) {
   const rows = db.todos(tabela).slice(0, 15);
@@ -497,7 +504,7 @@ function abrirModalOficio(interaction, processoDetectado, destinatarioPreenchido
   const campoDestinatario = new TextInputBuilder().setCustomId('destinatario').setLabel('Destinatário').setStyle(TextInputStyle.Short).setRequired(true);
   if (destinatarioPreenchido) campoDestinatario.setValue(destinatarioPreenchido.slice(0, 100));
   modal.addComponents(
-    ...(processoDetectado ? [] : [new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('processo').setLabel('Número do processo vinculado').setStyle(TextInputStyle.Short).setRequired(true))]),
+    ...(processoDetectado ? [] : [new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('processo').setLabel('Nº do processo (vazio = ofício avulso)').setStyle(TextInputStyle.Short).setRequired(false))]),
     new ActionRowBuilder().addComponents(campoDestinatario),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('assunto').setLabel('Assunto').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('conteudo').setLabel('Conteúdo').setStyle(TextInputStyle.Paragraph).setRequired(true)),
@@ -629,18 +636,39 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'usarrevisado') return processoCmd.usarRevisadoSentenca(interaction, extra);
   }
 
-  if (modulo === 'revisar' && acao === 'abrir') {
-    const modal = new ModalBuilder().setCustomId('painel:modal:revisar:texto').setTitle('✨ Revisar texto (IA)');
-    modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('texto').setLabel('Cole o texto pra revisar')
-        .setPlaceholder('A IA corrige gramática, concordância e clareza — sem mudar o sentido.')
-        .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1500),
-    ));
-    return interaction.showModal(modal);
+  if (modulo === 'parecermp') {
+    if (acao === 'revisar') return processoCmd.revisarParecerTexto(interaction, extra);
+    if (acao === 'enviar') return processoCmd.publicarParecer(interaction, extra);
+    if (acao === 'usarrevisado') return processoCmd.usarRevisadoParecer(interaction, extra);
+  }
+
+  if (modulo === 'acordao') {
+    if (acao === 'revisar') return processoCmd.revisarAcordaoTexto(interaction, extra);
+    if (acao === 'publicar') return processoCmd.publicarAcordao(interaction, extra);
+    if (acao === 'usarrevisado') return processoCmd.usarRevisadoAcordao(interaction, extra);
+  }
+
+  if (modulo === 'razoes') {
+    if (acao === 'revisar') return processoCmd.revisarRazoesTexto(interaction, extra);
+    if (acao === 'enviar') return processoCmd.publicarRazoes(interaction, extra);
+    if (acao === 'usarrevisado') return processoCmd.usarRevisadoRazoes(interaction, extra);
   }
 
   if (modulo === 'pessoal') {
     if (acao === 'pendencias') return minhasPendencias(interaction);
+    if (acao === 'revisaoauto') {
+      const ligada = preferencias.alternarRevisaoAutomatica(interaction.user.id);
+      // Re-renderiza o próprio menu (mesma mensagem efêmera) pra o botão já refletir o novo estado.
+      return interaction.update({
+        content: ligada
+          ? '✨ **Revisão automática LIGADA.** A partir de agora, quando você escrever uma fundamentação (sentença, parecer, acórdão, razões, decisão de medida), a IA já revisa a redação e publica automaticamente — sem a tela de "Revisar/Publicar". A IA só ajusta a **redação**, nunca o mérito; a decisão continua sua.'
+          : '✨ **Revisão automática desligada.** Você volta a ver a tela de "Revisar/Publicar" pra escolher em cada fundamentação.',
+        embeds: [], components: botoesMenuPrincipal(interaction), attachments: [], files: [],
+      }).catch(async () => {
+        // Se a mensagem original não puder ser editada (ex.: veio de outro contexto), responde solto.
+        return interaction.reply({ content: ligada ? '✨ Revisão automática LIGADA.' : '✨ Revisão automática desligada.', ephemeral: true }).catch(() => {});
+      });
+    }
     if (acao === 'abrirmenu') {
       // Defer PRIMEIRO (ACK instantâneo, sem arquivo) e só depois editReply com o brasão: o
       // upload do anexo junto do reply passava dos 3s no host (Railway trial, latência US-West)
@@ -705,6 +733,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'forcardenuncia') return supervisao.abrirModalForcarDenuncia(interaction);
     if (acao === 'forcardenunciadireto') return supervisao.abrirModalForcarDenunciaDireto(interaction, extra);
     if (acao === 'manterarquivamento') return supervisao.abrirModalManterArquivamento(interaction, extra);
+    if (acao === 'designarjulgador') return supervisao.abrirModalDesignarJulgador(interaction, extra);
     if (acao === 'filas') return supervisao.filasPendentes(interaction);
   }
 
@@ -722,6 +751,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'vincularmanual') return peticaoCmd.abrirModalVincularManual(interaction, extra);
     if (acao === 'certidao') return peticaoCmd.solicitarCertidaoDaPeticao(interaction, extra);
     if (acao === 'anexardocumento') return peticaoCmd.anexarDocumentoPeticao(interaction, extra);
+    if (acao === 'reabrir') return peticaoCmd.reabrirCaso(interaction, extra);
   }
 
   if (modulo === 'ficha') {
@@ -734,7 +764,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
 
   if (modulo === 'medida') {
     if (acao === 'solicitar') {
-      if (!temCargo(interaction, 'Delegado')) return interaction.reply({ content: 'Só Delegados podem solicitar medida provisória.', ephemeral: true });
+      if (!temCargo(interaction, 'Delegado')) return interaction.reply({ content: 'Só Delegados podem solicitar medida cautelar.', ephemeral: true });
       const row = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder().setCustomId('painel:select:medida:tipo').setPlaceholder('Tipo de medida')
           .addOptions(medidaCmd.TIPOS_MEDIDA.map((t, i) => ({ label: t, value: String(i) }))),
@@ -742,8 +772,11 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
       return interaction.update({ embeds: [new EmbedBuilder().setColor(0xe67e22).setDescription('Qual o tipo de medida?')], components: [row, botaoVoltar()] });
     }
     if (acao === 'ver') return abrirModalVerNumero(interaction, 'medida');
-    if (acao === 'listar') return listarEResponder(interaction, 'medidas', embedListaMedidas);
+    if (acao === 'listar') return listarEResponder(interaction, 'medidas', medidaCmd.embedListaMedidas);
     if (acao === 'negarjuiz') return medidaCmd.abrirModalNegarJuiz(interaction, extra);
+    if (acao === 'revisarfund') return medidaCmd.revisarFundMedida(interaction, extra);
+    if (acao === 'publicarfund') return medidaCmd.executarDecisaoMedida(interaction, extra, false);
+    if (acao === 'usarrevisadofund') return medidaCmd.executarDecisaoMedida(interaction, extra, true);
     if (acao === 'pedirreconsideracao') return medidaCmd.pedirReconsideracao(interaction, extra);
     if (acao === 'decidirreconsideracao') return medidaCmd.decidirReconsideracao(interaction, extra);
     if (acao === 'pedirreconsideracaojuiz') return medidaCmd.pedirReconsideracaoJuiz(interaction, extra);
@@ -755,7 +788,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
 
   if (modulo === 'mandado') {
     if (acao === 'ver') return abrirModalVerNumero(interaction, 'mandado');
-    if (acao === 'listar') return listarEResponder(interaction, 'mandados', embedListaMandados);
+    if (acao === 'listar') return listarEResponder(interaction, 'mandados', mandadoCmd.embedListaMandados);
     if (acao === 'emitir') return mandadoCmd.abrirSelectTipo(interaction, extra);
   }
 
@@ -1065,10 +1098,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   }
 
   if (modulo === 'crimepick' && acao === 'buscar') {
-    const termo = interaction.fields.getTextInputValue('termo').toLowerCase();
-    const resultados = crimes
-      .filter(c => c.nome.toLowerCase().includes(termo) || c.codigo_artigo.toLowerCase().includes(termo) || c.id.includes(termo))
-      .slice(0, 25);
+    const resultados = buscarCrimes(interaction.fields.getTextInputValue('termo'));
     if (resultados.length === 0) return interaction.reply({ content: 'Nenhum crime encontrado com esse termo. Tente de novo.', ephemeral: true });
     return interaction.reply({ content: `${resultados.length} resultado(s) — selecione um ou mais:`, components: [crimePicker.selectResultados(resultados)], ephemeral: true });
   }
@@ -1077,20 +1107,6 @@ async function tratarModal(interaction, modulo, acao, extra) {
   // pendente e manda pro canal da staff. `acao` aqui é 'solicitar', `extra` é o cargo escolhido.
   if (modulo === 'cargo' && acao === 'solicitar') {
     return rhCmd.solicitarCargo(interaction, extra);
-  }
-
-  // ✨ Revisar texto (IA): corrige a forma e mostra antes→depois, sem alterar nada sozinho.
-  if (modulo === 'revisar' && acao === 'texto') {
-    const original = interaction.fields.getTextInputValue('texto');
-    await interaction.deferReply({ ephemeral: true });
-    const revisado = await cartorio.revisarTexto(original);
-    if (!revisado) {
-      return interaction.editReply({ content: '⚠️ A revisão por IA não está disponível agora (chave não configurada ou falha na API). Seu texto original está preservado — nada foi alterado.' });
-    }
-    const bloco = (t) => truncar(t.replace(/\n/g, '\n> '), 900);
-    return interaction.editReply({
-      content: `**📄 Original:**\n> ${bloco(original)}\n\n**✨ Revisado:**\n> ${bloco(revisado)}\n\n*Copie a versão que preferir — a IA só corrige a forma; nada foi alterado automaticamente.*`,
-    });
   }
 
   if (modulo === 'processo' && acao === 'partetardia') {
@@ -1123,7 +1139,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   }
 
   if (modulo === 'processo' && acao === 'recorrer') {
-    return processoCmd.criarApelacao(interaction, extra);
+    return processoCmd.confirmarRazoes(interaction, extra);
   }
 
   if (modulo === 'processo' && acao === 'documentoexternodestino') {
@@ -1147,6 +1163,10 @@ async function tratarModal(interaction, modulo, acao, extra) {
 
   if (modulo === 'supervisao' && acao === 'trocarjuiz') {
     return supervisao.trocarJuiz(interaction);
+  }
+
+  if (modulo === 'supervisao' && acao === 'designarjulgador') {
+    return supervisao.designarJulgador(interaction, extra);
   }
 
   if (modulo === 'supervisao' && acao === 'trocarpromotor') {
@@ -1175,21 +1195,18 @@ async function tratarModal(interaction, modulo, acao, extra) {
 
   if (modulo === 'apelacao' && acao === 'reformar') {
     const [numeroApelacao, novoResultado] = extra.split('#');
-    return processoCmd.finalizarApelacao(interaction, numeroApelacao, 'reformar', {
-      novoResultado, fundamentacao: interaction.fields.getTextInputValue('fundamentacao'),
-    });
+    // Não finaliza direto: oferece a revisão por IA da fundamentação antes de publicar o acórdão.
+    return processoCmd.confirmarAcordao(interaction, numeroApelacao, 'reformar', { novoResultado });
   }
 
   if (modulo === 'apelacao' && acao === 'decidir') {
     const [numeroApelacao, decisao] = extra.split('#');
-    return processoCmd.finalizarApelacao(interaction, numeroApelacao, decisao, {
-      fundamentacao: interaction.fields.getTextInputValue('fundamentacao'),
-    });
+    return processoCmd.confirmarAcordao(interaction, numeroApelacao, decisao, {});
   }
 
   if (modulo === 'medida' && acao === 'aprovarmp') return medidaCmd.processarAprovacaoMP(interaction, extra);
-  if (modulo === 'medida' && acao === 'referendar') return medidaCmd.processarReferendo(interaction, extra);
-  if (modulo === 'medida' && acao === 'negarjuiz') return medidaCmd.negarJuiz(interaction, extra);
+  if (modulo === 'medida' && acao === 'referendar') return medidaCmd.confirmarDecisaoMedida(interaction, extra, 'referendo');
+  if (modulo === 'medida' && acao === 'negarjuiz') return medidaCmd.confirmarDecisaoMedida(interaction, extra, 'negativa');
 
   if (modulo === 'peticao' && acao === 'porte-arma') return peticaoCmd.processarModalPorteArma(interaction);
   if (modulo === 'peticao' && acao === 'troca-nome') return peticaoCmd.processarModalTrocaNome(interaction);
@@ -1215,6 +1232,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
     const numero = interaction.fields.getTextInputValue('numero');
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
+    if (!medidaCmd.temAcessoMedida(interaction, medida)) return interaction.reply({ content: 'Você não tem acesso ao teor desta medida — ela é sigilosa (fase de inquérito). Só as partes (Delegado/Promotor/Juiz) e a Staff podem consultá-la.', ephemeral: true });
     return interaction.reply({ embeds: [medidaCmd.embedMedida(medida)], ephemeral: true });
   }
 
@@ -1236,6 +1254,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
     const numero = interaction.fields.getTextInputValue('numero');
     const mandado = db.buscarPorNumero('mandados', numero);
     if (!mandado) return interaction.reply({ content: 'Mandado não encontrado.', ephemeral: true });
+    if (!mandadoCmd.temAcessoMandado(interaction, mandado)) return interaction.reply({ content: 'Você não tem acesso ao teor deste mandado — só quem o emitiu, as partes do caso vinculado e a Staff podem consultá-lo.', ephemeral: true });
     return interaction.reply({ embeds: [mandadoCmd.embedMandado(mandado)], ephemeral: true });
   }
 
@@ -1261,10 +1280,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   }
 
   if (modulo === 'crime' && acao === 'buscar') {
-    const termo = interaction.fields.getTextInputValue('termo').toLowerCase();
-    const resultados = crimes
-      .filter(c => c.nome.toLowerCase().includes(termo) || c.codigo_artigo.toLowerCase().includes(termo) || c.id.includes(termo))
-      .slice(0, 25);
+    const resultados = buscarCrimes(interaction.fields.getTextInputValue('termo'));
     if (resultados.length === 0) return interaction.reply({ content: 'Nenhum crime encontrado.', ephemeral: true });
     if (resultados.length === 1) return interaction.reply({ embeds: [crimeCmd.embedCrime(resultados[0])], ephemeral: true });
 
@@ -1353,31 +1369,6 @@ async function router(interaction) {
 // Deixa uma única mensagem fixa no canal configurado, sempre a mesma (edita em vez de
 // duplicar a cada restart) — os botões respondem sempre de forma ephemeral (só quem clicou
 // vê), então o canal nunca enche de mensagem por trás de ninguém usando o painel.
-// Apaga tudo do canal do painel que não for a mensagem fixa — sem isso, qualquer coisa que
-// vaze pra lá (ex: uma versão antiga do bot que não achou a mensagem fixa e mandou uma nova)
-// fica acumulando pra sempre. bulkDelete só cobre mensagens de até 14 dias; o resto cai no
-// fallback de apagar uma por uma.
-async function limparCanalPainel(canal, manterId) {
-  const CATORZE_DIAS_MS = 14 * 24 * 60 * 60 * 1000;
-  let antesDe;
-  while (true) {
-    const lote = await canal.messages.fetch({ limit: 100, ...(antesDe ? { before: antesDe } : {}) }).catch(() => null);
-    if (!lote || lote.size === 0) break;
-
-    const paraApagar = lote.filter(m => m.id !== manterId);
-    if (paraApagar.size > 0) {
-      const agora = Date.now();
-      const recentes = paraApagar.filter(m => agora - m.createdTimestamp < CATORZE_DIAS_MS);
-      const antigas = paraApagar.filter(m => agora - m.createdTimestamp >= CATORZE_DIAS_MS);
-      if (recentes.size > 0) await canal.bulkDelete(recentes).catch(() => {});
-      for (const m of antigas.values()) await m.delete().catch(() => {});
-    }
-
-    if (lote.size < 100) break;
-    antesDe = lote.last().id;
-  }
-}
-
 async function postarPainelFixo(guild, client) {
   if (!config.canalPainelId) return;
   const canal = await guild.channels.fetch(config.canalPainelId).catch(() => null);
@@ -1432,16 +1423,9 @@ async function postarPainelFixo(guild, client) {
     }
   }
 
-  // A limpeza automática do canal (apagar tudo que não fosse a mensagem fixa, a cada restart
-  // e a cada 10min) foi DESLIGADA a pedido do operador — apagava mensagem de verdade que
-  // alguém tinha postado no canal. limparCanalPainel continua definida abaixo, sem uso, caso
-  // o operador queira reativar no futuro — mas nenhuma chamada automática dispara mais.
-}
-
-// DESLIGADA — não é mais chamada por postarPainelFixo nem pelo job frequente (index.js).
-// Mantida só pra não perder a implementação, caso precise reativar.
-async function limparCanalPainelPeriodico(guild) {
-  return;
+  // A limpeza automática do canal (apagar tudo que não fosse a mensagem fixa, a cada restart e a
+  // cada 10min) foi DESLIGADA a pedido do operador — apagava mensagem de verdade que alguém tinha
+  // postado no canal. A dedup acima (apagar só painéis duplicados DO BOT) é o que sobrou.
 }
 
 module.exports = {
@@ -1453,5 +1437,4 @@ module.exports = {
 
   router,
   postarPainelFixo,
-  limparCanalPainelPeriodico,
 };

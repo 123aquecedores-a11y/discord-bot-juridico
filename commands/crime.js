@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const crimes = require('../data/crimes.json');
-const { penaTexto, crimeLabel } = require('../utils/crimesTexto');
+const { penaTexto, crimeLabel, buscarCrimes } = require('../utils/crimesTexto');
 
 function embedCrime(crime) {
   return new EmbedBuilder()
@@ -36,11 +36,8 @@ module.exports = {
   },
 
   async autocomplete(interaction) {
-    const foco = interaction.options.getFocused().toLowerCase();
-    const resultados = crimes
-      .filter(c => c.nome.toLowerCase().includes(foco) || c.codigo_artigo.toLowerCase().includes(foco) || c.id.includes(foco))
-      .slice(0, 25)
-      .map(c => ({ name: crimeLabel(c).slice(0, 100), value: c.id }));
+    const foco = interaction.options.getFocused();
+    const resultados = buscarCrimes(foco).map(c => ({ name: crimeLabel(c).slice(0, 100), value: c.id }));
     await interaction.respond(resultados);
   },
 

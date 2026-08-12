@@ -2,7 +2,7 @@ const config = require('../config');
 
 // Log de tudo que muda estado relevante no bot: RH, processos, medidas, habilitações,
 // apelações, petições, ofícios, supervisão. Nunca derruba a ação principal se o canal
-// estiver mal configurado, só avisa no console (mesmo padrão do Diário Oficial).
+// estiver mal configurado, só avisa no console (mesmo padrão do canal "Advogar - Pegar Casos").
 async function registrar(guild, { acao, executorId, referencia, motivo }) {
   if (!config.canalAuditoriaId) return;
   const canal = await guild.channels.fetch(config.canalAuditoriaId).catch(() => null);

@@ -11,4 +11,15 @@ function crimeLabel(crime) {
   return `${crime.nome} (Art. ${crime.codigo_artigo})`;
 }
 
-module.exports = { penaTexto, crimeLabel };
+// Busca de crime por nome/artigo/id — mesma regra usada no autocomplete de /crime, no modal de
+// busca do /painel e no crimePicker. Estava copiada em 3 lugares (Frente 4a.2); agora é fonte
+// única. Retorna a lista (até `limite`) dos crimes que casam com o termo.
+const crimes = require('../data/crimes.json');
+function buscarCrimes(termo, limite = 25) {
+  const t = (termo || '').toLowerCase();
+  return crimes
+    .filter(c => c.nome.toLowerCase().includes(t) || c.codigo_artigo.toLowerCase().includes(t) || c.id.includes(t))
+    .slice(0, limite);
+}
+
+module.exports = { penaTexto, crimeLabel, buscarCrimes };

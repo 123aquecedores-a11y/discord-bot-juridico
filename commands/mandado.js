@@ -2,7 +2,7 @@ const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, Butt
 const db = require('../database/db');
 const { truncar } = require('../utils/texto');
 const { proximoNumero } = require('../utils/numeracao');
-const { isSuperStaff } = require('../utils/permissoes');
+const { isSuperStaff, isAdmin } = require('../utils/permissoes');
 const documentos = require('../utils/documentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const anexos = require('../utils/anexos');
@@ -35,8 +35,34 @@ function embedMandado(mandado) {
     );
 }
 
+// Frente 4a.5 — embed da listagem de mandados, fonte única (era duplicado no /painel e no /mandado listar).
+function embedListaMandados(rows) {
+  return new EmbedBuilder().setTitle('📜 Mandados').setColor(0x2ecc71)
+    .setDescription(rows.map(m => `**${m.numero}** — ${m.tipo} — *${m.status}*`).join('\n'));
+}
+
+// Frente 2.2 — sigilo: só quem emitiu, as partes da medida/processo vinculado e a Staff veem o
+// teor do mandado. Sem isso o `embedMandado` (tipo + alvo) vazava pra qualquer um com o número.
+function temAcessoMandado(interaction, mandado) {
+  if (isAdmin(interaction) || isSuperStaff(interaction)) return true;
+  const uid = interaction.user.id;
+  if (uid === mandado.emitidoPor) return true;
+  if (mandado.medidaNumero) {
+    const m = db.buscarPorNumero('medidas', mandado.medidaNumero);
+    if (m && [m.delegado, m.promotor, m.juiz].filter(Boolean).includes(uid)) return true;
+  }
+  if (mandado.processoVinculado) {
+    const p = db.buscarPorNumero('processos', mandado.processoVinculado);
+    if (p) {
+      if ([p.delegado, p.promotor, p.juiz, p.autor].filter(Boolean).includes(uid)) return true;
+      if ((p.habilitacoes || []).some(h => h.status === 'Aprovado' && h.advogadoId === uid)) return true;
+    }
+  }
+  return false;
+}
+
 // ---- Emissão direta pelo Juiz, de dentro do processo (painel-contexto-e-tipo-mandado.md, 3.1) ----
-// Diferente do mandado nascido de medida provisória (Delegado → MP → Juiz referenda): aqui o
+// Diferente do mandado nascido de medida cautelar (Delegado → MP → Juiz referenda): aqui o
 // Juiz já tem autoridade e o processo já existe, então emite sem etapa de aprovação nenhuma.
 
 function botaoEmitirMandado(numero) {
@@ -191,7 +217,7 @@ async function emitirMandadoNoProcesso({ guild, processo, tipoRotulo, teor, emit
 }
 
 // Mandados nascem de duas formas: automaticamente quando um Juiz referenda uma medida
-// provisória (commands/medida.js -> referendar), ou emitidos direto pelo Juiz de dentro de um
+// cautelar (commands/medida.js -> referendar), ou emitidos direto pelo Juiz de dentro de um
 // processo penal já aberto (acima). Consulta e listagem seguem valendo pros dois casos.
 module.exports = {
   data: new SlashCommandBuilder()
@@ -212,20 +238,19 @@ module.exports = {
       const numero = interaction.options.getString('numero');
       const mandado = db.buscarPorNumero('mandados', numero);
       if (!mandado) return interaction.reply({ content: 'Mandado não encontrado.', ephemeral: true });
-      return interaction.reply({ embeds: [embedMandado(mandado)] });
+      if (!temAcessoMandado(interaction, mandado)) return interaction.reply({ content: 'Você não tem acesso ao teor deste mandado — só quem o emitiu, as partes do caso vinculado e a Staff podem consultá-lo.', ephemeral: true });
+      return interaction.reply({ embeds: [embedMandado(mandado)], ephemeral: true });
     }
 
     if (sub === 'listar') {
       const status = interaction.options.getString('status');
       const rows = db.todos('mandados', status ? m => m.status === status : null).slice(0, 15);
       if (rows.length === 0) return interaction.reply({ content: 'Nenhum mandado encontrado.', ephemeral: true });
-      const embed = new EmbedBuilder().setTitle('📜 Mandados').setColor(0x2ecc71)
-        .setDescription(rows.map(m => `**${m.numero}** — ${m.tipo} — *${m.status}*`).join('\n'));
-      return interaction.reply({ embeds: [embed] });
+      return interaction.reply({ embeds: [embedListaMandados(rows)], ephemeral: true });
     }
   },
 
-  embedMandado,
+  embedMandado, temAcessoMandado, embedListaMandados,
   botaoEmitirMandado,
   abrirSelectTipo,
   processarSelecaoTipo,

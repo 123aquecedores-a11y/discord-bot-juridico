@@ -16,7 +16,7 @@ const cruzamento = require('../utils/cruzamento');
 const auditoria = require('../utils/auditoria');
 const { proximoNumero } = require('../utils/numeracao');
 const { isAdmin, temCargo } = require('../utils/permissoes');
-const { truncar } = require('../utils/texto');
+const { truncar, extrairMencaoOuId } = require('../utils/texto');
 
 const TIPO_LABEL = { PorteArma: 'Porte de Arma', TrocaNome: 'Troca de Nome', LimpezaFicha: 'Limpeza de Ficha' };
 
@@ -98,7 +98,7 @@ function embedFicha(registro) {
   }
   if (medidas.length > 0) {
     embed.addFields({
-      name: `Medidas provisórias como alvo (${medidas.length})`,
+      name: `Medidas cautelares como alvo (${medidas.length})`,
       value: truncar(medidas.map(m => `• ${m.numero} (${m.tipo}) — *${m.status}*`).join('\n')),
     });
   }
@@ -165,14 +165,6 @@ function abrirModalConsultaDiscordId(interaction) {
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('discord').setLabel('ID ou @menção do Discord').setStyle(TextInputStyle.Short).setRequired(true)),
   );
   return interaction.showModal(modal);
-}
-
-function extrairMencaoOuId(texto) {
-  if (!texto) return null;
-  const t = texto.trim();
-  const m = t.match(/^<@!?(\d+)>$/);
-  if (m) return m[1];
-  return /^\d{15,25}$/.test(t) ? t : null;
 }
 
 // Busca livre — não precisa de RG nem Discord: acha pela pessoa a partir de qualquer nome
