@@ -404,9 +404,9 @@ function abrirModalProcessoCivil(interaction) {
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome_acao').setLabel('Nome da ação').setPlaceholder('Ex: Ação indenizatória de perdas e danos').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('autor_nome').setLabel('Nome completo do autor').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('autor_discord').setLabel('Menção @ do autor (opcional)').setPlaceholder('Deixe vazio se o autor não tem Discord').setStyle(TextInputStyle.Short).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('autor_rg').setLabel('RG do autor').setPlaceholder('Ex: 12.345.678-9').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_nome').setLabel('Nome completo do réu').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_discord').setLabel('Menção @ do réu (opcional)').setPlaceholder('Deixe vazio se o réu não tem Discord').setStyle(TextInputStyle.Short).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_rg').setLabel('RG do réu').setPlaceholder('Ex: 98.765.432-1').setStyle(TextInputStyle.Short).setRequired(true)),
   );
   return interaction.showModal(modal);
 }
@@ -1042,19 +1042,18 @@ async function tratarModal(interaction, modulo, acao, extra) {
   }
 
   if (modulo === 'processo' && acao === 'civil') {
-    // Discord de autor/réu agora é OPCIONAL (Parte 2) — a parte é identificada pelo nome
-    // (obrigatório no modal). Se vier menção, aproveita; se não, segue só com o nome.
-    const autorDiscordId = processoCmd.extrairMencoes(interaction.fields.getTextInputValue('autor_discord') || '')[0] || null;
-    const reuDiscordId = processoCmd.extrairMencoes(interaction.fields.getTextInputValue('reu_discord') || '')[0] || null;
-
+    // Registro principal da parte = Nome + RG (Parte 2). Discord fica opcional e é vinculado
+    // depois (habilitação/parte tardia), pra não estourar o limite de 5 campos do modal.
     await interaction.deferReply({ ephemeral: true });
     const resultado = await processoCmd.criarProcessoCivil({
       guild: interaction.guild, advogadoId: interaction.user.id,
       nomeAcao: interaction.fields.getTextInputValue('nome_acao'),
       autorNome: interaction.fields.getTextInputValue('autor_nome'),
-      autorDiscordId,
+      autorRg: interaction.fields.getTextInputValue('autor_rg'),
+      autorDiscordId: null,
       reuNome: interaction.fields.getTextInputValue('reu_nome'),
-      reuDiscordId,
+      reuRg: interaction.fields.getTextInputValue('reu_rg'),
+      reuDiscordId: null,
     });
     return respostaSumindo(interaction, { content: `Processo civil ${resultado.numero} aberto em ${resultado.canal}.` });
   }

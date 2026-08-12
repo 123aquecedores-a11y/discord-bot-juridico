@@ -33,19 +33,19 @@ function adicionarParte(numero, { papel, nome = null, discordId = null, rg = nul
 // Usado só na abertura do processo — o registro ainda não existe no banco nesse momento (quem
 // chama isso monta a lista e passa direto no payload do db.inserir), então os ids nascem
 // sequenciais a partir de uma lista vazia, sem precisar consultar nada.
-function espelharPartesDaAbertura({ reus = [], reuNome = null, autorId = null, autorNome = null, adicionadoPor }) {
+function espelharPartesDaAbertura({ reus = [], reuNome = null, reuRg = null, autorId = null, autorNome = null, autorRg = null, adicionadoPor }) {
   const agora = new Date().toISOString();
   const partes = [];
   for (const discordId of reus) {
-    partes.push({ papel: 'reu', nome: reuNome, discordId, rg: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
+    partes.push({ papel: 'reu', nome: reuNome, discordId, rg: reuRg, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
   }
-  // Réu só por nome (sem Discord — Parte 2): mesmo sem id no array `reus`, ele precisa virar
+  // Réu só por nome/RG (sem Discord — Parte 2): mesmo sem id no array `reus`, ele precisa virar
   // parte pra aparecer na lista de destinatários de intimação/mandado (igual ao autor abaixo).
-  if (reus.length === 0 && reuNome) {
-    partes.push({ papel: 'reu', nome: reuNome, discordId: null, rg: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
+  if (reus.length === 0 && (reuNome || reuRg)) {
+    partes.push({ papel: 'reu', nome: reuNome, discordId: null, rg: reuRg, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
   }
-  if (autorId || autorNome) {
-    partes.push({ papel: 'autor', nome: autorNome, discordId: autorId || null, rg: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
+  if (autorId || autorNome || autorRg) {
+    partes.push({ papel: 'autor', nome: autorNome, discordId: autorId || null, rg: autorRg, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
   }
   return partes.map((p, i) => ({ id: `p${i + 1}`, ...p }));
 }

@@ -408,8 +408,9 @@ const CATALOGO_ACOES = [
 // compatibilidade com quem já as chama direto, mas passam a ser espelho deste catálogo.
 function montarPainelAcoes(processo) {
   if (STATUS_TERMINAIS_PAINEL.includes(processo.status)) return [];
-  if (!faseDenunciaMp(processo) && !faseComJuiz(processo)) return []; // civil sem juiz ainda (raro)
-
+  // Sem early-return pra civil-sem-juiz: o catálogo já filtra por `quando()`, então as ações de
+  // Juiz não aparecem, mas as UNIVERSAIS (grupo 2: Peticionar/Histórico/Solicitar documento)
+  // continuam disponíveis pro Advogado enquanto o juiz não é sorteado (antes o painel ficava vazio).
   const aplicaveis = CATALOGO_ACOES.filter(a => a.quando(processo));
   const porGrupo = new Map();
   for (const acao of aplicaveis) {
@@ -652,7 +653,7 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
 // enviada no momento de abrir (Discord não permite anexo em modal, e pedir no slash command
 // tirava a abertura do fluxo por botão). Autor não precisa comprovar identidade: abrir o
 // processo já é prova suficiente de autoria.
-async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, autorDiscordId, reuNome, reuDiscordId }) {
+async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, autorRg = null, autorDiscordId = null, reuNome, reuRg = null, reuDiscordId = null }) {
   const numero = proximoNumero(db, 'processos', 'CV', p => p.tipo === 'Civil');
   // Discord de autor/réu agora é OPCIONAL (Parte 2): a parte pode existir só com nome (RG+nome
   // é o registro principal). Filtra os nulos pra não tentar adicionar "null" como membro do
@@ -672,13 +673,13 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
   db.inserir('processos', {
     numero, tipo: 'Civil', status: juizId ? 'Aguardando defesa' : 'Aguardando sorteio de juiz',
     crimes: [], motivo: nomeAcao,
-    autorNome, autorDiscordId, reuNome,
+    autorNome, autorRg, autorDiscordId, reuNome, reuRg,
     reus, advogados: [advogadoId], delegado: null, promotor: null, juiz: juizId,
     juizDesde: juizId ? new Date().toISOString() : null,
     canalId: canal.id, medidaVinculada: null, sentenca: null, autor: advogadoId,
     // Registro unificado de partes (spec-atualizacoes-bot-juridico.md, seção 0) — autor e réu já
-    // nascem espelhados aqui também, sem substituir autorNome/reuNome/reus.
-    partes: partesProcesso.espelharPartesDaAbertura({ reus, reuNome, autorId: autorDiscordId, autorNome, adicionadoPor: advogadoId }),
+    // nascem espelhados aqui também (com RG), sem substituir autorNome/reuNome/reus.
+    partes: partesProcesso.espelharPartesDaAbertura({ reus, reuNome, reuRg, autorId: autorDiscordId, autorNome, autorRg, adicionadoPor: advogadoId }),
   });
 
   const processo = db.buscarPorNumero('processos', numero);
@@ -1814,6 +1815,18 @@ async function criarApelacao(interaction, numero) {
   );
   await canal.send({ content: `<@${desembargadorId}>`, embeds: [embed], components: [botoes] });
 
+  // Resumo do caso pela IA "cartório" pro Desembargador relator (best-effort) — explica os autos,
+  // a sentença recorrida e as razões, pra ele se situar rápido. Fallback gracioso se a IA off.
+  const crimesTxt = (processo.crimes || []).map(c => crimeLabel(c)).join(', ') || (processo.motivo || '—');
+  const resumoFatos = [
+    `Processo ${processo.tipo} ${numero}.`,
+    processo.tipo === 'Penal' ? `Crime(s): ${crimesTxt}.` : `Ação: ${processo.motivo || '—'}.`,
+    processo.resultado ? `Sentença recorrida: ${processo.resultado}${processo.pena ? `, pena ${processo.pena}${processo.regime ? `, regime ${processo.regime}` : ''}` : ''}.` : 'Sem resultado registrado.',
+    processo.sentenca ? `Fundamentação da sentença: ${truncar(processo.sentenca, 500)}` : null,
+  ].filter(Boolean).join(' ');
+  const despachoRelator = await cartorio.despachoParaCanal({ tipoAto: 'apelação (resumo para o relator)', textoLivre: razoes, resumoFatos }).catch(() => null);
+  if (despachoRelator) await canal.send({ content: despachoRelator }).catch(() => {});
+
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'apelacao', titulo: `⚖️ Apelação ${numeroApelacao} interposta`,
     detalhe: razoes, executorId: recorrenteId, metadata: { apelacaoNumero: numeroApelacao },
@@ -1934,8 +1947,24 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
   }
 
   const textoDoc = documentos.textoAcordao({ apelacao, decisaoTexto: extras.fundamentacao, statusFinal });
+
+  // PNG do acórdão — todo ato decisório final gera documento em imagem (igual à sentença). O
+  // acórdão do Desembargador era o único que saía só em texto.
+  const nomeDes = await documentoPng.nomeExibicao(interaction.guild, interaction.user.id);
+  const corpoAcordao = [
+    `A Câmara, apreciando o recurso ${numeroApelacao} (processo ${apelacao.processoOriginalNumero}), decide: sentença ${statusFinal.toUpperCase()}.`,
+    extras.novoResultado ? `Novo resultado: ${extras.novoResultado}.` : null,
+    extras.fundamentacao ? `\nFundamentação do relator:\n${extras.fundamentacao}` : null,
+  ].filter(Boolean).join('\n');
+  const pngAcordao = await documentoPng.gerarDocumentoPNG({
+    tipoDocumento: 'acordao', orgaoEmissor: 'judiciario', subunidade: 'Tribunal de Justiça — Câmara de Apelação',
+    tituloDocumento: 'ACÓRDÃO', numeroProcesso: apelacao.processoOriginalNumero, dataEmissao: documentos.dataExtenso(),
+    destinatario: 'Autos', corpoTexto: corpoAcordao, nomeAssinante: nomeDes, cargoAssinante: 'Desembargador(a) Relator(a)',
+  }).catch(err => { console.error('Falha ao gerar PNG do acórdão:', err.message); return null; });
+  const anexoAcordao = pngAcordao ? { files: [{ attachment: pngAcordao, name: `Acordao-${numeroApelacao}.png` }] } : {};
+
   if (interaction.channel) {
-    await interaction.channel.send({ content: textoDoc });
+    await interaction.channel.send({ content: textoDoc, ...anexoAcordao });
     // Apelação decidida é resolução final dela mesma — trava o canal, mesmo quando anula
     // (a continuação do caso acontece no canal do processo original, não aqui).
     await canais.arquivarCanal(interaction.channel);
@@ -1948,6 +1977,7 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
       await canalOriginal.send({
         content: `📋 Resultado do recurso ${numeroApelacao}:\n\n${textoDoc}`,
         embeds: [embedProcesso(processoAtualizado)],
+        ...anexoAcordao,
       });
     }
     await postarOuAtualizarDiario(interaction.guild, processoOriginal.numero);
