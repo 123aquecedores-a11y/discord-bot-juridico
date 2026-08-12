@@ -14,7 +14,13 @@ function isAdmin(interaction) {
 }
 
 function temCargo(interaction, cargo) {
-  if (isAdmin(interaction)) return true;
+  // Frente 6: Administrator do Discord NÃO age mais como cargo jurídico — fechava o furo de
+  // qualquer admin/dono conseguir agir como Delegado/Promotor/Juiz/etc. sem ter a role de RP.
+  // Staff DE VERDADE continua podendo (pela role TRIBUNAL/staffRoleId ou Staff Salve/SuperStaff),
+  // pra conseguir administrar e contratar depois do reset. isAdmin/isSuperStaff seguem intactos.
+  if (!interaction.member) return rh.temCargo(interaction.user.id, cargo);
+  if (config.staffRoleId && interaction.member.roles.cache.has(config.staffRoleId)) return true;
+  if (isSuperStaff(interaction)) return true;
   return rh.temCargo(interaction.user.id, cargo);
 }
 
