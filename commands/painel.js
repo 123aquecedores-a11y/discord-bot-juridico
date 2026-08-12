@@ -393,9 +393,9 @@ function abrirModalProcessoCivil(interaction) {
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome_acao').setLabel('Nome da ação').setPlaceholder('Ex: Ação indenizatória de perdas e danos').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('autor_nome').setLabel('Nome completo do autor').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('autor_discord').setLabel('Menção @ do autor').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('autor_discord').setLabel('Menção @ do autor (opcional)').setPlaceholder('Deixe vazio se o autor não tem Discord').setStyle(TextInputStyle.Short).setRequired(false)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_nome').setLabel('Nome completo do réu').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_discord').setLabel('Menção @ do réu').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_discord').setLabel('Menção @ do réu (opcional)').setPlaceholder('Deixe vazio se o réu não tem Discord').setStyle(TextInputStyle.Short).setRequired(false)),
   );
   return interaction.showModal(modal);
 }
@@ -1021,11 +1021,10 @@ async function tratarModal(interaction, modulo, acao, extra) {
   }
 
   if (modulo === 'processo' && acao === 'civil') {
-    const autorDiscordId = processoCmd.extrairMencoes(interaction.fields.getTextInputValue('autor_discord'))[0];
-    const reuDiscordId = processoCmd.extrairMencoes(interaction.fields.getTextInputValue('reu_discord'))[0];
-    if (!autorDiscordId || !reuDiscordId) {
-      return interaction.reply({ content: 'Marque autor e réu com @menção (selecione a pessoa na lista do Discord ao digitar @).', ephemeral: true });
-    }
+    // Discord de autor/réu agora é OPCIONAL (Parte 2) — a parte é identificada pelo nome
+    // (obrigatório no modal). Se vier menção, aproveita; se não, segue só com o nome.
+    const autorDiscordId = processoCmd.extrairMencoes(interaction.fields.getTextInputValue('autor_discord') || '')[0] || null;
+    const reuDiscordId = processoCmd.extrairMencoes(interaction.fields.getTextInputValue('reu_discord') || '')[0] || null;
 
     await interaction.deferReply({ ephemeral: true });
     const resultado = await processoCmd.criarProcessoCivil({

@@ -642,16 +642,19 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
 // processo já é prova suficiente de autoria.
 async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, autorDiscordId, reuNome, reuDiscordId }) {
   const numero = proximoNumero(db, 'processos', 'CV', p => p.tipo === 'Civil');
-  const reus = [reuDiscordId];
+  // Discord de autor/réu agora é OPCIONAL (Parte 2): a parte pode existir só com nome (RG+nome
+  // é o registro principal). Filtra os nulos pra não tentar adicionar "null" como membro do
+  // canal nem excluir null do sorteio.
+  const reus = [reuDiscordId].filter(Boolean);
 
   const canal = await canais.criarCanalTicket(guild, {
     categoriaId: config.categoriaProcessosCiveisId, prefixo: 'processo', numero,
-    membros: [...new Set([advogadoId, autorDiscordId, reuDiscordId])], bloquearConversa: true,
+    membros: [...new Set([advogadoId, autorDiscordId, reuDiscordId].filter(Boolean))], bloquearConversa: true,
   });
 
   // Exclui não só o advogado que abriu, mas autor e réu de verdade — nada impede que a mesma
   // conta que joga de Juiz também seja autor/réu numa causa civil pessoal dela.
-  const juizId = rh.sortearJuiz({ excluirIds: [advogadoId, autorDiscordId, reuDiscordId] });
+  const juizId = rh.sortearJuiz({ excluirIds: [advogadoId, autorDiscordId, reuDiscordId].filter(Boolean) });
   if (juizId) await canais.adicionarMembro(canal, juizId);
 
   db.inserir('processos', {
@@ -1084,8 +1087,8 @@ async function processarSelecaoPapelParteTardia(interaction, numero) {
   const papel = interaction.values[0];
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:partetardia:${numero}#${papel}`).setTitle(`Adicionar ${ROTULO_PAPEL_PARTE[papel]}`.slice(0, 45));
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mencao').setLabel('Menção @ Discord').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nomeCompleto').setLabel('Nome completo (opcional)').setStyle(TextInputStyle.Short).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nomeCompleto').setLabel('Nome completo da parte').setStyle(TextInputStyle.Short).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mencao').setLabel('Menção @ Discord (opcional)').setPlaceholder('Vazio se a pessoa não tem Discord').setStyle(TextInputStyle.Short).setRequired(false)),
   );
   return interaction.showModal(modal);
 }
@@ -1098,17 +1101,32 @@ async function confirmarParteTardia(interaction, chave) {
     return interaction.reply({ content: 'Você não tem permissão pra adicionar parte a este processo.', ephemeral: true });
   }
 
-  const nomeCompleto = interaction.fields.getTextInputValue('nomeCompleto') || null;
-  const discordId = extrairMencoes(interaction.fields.getTextInputValue('mencao'))[0];
-  if (!discordId) return interaction.reply({ content: 'Marque a parte com @menção válida do Discord.', ephemeral: true });
+  const nomeCompleto = (interaction.fields.getTextInputValue('nomeCompleto') || '').trim() || null;
+  const discordId = extrairMencoes(interaction.fields.getTextInputValue('mencao') || '')[0] || null;
+  // Discord opcional (Parte 2): basta o nome. Só barra se não veio nem nome nem menção.
+  if (!discordId && !nomeCompleto) {
+    return interaction.reply({ content: 'Informe pelo menos o **nome** da parte (a menção do Discord é opcional).', ephemeral: true });
+  }
 
   if (papel === 'reu') {
-    // Reaproveita vincularReu — mesma lógica de sempre (acesso ao canal liberado na hora, embed
-    // atualizado, Diário Oficial, auditoria) — só acrescenta o espelho em partes por cima.
-    const resultado = await vincularReu({ guild: interaction.guild, numero, reusTexto: `<@${discordId}>`, executorId: interaction.user.id });
-    if (resultado.erro) return interaction.reply({ content: resultado.erro, ephemeral: true });
-    partesProcesso.adicionarParte(numero, { papel: 'reu', nome: nomeCompleto, discordId, origem: 'parte_tardia', adicionadoPor: interaction.user.id });
-    return interaction.reply({ content: `Réu adicionado ao processo ${numero}, com acesso liberado no canal.`, ephemeral: true });
+    // Com Discord: reaproveita vincularReu (libera acesso ao canal, embed, Diário, auditoria).
+    if (discordId) {
+      const resultado = await vincularReu({ guild: interaction.guild, numero, reusTexto: `<@${discordId}>`, executorId: interaction.user.id });
+      if (resultado.erro) return interaction.reply({ content: resultado.erro, ephemeral: true });
+      partesProcesso.adicionarParte(numero, { papel: 'reu', nome: nomeCompleto, discordId, origem: 'parte_tardia', adicionadoPor: interaction.user.id });
+      return interaction.reply({ content: `Réu adicionado ao processo ${numero}, com acesso liberado no canal.`, ephemeral: true });
+    }
+    // Sem Discord: réu registrado só por nome (sem acesso ao canal, que exige conta no Discord).
+    partesProcesso.adicionarParte(numero, { papel: 'reu', nome: nomeCompleto, discordId: null, origem: 'parte_tardia', adicionadoPor: interaction.user.id });
+    const canalReu = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+    if (canalReu) await canalReu.send({ content: `📋 <@${interaction.user.id}> identificou **${nomeCompleto}** como **réu** neste processo (registrado por nome — sem conta no Discord).` });
+    await andamentos.registrar(interaction.guild, numero, {
+      tipo: 'parte_tardia_reu', titulo: '⚖️ Réu identificado (por nome)',
+      detalhe: `**${nomeCompleto}** registrado como réu por <@${interaction.user.id}> (sem Discord).`,
+      executorId: interaction.user.id, metadata: { nome: nomeCompleto },
+    });
+    await repostarPainel(interaction.guild, numero);
+    return interaction.reply({ content: `Réu **${nomeCompleto}** registrado no processo ${numero} (sem acesso ao canal — não tem Discord).`, ephemeral: true });
   }
 
   // Testemunha NÃO ganha acesso ao canal — só fica registrada, disponível pra depoimento
