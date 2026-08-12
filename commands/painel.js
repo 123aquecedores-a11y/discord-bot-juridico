@@ -31,6 +31,7 @@ const { gerarBannerPainel } = require('../services/gerarBannerPainel');
 const { detectarProcessoDoCanal } = require('../utils/contextoProcesso');
 const instituicoes = require('../utils/instituicoes');
 const instituicaoCmd = require('./instituicao');
+const cartorio = require('../utils/cartorio');
 
 // ---- Menu principal ----
 
@@ -92,6 +93,7 @@ function botoesMenuPrincipal(interaction) {
       botaoSe(true, 'painel:acao:pessoal:pendencias', '📌 Minhas pendências', ButtonStyle.Secondary),
       botaoSe(true, 'painel:acao:cargo:solicitar', '🪪 Solicitar cargo', ButtonStyle.Secondary),
       botaoSe(true, 'painel:acao:cargo:ficha', '🏅 Ficha do judiciário', ButtonStyle.Secondary),
+      botaoSe(true, 'painel:acao:revisar:abrir', '✨ Revisar texto', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:menu:rh', '👥 RH', ButtonStyle.Secondary),
     ),
   ].filter(Boolean);
@@ -612,6 +614,16 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'ficha') return rhCmd.mostrarFichaFuncional(interaction);
   }
 
+  if (modulo === 'revisar' && acao === 'abrir') {
+    const modal = new ModalBuilder().setCustomId('painel:modal:revisar:texto').setTitle('✨ Revisar texto (IA)');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('texto').setLabel('Cole o texto pra revisar')
+        .setPlaceholder('A IA corrige gramática, concordância e clareza — sem mudar o sentido.')
+        .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1500),
+    ));
+    return interaction.showModal(modal);
+  }
+
   if (modulo === 'pessoal') {
     if (acao === 'pendencias') return minhasPendencias(interaction);
     if (acao === 'abrirmenu') {
@@ -1051,6 +1063,20 @@ async function tratarModal(interaction, modulo, acao, extra) {
   // pendente e manda pro canal da staff. `acao` aqui é 'solicitar', `extra` é o cargo escolhido.
   if (modulo === 'cargo' && acao === 'solicitar') {
     return rhCmd.solicitarCargo(interaction, extra);
+  }
+
+  // ✨ Revisar texto (IA): corrige a forma e mostra antes→depois, sem alterar nada sozinho.
+  if (modulo === 'revisar' && acao === 'texto') {
+    const original = interaction.fields.getTextInputValue('texto');
+    await interaction.deferReply({ ephemeral: true });
+    const revisado = await cartorio.revisarTexto(original);
+    if (!revisado) {
+      return interaction.editReply({ content: '⚠️ A revisão por IA não está disponível agora (chave não configurada ou falha na API). Seu texto original está preservado — nada foi alterado.' });
+    }
+    const bloco = (t) => truncar(t.replace(/\n/g, '\n> '), 900);
+    return interaction.editReply({
+      content: `**📄 Original:**\n> ${bloco(original)}\n\n**✨ Revisado:**\n> ${bloco(revisado)}\n\n*Copie a versão que preferir — a IA só corrige a forma; nada foi alterado automaticamente.*`,
+    });
   }
 
   if (modulo === 'processo' && acao === 'partetardia') {
