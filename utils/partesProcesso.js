@@ -19,11 +19,11 @@ function proximoIdParte(processo) {
 
 // Usado depois que o processo já existe no banco (parte tardia, mandado pra "pessoa fora do
 // processo") — gera o próprio id sequencial a partir do que já está salvo.
-function adicionarParte(numero, { papel, nome = null, discordId = null, cpf = null, origem, adicionadoPor }) {
+function adicionarParte(numero, { papel, nome = null, discordId = null, rg = null, origem, adicionadoPor }) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return null;
   const parte = {
-    id: proximoIdParte(processo), papel, nome, discordId, cpf, origem,
+    id: proximoIdParte(processo), papel, nome, discordId, rg, origem,
     adicionadoEm: new Date().toISOString(), adicionadoPor,
   };
   db.atualizar('processos', numero, { partes: [...(processo.partes || []), parte] });
@@ -37,10 +37,10 @@ function espelharPartesDaAbertura({ reus = [], reuNome = null, autorId = null, a
   const agora = new Date().toISOString();
   const partes = [];
   for (const discordId of reus) {
-    partes.push({ papel: 'reu', nome: reuNome, discordId, cpf: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
+    partes.push({ papel: 'reu', nome: reuNome, discordId, rg: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
   }
   if (autorId || autorNome) {
-    partes.push({ papel: 'autor', nome: autorNome, discordId: autorId || null, cpf: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
+    partes.push({ papel: 'autor', nome: autorNome, discordId: autorId || null, rg: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
   }
   return partes.map((p, i) => ({ id: `p${i + 1}`, ...p }));
 }
@@ -81,13 +81,13 @@ function selectDestinatario(customId, processo) {
   );
 }
 
-// "ID" do modal de "pessoa fora do processo" é texto livre que pode ser CPF ou Discord ID —
+// "ID" do modal de "pessoa fora do processo" é texto livre que pode ser RG ou Discord ID —
 // heurística simples: só dígitos no tamanho de um snowflake do Discord (17-20) vira discordId,
-// resto vira cpf (ou qualquer outro identificador que a pessoa tenha digitado).
+// resto vira rg (ou qualquer outro identificador que a pessoa tenha digitado).
 function classificarIdLivre(idTexto) {
   const limpo = (idTexto || '').trim();
-  if (/^\d{17,20}$/.test(limpo)) return { discordId: limpo, cpf: null };
-  return { discordId: null, cpf: limpo || null };
+  if (/^\d{17,20}$/.test(limpo)) return { discordId: limpo, rg: null };
+  return { discordId: null, rg: limpo || null };
 }
 
 module.exports = {

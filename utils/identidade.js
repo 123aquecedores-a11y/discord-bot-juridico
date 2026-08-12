@@ -15,26 +15,26 @@ function definirNomeCivil(discordId, nomeCivil) {
   return db.inserir('identidades', { discordId, nomeCivil, atualizadoEm: new Date().toISOString() });
 }
 
-// Troca de nome é rastreada por CPF, não por ID do Discord — o cliente é quem muda de nome
-// (o advogado só protocola em nome dele), e o mesmo CPF pode ser representado por
+// Troca de nome é rastreada por RG, não por ID do Discord — o cliente é quem muda de nome
+// (o advogado só protocola em nome dele), e o mesmo RG pode ser representado por
 // advogados diferentes em petições diferentes ao longo do tempo.
-function buscarPorCPF(cpf) {
-  return db.buscarUm('identidades', r => r.cpf === cpf);
+function buscarPorRG(rg) {
+  return db.buscarUm('identidades', r => r.rg === rg);
 }
 
-function jaTrocouNomeAntes(cpf) {
-  const registro = buscarPorCPF(cpf);
+function jaTrocouNomeAntes(rg) {
+  const registro = buscarPorRG(rg);
   return !!registro && (registro.trocasDeNome || 0) > 0;
 }
 
-function registrarTrocaNomePorCPF(cpf, nomeNovo) {
-  const existente = buscarPorCPF(cpf);
+function registrarTrocaNomePorRG(rg, nomeNovo) {
+  const existente = buscarPorRG(rg);
   if (existente) {
-    return db.atualizarPorFiltro('identidades', r => r.cpf === cpf, {
+    return db.atualizarPorFiltro('identidades', r => r.rg === rg, {
       nomeCivil: nomeNovo, trocasDeNome: (existente.trocasDeNome || 0) + 1, atualizadoEm: new Date().toISOString(),
     });
   }
-  return db.inserir('identidades', { cpf, nomeCivil: nomeNovo, trocasDeNome: 1, atualizadoEm: new Date().toISOString() });
+  return db.inserir('identidades', { rg, nomeCivil: nomeNovo, trocasDeNome: 1, atualizadoEm: new Date().toISOString() });
 }
 
-module.exports = { obterNomeCivil, definirNomeCivil, buscarPorCPF, jaTrocouNomeAntes, registrarTrocaNomePorCPF };
+module.exports = { obterNomeCivil, definirNomeCivil, buscarPorRG, jaTrocouNomeAntes, registrarTrocaNomePorRG };

@@ -1128,7 +1128,7 @@ async function confirmarParteTardia(interaction, chave) {
   return interaction.reply({ content: `${ROTULO_PAPEL_PARTE[papel]} registrada no processo ${numero} (sem acesso ao canal).`, ephemeral: true });
 }
 
-// ---- Habilitação de advogado (nome + CPF do cliente, réu específico, aprovação do Juiz) ----
+// ---- Habilitação de advogado (nome + RG do cliente, réu específico, aprovação do Juiz) ----
 
 async function abrirModalHabilitacao(interaction, numero) {
   if (!temCargo(interaction, 'Advogado')) {
@@ -1146,7 +1146,7 @@ async function abrirModalHabilitacao(interaction, numero) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:habilitacao:solicitar:${numero}`).setTitle('Solicitar habilitação');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cpf').setLabel('CPF do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu').setLabel('Menção @ do réu que representa').setStyle(TextInputStyle.Short).setRequired(true)),
   );
   return interaction.showModal(modal);
@@ -1157,7 +1157,7 @@ async function criarHabilitacao(interaction, numero) {
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
 
   const nomeCliente = interaction.fields.getTextInputValue('nome');
-  const cpfCliente = interaction.fields.getTextInputValue('cpf');
+  const rgCliente = interaction.fields.getTextInputValue('rg');
   const reuId = extrairMencoes(interaction.fields.getTextInputValue('reu'))[0];
 
   if (!reuId || !(processo.reus || []).includes(reuId)) {
@@ -1166,7 +1166,7 @@ async function criarHabilitacao(interaction, numero) {
 
   const habilitacoes = processo.habilitacoes || [];
   const novoId = habilitacoes.reduce((max, h) => Math.max(max, h.id || 0), 0) + 1;
-  const habilitacao = { id: novoId, reuId, advogadoId: interaction.user.id, nomeCliente, cpfCliente, status: 'Pendente', criadoEm: new Date().toISOString() };
+  const habilitacao = { id: novoId, reuId, advogadoId: interaction.user.id, nomeCliente, rgCliente, status: 'Pendente', criadoEm: new Date().toISOString() };
   db.atualizar('processos', numero, { habilitacoes: [...habilitacoes, habilitacao] });
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
@@ -1177,7 +1177,7 @@ async function criarHabilitacao(interaction, numero) {
       .addFields(
         { name: 'Advogado', value: `<@${interaction.user.id}>`, inline: true },
         { name: 'Réu representado', value: `<@${reuId}>`, inline: true },
-        { name: 'Cliente', value: truncar(`${nomeCliente} — CPF ${cpfCliente}`) },
+        { name: 'Cliente', value: truncar(`${nomeCliente} — RG ${rgCliente}`) },
       );
     const botoes = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`painel:acao:habilitacao:aprovar:${numero}#${novoId}`).setLabel('Aprovar').setStyle(ButtonStyle.Success),
@@ -1372,7 +1372,7 @@ async function processarSelecaoDestinatarioIntimacao(interaction, numero) {
     const modal = new ModalBuilder().setCustomId(`painel:modal:processo:intimarforadestinatario:${numero}`).setTitle('Pessoa fora do processo');
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nomeCompleto').setLabel('Nome completo').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('idTexto').setLabel('CPF ou Discord ID').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('idTexto').setLabel('RG ou Discord ID').setStyle(TextInputStyle.Short).setRequired(true)),
     );
     return interaction.showModal(modal);
   }
@@ -1389,8 +1389,8 @@ async function processarSelecaoDestinatarioIntimacao(interaction, numero) {
 async function confirmarDestinatarioForaIntimacao(interaction, numero) {
   const nomeCompleto = interaction.fields.getTextInputValue('nomeCompleto');
   const idTexto = interaction.fields.getTextInputValue('idTexto');
-  const { discordId, cpf } = partesProcesso.classificarIdLivre(idTexto);
-  const novaParte = partesProcesso.adicionarParte(numero, { papel: 'terceiro', nome: nomeCompleto, discordId, cpf, origem: 'manual_mandado', adicionadoPor: interaction.user.id });
+  const { discordId, rg } = partesProcesso.classificarIdLivre(idTexto);
+  const novaParte = partesProcesso.adicionarParte(numero, { papel: 'terceiro', nome: nomeCompleto, discordId, rg, origem: 'manual_mandado', adicionadoPor: interaction.user.id });
   return interaction.reply({
     content: 'Qual o teor da intimação?',
     components: [selectTeorIntimacao(`painel:select:processo:teorintimacao:${numero}#${novaParte.id}`)],

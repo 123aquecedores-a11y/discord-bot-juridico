@@ -1,6 +1,6 @@
 // "SISBAJUS": consulta o registro central de cidadão que o bot vai acumulando sozinho
-// conforme as petições são protocoladas — nome atual + histórico, CPF, toda conta de Discord
-// já vinculada, endereço(s) e as petições já protocoladas em nome desse CPF. Não é dado
+// conforme as petições são protocoladas — nome atual + histórico, RG, toda conta de Discord
+// já vinculada, endereço(s) e as petições já protocoladas em nome desse RG. Não é dado
 // digitado na hora: é o que já existe na base por causa do uso normal do bot.
 // Restrito a Promotor pra cima (Promotor/Juiz/Desembargador/Procurador/Staff) — Delegado e
 // Advogado não têm acesso a esse tipo de busca consolidada.
@@ -34,7 +34,7 @@ function embedFicha(registro) {
     ? `${registro.nomeCivil}${registro.nomeCivilOrigem ? `\n*Origem: ${registro.nomeCivilOrigem}*` : ''}`
     : '—';
   const embed = new EmbedBuilder()
-    .setTitle(`🗂️ SISBAJUS — CPF ${registro.cpf}`)
+    .setTitle(`🗂️ SISBAJUS — RG ${registro.rg}`)
     .setColor(0x2c3e50)
     .addFields(
       { name: 'Nome atual', value: nomeComOrigem, inline: true },
@@ -81,7 +81,7 @@ function embedFicha(registro) {
     });
   }
 
-  const peticoes = fichaUtil.peticoesDoCPF(registro.cpf);
+  const peticoes = fichaUtil.peticoesDoRG(registro.rg);
   embed.addFields({
     name: `Petições protocoladas (${peticoes.length})`,
     value: peticoes.length > 0
@@ -104,7 +104,7 @@ function embedFicha(registro) {
   }
 
   if ((registro.discordIds || []).length > 0) {
-    embed.addFields({ name: 'Cruzamento de antecedentes', value: truncar(cruzamento.resumoTextoPorCPF(registro.cpf)) });
+    embed.addFields({ name: 'Cruzamento de antecedentes', value: truncar(cruzamento.resumoTextoPorRG(registro.rg)) });
   }
 
   return embed;
@@ -114,8 +114,8 @@ function embedFicha(registro) {
 // fica registrado quem consultou o quê, igual todo outro módulo do bot.
 //
 // Duas formas de buscar: selecionar a pessoa direto na lista nativa do Discord (que já filtra
-// por nome/apelido enquanto digita — mais fácil quando não se sabe o CPF de cor), ou informar
-// o CPF num modal (quando a pessoa não tem Discord vinculado ainda, ou não está mais no servidor).
+// por nome/apelido enquanto digita — mais fácil quando não se sabe o RG de cor), ou informar
+// o RG num modal (quando a pessoa não tem Discord vinculado ainda, ou não está mais no servidor).
 
 function abrirConsulta(interaction) {
   if (!podeConsultar(interaction)) {
@@ -125,14 +125,14 @@ function abrirConsulta(interaction) {
     new UserSelectMenuBuilder().setCustomId('painel:userselect:ficha:consultarpessoa').setPlaceholder('Buscar pessoa por nome/apelido no Discord'),
   );
   const rowOutros = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('painel:acao:ficha:consultarcpf').setLabel('Buscar por CPF').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('painel:acao:ficha:consultarrg').setLabel('Buscar por RG').setStyle(ButtonStyle.Secondary),
     // O select acima só lista quem já está no servidor — pessoa vinculada por ID (ver
     // vincularmanual em peticao.js) mas que ainda não entrou não aparece ali. Esse botão
     // busca pelo ID digitado direto, sem depender de a pessoa ser membro.
     new ButtonBuilder().setCustomId('painel:acao:ficha:consultardiscordid').setLabel('Buscar por ID do Discord').setStyle(ButtonStyle.Secondary),
   );
   const rowLivre = new ActionRowBuilder().addComponents(
-    // Cobre o que não é chave exata (CPF/Discord) — nome, endereço, telefone, rede social. Pode
+    // Cobre o que não é chave exata (RG/Discord) — nome, endereço, telefone, rede social. Pode
     // achar mais de uma pessoa (nomes/ruas parecidos), por isso o resultado é uma lista, não
     // direto a ficha completa.
     new ButtonBuilder().setCustomId('painel:acao:ficha:consultartermo').setLabel('Buscar por nome/endereço/telefone/rede').setStyle(ButtonStyle.Secondary),
@@ -143,13 +143,13 @@ function abrirConsulta(interaction) {
   });
 }
 
-function abrirModalConsultaCPF(interaction) {
+function abrirModalConsultaRG(interaction) {
   if (!podeConsultar(interaction)) {
     return interaction.reply({ content: 'Só Promotor, Juiz, Desembargador, Procurador ou Staff podem consultar o SISBAJUS.', ephemeral: true });
   }
-  const modal = new ModalBuilder().setCustomId('painel:modal:ficha:consultarcpf').setTitle('SISBAJUS — buscar por CPF');
+  const modal = new ModalBuilder().setCustomId('painel:modal:ficha:consultarrg').setTitle('SISBAJUS — buscar por RG');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cpf').setLabel('CPF').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG').setStyle(TextInputStyle.Short).setRequired(true)),
   );
   return interaction.showModal(modal);
 }
@@ -175,7 +175,7 @@ function extrairMencaoOuId(texto) {
   return /^\d{15,25}$/.test(t) ? t : null;
 }
 
-// Busca livre — não precisa de CPF nem Discord: acha pela pessoa a partir de qualquer nome
+// Busca livre — não precisa de RG nem Discord: acha pela pessoa a partir de qualquer nome
 // (atual ou anterior), endereço, telefone ou rede social já registrado em alguma ficha.
 function abrirModalConsultaTermo(interaction) {
   if (!podeConsultar(interaction)) {
@@ -213,8 +213,8 @@ async function processarModalConsultaDiscordId(interaction) {
 
 // Núcleo compartilhado pelas duas formas de busca: registra a consulta, abre o ticket e posta
 // o resultado (encontrado ou não).
-async function abrirTicketConsulta(interaction, { cpf, discordId }) {
-  const registro = cpf ? fichaUtil.buscarPorCPF(cpf) : fichaUtil.buscarPorDiscordId(discordId);
+async function abrirTicketConsulta(interaction, { rg, discordId }) {
+  const registro = rg ? fichaUtil.buscarPorRG(rg) : fichaUtil.buscarPorDiscordId(discordId);
   const numero = proximoNumero(db, 'consultas', 'SB');
   const canal = await canais.criarCanalTicket(interaction.guild, {
     categoriaId: config.categoriaSisbajusId, prefixo: 'sisbajus', numero,
@@ -222,11 +222,11 @@ async function abrirTicketConsulta(interaction, { cpf, discordId }) {
   });
 
   db.inserir('consultas', {
-    numero, executorId: interaction.user.id, criterioCpf: cpf, criterioDiscordId: discordId,
+    numero, executorId: interaction.user.id, criterioRg: rg, criterioDiscordId: discordId,
     encontrado: !!registro, canalId: canal.id,
   });
 
-  const criterioTexto = cpf ? `CPF ${cpf}` : `Discord <@${discordId}>`;
+  const criterioTexto = rg ? `RG ${rg}` : `Discord <@${discordId}>`;
   if (registro) {
     await canal.send({ content: `Consulta ${numero} — solicitada por <@${interaction.user.id}>.`, embeds: [embedFicha(registro)] });
   } else {
@@ -244,7 +244,7 @@ async function abrirTicketConsulta(interaction, { cpf, discordId }) {
 }
 
 // Busca livre pode achar 0, 1 ou várias fichas (nomes/ruas parecidos) — diferente da busca por
-// CPF/Discord, que é sempre uma chave exata. Com 1 resultado, mostra a ficha completa igual às
+// RG/Discord, que é sempre uma chave exata. Com 1 resultado, mostra a ficha completa igual às
 // outras buscas; com mais de um, mostra uma lista resumida pra ajudar a identificar qual é.
 async function abrirTicketConsultaTermo(interaction, termo) {
   const resultados = fichaUtil.buscarPorTermo(termo);
@@ -268,13 +268,13 @@ async function abrirTicketConsultaTermo(interaction, termo) {
   } else {
     const linhas = resultados.map(r => {
       const endereco = (r.enderecos || [])[0]?.endereco;
-      return `• **CPF ${r.cpf}** — ${r.nomeCivil || 'sem nome registrado'}${endereco ? ` — ${endereco}` : ''}`;
+      return `• **RG ${r.rg}** — ${r.nomeCivil || 'sem nome registrado'}${endereco ? ` — ${endereco}` : ''}`;
     });
     const embed = new EmbedBuilder()
       .setTitle(`🔎 SISBAJUS — ${resultados.length} resultado(s) para "${termo}"`)
       .setColor(0xf39c12)
       .setDescription(truncar(linhas.join('\n'), 3800))
-      .setFooter({ text: 'Mais de uma pessoa bateu com o termo — busque por CPF pra ver a ficha completa de uma delas.' });
+      .setFooter({ text: 'Mais de uma pessoa bateu com o termo — busque por RG pra ver a ficha completa de uma delas.' });
     await canal.send({ content: `Consulta ${numero} — solicitada por <@${interaction.user.id}>.`, embeds: [embed] });
   }
 
@@ -296,13 +296,13 @@ async function consultarPorPessoaSelecionada(interaction) {
   return interaction.followUp({ content: `Consulta ${numero} aberta em ${canal}.`, ephemeral: true });
 }
 
-async function processarModalConsultaCPF(interaction) {
+async function processarModalConsultaRG(interaction) {
   if (!podeConsultar(interaction)) {
     return interaction.reply({ content: 'Só Promotor, Juiz, Desembargador, Procurador ou Staff podem consultar o SISBAJUS.', ephemeral: true });
   }
-  const cpf = interaction.fields.getTextInputValue('cpf').trim();
+  const rg = interaction.fields.getTextInputValue('rg').trim();
   await interaction.deferReply({ ephemeral: true });
-  const { numero, canal } = await abrirTicketConsulta(interaction, { cpf });
+  const { numero, canal } = await abrirTicketConsulta(interaction, { rg });
   return interaction.editReply({ content: `Consulta ${numero} aberta em ${canal}.` });
 }
 
@@ -310,8 +310,8 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('ficha')
     .setDescription('SISBAJUS — consulta a ficha central de um cidadão (Promotor pra cima)')
-    .addSubcommand(sub => sub.setName('buscar').setDescription('Busca a ficha por CPF, Discord, ou nome/endereço/telefone/rede social')
-      .addStringOption(o => o.setName('cpf').setDescription('CPF do cidadão'))
+    .addSubcommand(sub => sub.setName('buscar').setDescription('Busca a ficha por RG, Discord, ou nome/endereço/telefone/rede social')
+      .addStringOption(o => o.setName('rg').setDescription('RG do cidadão'))
       .addUserOption(o => o.setName('discord').setDescription('Conta de Discord vinculada ao cidadão (precisa estar no servidor)'))
       .addStringOption(o => o.setName('discord_id').setDescription('ID do Discord — use se a pessoa ainda não estiver no servidor'))
       .addStringOption(o => o.setName('termo').setDescription('Nome, endereço, telefone ou rede social — pode achar mais de uma pessoa').setAutocomplete(true))),
@@ -321,13 +321,13 @@ module.exports = {
       return interaction.reply({ content: 'Só Promotor, Juiz, Desembargador, Procurador ou Staff podem consultar o SISBAJUS.', ephemeral: true });
     }
 
-    const cpf = interaction.options.getString('cpf');
+    const rg = interaction.options.getString('rg');
     const discordUser = interaction.options.getUser('discord');
     const discordIdTexto = interaction.options.getString('discord_id');
     const discordId = discordUser?.id || extrairMencaoOuId(discordIdTexto);
     const termo = interaction.options.getString('termo');
-    if (!cpf && !discordId && !termo) {
-      return interaction.reply({ content: 'Informe `cpf`, `discord`, `discord_id` ou `termo` pra buscar.', ephemeral: true });
+    if (!rg && !discordId && !termo) {
+      return interaction.reply({ content: 'Informe `rg`, `discord`, `discord_id` ou `termo` pra buscar.', ephemeral: true });
     }
 
     if (termo) {
@@ -336,17 +336,17 @@ module.exports = {
       if (resultados.length === 1) return interaction.reply({ embeds: [embedFicha(resultados[0])], ephemeral: true });
       const linhas = resultados.map(r => {
         const endereco = (r.enderecos || [])[0]?.endereco;
-        return `• **CPF ${r.cpf}** — ${r.nomeCivil || 'sem nome registrado'}${endereco ? ` — ${endereco}` : ''}`;
+        return `• **RG ${r.rg}** — ${r.nomeCivil || 'sem nome registrado'}${endereco ? ` — ${endereco}` : ''}`;
       });
       const embed = new EmbedBuilder()
         .setTitle(`🔎 ${resultados.length} resultado(s) para "${termo}"`)
         .setColor(0xf39c12)
         .setDescription(truncar(linhas.join('\n'), 3800))
-        .setFooter({ text: 'Mais de uma pessoa bateu com o termo — busque por CPF pra ver a ficha completa de uma delas.' });
+        .setFooter({ text: 'Mais de uma pessoa bateu com o termo — busque por RG pra ver a ficha completa de uma delas.' });
       return interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
-    const registro = cpf ? fichaUtil.buscarPorCPF(cpf) : fichaUtil.buscarPorDiscordId(discordId);
+    const registro = rg ? fichaUtil.buscarPorRG(rg) : fichaUtil.buscarPorDiscordId(discordId);
     if (!registro) {
       return interaction.reply({ content: 'Nenhuma ficha encontrada com esse critério — ainda não há petição registrada pra essa pessoa.', ephemeral: true });
     }
@@ -356,7 +356,7 @@ module.exports = {
 
   // Busca em tempo real: conforme o usuário digita "rua", "joão", telefone etc, o Discord
   // consulta esse handler a cada tecla e mostra até 25 fichas que já batem — igual a
-  // /crime buscar. O value de cada sugestão é o CPF (chave única), então ao escolher uma
+  // /crime buscar. O value de cada sugestão é o RG (chave única), então ao escolher uma
   // sugestão a busca final já resolve pra ficha certa, mesmo que várias pessoas tenham nome
   // ou rua parecida.
   async autocomplete(interaction) {
@@ -366,13 +366,13 @@ module.exports = {
     if (!foco || foco.trim().length < 2) return interaction.respond([]);
     const resultados = fichaUtil.buscarPorTermo(foco).slice(0, 25).map(r => {
       const endereco = (r.enderecos || [])[0]?.endereco;
-      const label = `${r.nomeCivil || 'sem nome'} — CPF ${r.cpf}${endereco ? ` — ${endereco}` : ''}`;
-      return { name: label.slice(0, 100), value: r.cpf };
+      const label = `${r.nomeCivil || 'sem nome'} — RG ${r.rg}${endereco ? ` — ${endereco}` : ''}`;
+      return { name: label.slice(0, 100), value: r.rg };
     });
     await interaction.respond(resultados);
   },
 
-  podeConsultar, abrirConsulta, abrirModalConsultaCPF, processarModalConsultaCPF, consultarPorPessoaSelecionada,
+  podeConsultar, abrirConsulta, abrirModalConsultaRG, processarModalConsultaRG, consultarPorPessoaSelecionada,
   abrirModalConsultaDiscordId, processarModalConsultaDiscordId,
   abrirModalConsultaTermo, processarModalConsultaTermo,
 };

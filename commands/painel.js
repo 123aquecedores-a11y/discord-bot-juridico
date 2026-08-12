@@ -224,7 +224,7 @@ function submenuFicha(interaction) {
   const pode = fichaCmd.podeConsultar(interaction);
   return [
     linha(
-      botaoSe(pode, 'painel:acao:ficha:consultar', '🔍 Consultar CPF/Discord', ButtonStyle.Primary),
+      botaoSe(pode, 'painel:acao:ficha:consultar', '🔍 Consultar RG/Discord', ButtonStyle.Primary),
       botaoSe(pode, 'painel:acao:ficha:certidao', '📄 Requisitar certidão', ButtonStyle.Secondary),
     ),
     !pode ? new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('painel:disabled').setLabel('Só Promotor pra cima consulta o SISBAJUS').setStyle(ButtonStyle.Secondary).setDisabled(true)) : null,
@@ -417,12 +417,12 @@ function abrirModalHistoricoProcesso(interaction) {
   return interaction.showModal(modal);
 }
 
-// Certidão avulsa — não depende de nenhuma petição aberta, só de saber o CPF de quem se quer
+// Certidão avulsa — não depende de nenhuma petição aberta, só de saber o RG de quem se quer
 // requisitar a certidão (ex: parte de um processo, alguém sob investigação em andamento).
 function abrirModalCertidaoLivre(interaction) {
   const modal = new ModalBuilder().setCustomId('painel:modal:ficha:certidao').setTitle('Requisitar certidão de antecedentes');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cpf').setLabel('CPF').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('finalidade').setLabel('Finalidade da certidão').setStyle(TextInputStyle.Short).setRequired(true)),
   );
@@ -436,7 +436,7 @@ async function processarModalCertidaoLivre(interaction) {
   const instituicao = certidoes.instituicaoDoSolicitante(interaction);
   const resultado = await certidoes.solicitarCertidao({
     guild: interaction.guild,
-    cpf: interaction.fields.getTextInputValue('cpf'),
+    rg: interaction.fields.getTextInputValue('rg'),
     nomeCliente: interaction.fields.getTextInputValue('nome'),
     finalidade: interaction.fields.getTextInputValue('finalidade'),
     executorId: interaction.user.id, instituicao,
@@ -699,7 +699,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
 
   if (modulo === 'ficha') {
     if (acao === 'consultar') return fichaCmd.abrirConsulta(interaction);
-    if (acao === 'consultarcpf') return fichaCmd.abrirModalConsultaCPF(interaction);
+    if (acao === 'consultarrg') return fichaCmd.abrirModalConsultaRG(interaction);
     if (acao === 'consultardiscordid') return fichaCmd.abrirModalConsultaDiscordId(interaction);
     if (acao === 'consultartermo') return fichaCmd.abrirModalConsultaTermo(interaction);
     if (acao === 'certidao') return abrirModalCertidaoLivre(interaction);
@@ -1159,7 +1159,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'peticao' && acao === 'maisdados') return peticaoCmd.processarMaisDados(interaction, extra);
   if (modulo === 'peticao' && acao === 'vincularmanual') return peticaoCmd.processarVincularManual(interaction, extra);
 
-  if (modulo === 'ficha' && acao === 'consultarcpf') return fichaCmd.processarModalConsultaCPF(interaction);
+  if (modulo === 'ficha' && acao === 'consultarrg') return fichaCmd.processarModalConsultaRG(interaction);
   if (modulo === 'ficha' && acao === 'consultardiscordid') return fichaCmd.processarModalConsultaDiscordId(interaction);
   if (modulo === 'ficha' && acao === 'consultartermo') return fichaCmd.processarModalConsultaTermo(interaction);
   if (modulo === 'ficha' && acao === 'certidao') return processarModalCertidaoLivre(interaction);

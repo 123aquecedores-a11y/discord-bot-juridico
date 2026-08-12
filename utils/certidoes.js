@@ -33,9 +33,9 @@ function botaoArquivarCertidao(numero) {
   );
 }
 
-async function solicitarCertidao({ guild, cpf, nomeCliente, finalidade, executorId, instituicao }) {
+async function solicitarCertidao({ guild, rg, nomeCliente, finalidade, executorId, instituicao }) {
   const numero = proximoNumeroClassico(db, 'certidoes', 'CERT');
-  const texto = documentos.textoRequisicaoCertidao({ numero, cpf, nomeCliente, finalidade, autorId: executorId, instituicao });
+  const texto = documentos.textoRequisicaoCertidao({ numero, rg, nomeCliente, finalidade, autorId: executorId, instituicao });
 
   // Mesmo padrão de ticket por instrumento já usado em ofício e nos atos do MP — quem pediu
   // acompanha a certidão isolada num canal próprio, em vez de só um webhook solto.
@@ -43,7 +43,7 @@ async function solicitarCertidao({ guild, cpf, nomeCliente, finalidade, executor
   const canal = await canais.criarCanalTicket(guild, { categoriaId, prefixo: 'certidao', numero, membros: [executorId] });
   await canal.send({ content: `<@${executorId}>\n\n${texto}`, components: [botaoArquivarCertidao(numero)] });
 
-  db.inserir('certidoes', { numero, cpf, nomeCliente, finalidade, executorId, instituicao, canalId: canal.id });
+  db.inserir('certidoes', { numero, rg, nomeCliente, finalidade, executorId, instituicao, canalId: canal.id });
 
   if (config.webhookCertidoesUrl) {
     await fetch(config.webhookCertidoesUrl, {
@@ -55,7 +55,7 @@ async function solicitarCertidao({ guild, cpf, nomeCliente, finalidade, executor
 
   await auditoria.registrar(guild, {
     acao: 'Certidão de antecedentes requisitada', executorId,
-    referencia: `${numero}: CPF ${cpf} (${nomeCliente}) — ${finalidade}`,
+    referencia: `${numero}: RG ${rg} (${nomeCliente}) — ${finalidade}`,
   });
 
   return { numero, texto, canal };

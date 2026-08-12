@@ -76,7 +76,7 @@ function textoAcordao({ apelacao, decisaoTexto, statusFinal }) {
 const TIPO_PETICAO_TITULO = { PorteArma: 'PORTE DE ARMA', TrocaNome: 'TROCA DE NOME', LimpezaFicha: 'LIMPEZA DE FICHA CRIMINAL' };
 
 function objetoPeticao(peticao) {
-  if (peticao.tipo === 'TrocaNome') return `retificação de nome de "${peticao.nomeAtual}" para "${peticao.nomeNovo}"${peticao.cpfCliente ? ` (CPF ${peticao.cpfCliente})` : ''}`;
+  if (peticao.tipo === 'TrocaNome') return `retificação de nome de "${peticao.nomeAtual}" para "${peticao.nomeNovo}"${peticao.rgCliente ? ` (RG ${peticao.rgCliente})` : ''}`;
   if (peticao.tipo === 'LimpezaFicha') return 'exclusão de antecedentes da ficha criminal';
   return 'concessão de porte de arma de fogo';
 }
@@ -88,9 +88,9 @@ function textoSentencaPeticao({ peticao, status, motivo }) {
     ? `Ante o exposto, **DEFIRO** o pedido de ${objetoPeticao(peticao)}, nos termos requeridos.`
     : `Ante o exposto, **INDEFIRO** o pedido de ${objetoPeticao(peticao)}, por ausência dos requisitos legais para a espécie.`;
 
-  const qualificacao = peticao.cpfCliente
+  const qualificacao = peticao.rgCliente
     ? [
-        `Requerente: ${peticao.nomeCliente || peticao.nomeNovo || '—'}, CPF ${peticao.cpfCliente}${peticao.enderecoCliente ? `, residente em ${peticao.enderecoCliente}` : ''}.`,
+        `Requerente: ${peticao.nomeCliente || peticao.nomeNovo || '—'}, RG ${peticao.rgCliente}${peticao.enderecoCliente ? `, residente em ${peticao.enderecoCliente}` : ''}.`,
         `Advogado(a): <@${peticao.requerenteId}>.`,
       ].join('\n')
     : `Requerente: <@${peticao.requerenteId}>`;
@@ -247,7 +247,7 @@ function textoIntimacao({ numero, rotulo = 'Processo', destinatarioId, destinata
 // Certidão de antecedentes/não constar como investigado — pode ser pedida por Juiz/
 // Desembargador (Judiciário) OU Promotor/Procurador (Ministério Público), por isso o cabeçalho
 // muda conforme quem pede — instituições diferentes, papel timbrado diferente.
-function textoRequisicaoCertidao({ numero, cpf, nomeCliente, finalidade, autorId, instituicao }) {
+function textoRequisicaoCertidao({ numero, rg, nomeCliente, finalidade, autorId, instituicao }) {
   return [
     `**${instituicao}**`,
     `**Requisição de Certidão nº ${numero}**`,
@@ -257,7 +257,7 @@ function textoRequisicaoCertidao({ numero, cpf, nomeCliente, finalidade, autorId
     `Requisita-se certidão de antecedentes criminais e de não constar como investigado(a) em inquérito policial em nome de:`,
     '',
     `**Nome:** ${nomeCliente}`,
-    `**CPF:** ${cpf}`,
+    `**RG:** ${rg}`,
     `**Finalidade:** ${finalidade}`,
     '',
     `Comarca, ${dataExtenso()}.`,

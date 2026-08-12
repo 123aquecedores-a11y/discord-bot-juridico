@@ -96,7 +96,9 @@ async function processarRequerimento(message) {
   const delegadoId = extrairMencao(campoDoEmbed(embed, 'Delegado solicitante'));
   const alvo = campoDoEmbed(embed, 'Alvo');
   const alvoDiscordId = extrairMencao(campoDoEmbed(embed, 'Discord do alvo'));
-  const cpfAlvo = campoDoEmbed(embed, 'CPF do alvo');
+  // Aceita "RG do alvo" (novo padrão) e "CPF do alvo" (payload antigo do bot da PC) — enquanto
+  // o time da Polícia Civil não migra o rótulo, os dois funcionam.
+  const rgAlvo = campoDoEmbed(embed, 'RG do alvo') || campoDoEmbed(embed, 'CPF do alvo');
   const nomeAlvo = campoDoEmbed(embed, 'Nome do alvo');
   const motivo = campoDoEmbed(embed, 'Motivo/Indícios') || campoDoEmbed(embed, 'Motivo');
   const codigoExterno = campoDoEmbed(embed, 'Código/Protocolo') || campoDoEmbed(embed, 'Código');
@@ -110,13 +112,13 @@ async function processarRequerimento(message) {
   // manualmente (Camada 2, ver medida.js `anexarIndicios`).
   const indiciosPdfUrl = campoDoEmbed(embed, 'Indícios (PDF)') || campoDoEmbed(embed, 'Indícios');
 
-  // Discord/CPF/Nome do alvo agora são obrigatórios — sem isso não dá pra vincular o alvo à
+  // Discord/RG/Nome do alvo agora são obrigatórios — sem isso não dá pra vincular o alvo à
   // ficha central (utils/ficha.js), e o cruzamento de antecedentes no SISBAJUS fica cego.
   const erros = [];
   if (!delegadoId) erros.push('campo "Delegado solicitante" precisa ser uma @menção válida do Discord (não nome em texto)');
   if (!alvo) erros.push('campo "Alvo" ausente');
   if (!alvoDiscordId) erros.push('campo "Discord do alvo" precisa ser uma @menção válida do Discord (não nome em texto)');
-  if (!cpfAlvo) erros.push('campo "CPF do alvo" ausente');
+  if (!rgAlvo) erros.push('campo "RG do alvo" ausente');
   if (!nomeAlvo) erros.push('campo "Nome do alvo" ausente');
   if (!motivo) erros.push('campo "Motivo/Indícios" ausente');
 
@@ -152,12 +154,12 @@ async function processarRequerimento(message) {
   // Vincula o alvo à ficha central — é isso que faz o SISBAJUS achar essa pessoa depois e
   // cruzar antecedentes de verdade, igual já acontece com cliente de petição.
   const origem = `Integração Polícia Civil — Medida ${resultado.numero}`;
-  ficha.vincularDiscordId(cpfAlvo, alvoDiscordId, origem);
-  ficha.definirNomeSeVazio(cpfAlvo, nomeAlvo, origem);
+  ficha.vincularDiscordId(rgAlvo, alvoDiscordId, origem);
+  ficha.definirNomeSeVazio(rgAlvo, nomeAlvo, origem);
   // codigoExterno vira campo próprio (não só texto dentro do motivo) — é o que permite mandar
   // a devolutiva certa de volta pro protocolo certo quando o Juiz decidir (ver
   // utils/devolutivaPoliciaCivil.js).
-  db.atualizar('medidas', resultado.numero, { cpfAlvo, nomeAlvo, codigoExterno: codigoExterno || null });
+  db.atualizar('medidas', resultado.numero, { rgAlvo, nomeAlvo, codigoExterno: codigoExterno || null });
 
   // Dossiê do inquérito: registra a medida sob o protocolo, e — Camada 1 — já cria o documento
   // de indícios direto se o payload trouxe o PDF, sem precisar de nenhuma interação humana

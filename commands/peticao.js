@@ -43,12 +43,12 @@ function classificarLotacao(pessoas) {
   return null;
 }
 
-// Porte ativo agora é rastreado pelo CPF do cliente, não pelo Discord de quem protocolou
+// Porte ativo agora é rastreado pelo RG do cliente, não pelo Discord de quem protocolou
 // (o Advogado) — dois advogados diferentes pedindo pro mesmo cliente têm que enxergar o
 // mesmo porte ativo.
-function porteAtivo(cpfCliente) {
+function porteAtivo(rgCliente) {
   const agora = Date.now();
-  return db.buscarUm('peticoes', p => p.tipo === 'PorteArma' && p.cpfCliente === cpfCliente && p.status === 'Deferido' && p.validadeAte && new Date(p.validadeAte).getTime() > agora);
+  return db.buscarUm('peticoes', p => p.tipo === 'PorteArma' && p.rgCliente === rgCliente && p.status === 'Deferido' && p.validadeAte && new Date(p.validadeAte).getTime() > agora);
 }
 
 function embedPeticao(p) {
@@ -59,10 +59,10 @@ function embedPeticao(p) {
       { name: 'Advogado(a)', value: `<@${p.requerenteId}>`, inline: true },
       { name: 'Status', value: p.status, inline: true },
     );
-  if (p.cpfCliente) {
+  if (p.rgCliente) {
     embed.addFields(
       { name: 'Cliente', value: p.nomeCliente || '—', inline: true },
-      { name: 'CPF', value: p.cpfCliente, inline: true },
+      { name: 'RG', value: p.rgCliente, inline: true },
       { name: 'Endereço', value: truncar(p.enderecoCliente) || '—', inline: true },
       { name: 'Discord do cliente', value: p.discordIdCliente ? `<@${p.discordIdCliente}>` : 'Não vinculado', inline: true },
     );
@@ -107,7 +107,7 @@ function botoesDecisao(numero) {
 
 // Certidão de antecedentes/não constar como investigado — já era exigida informalmente em
 // todas as três petições (ver DOCUMENTOS_NECESSARIOS acima); isso dá um jeito de requisitar de
-// verdade, puxando CPF e nome já cadastrados na própria petição, sem digitar de novo.
+// verdade, puxando RG e nome já cadastrados na própria petição, sem digitar de novo.
 async function solicitarCertidaoDaPeticao(interaction, numero) {
   const peticao = db.buscarPorNumero('peticoes', numero);
   if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
@@ -116,7 +116,7 @@ async function solicitarCertidaoDaPeticao(interaction, numero) {
   }
   const instituicao = certidoes.instituicaoDoSolicitante(interaction);
   const resultado = await certidoes.solicitarCertidao({
-    guild: interaction.guild, cpf: peticao.cpfCliente, nomeCliente: peticao.nomeCliente || peticao.nomeNovo,
+    guild: interaction.guild, rg: peticao.rgCliente, nomeCliente: peticao.nomeCliente || peticao.nomeNovo,
     finalidade: `Petição ${numero} (${TIPO_LABEL[peticao.tipo]})`, executorId: interaction.user.id, instituicao,
   });
   return interaction.reply({ content: `✅ Certidão ${resultado.numero} requisitada em ${resultado.canal}.`, ephemeral: true });
@@ -141,7 +141,7 @@ async function abrirTicketPeticao({ guild, tipo, sigla, requerenteId, dados }) {
   // Só troca de nome deferida grava nomeCivil (ver ficha.registrarTrocaNome) — sem isso, a
   // ficha de quem só pediu porte de arma ou limpeza de ficha nunca tinha nome nenhum, e o
   // SISBAJUS não achava a pessoa buscando pelo nome que ela mesma informou na petição.
-  if (dados.cpfCliente && dados.nomeCliente) ficha.definirNomeSeVazio(dados.cpfCliente, dados.nomeCliente, `Petição ${numero}`);
+  if (dados.rgCliente && dados.nomeCliente) ficha.definirNomeSeVazio(dados.rgCliente, dados.nomeCliente, `Petição ${numero}`);
 
   return { numero, canal };
 }
@@ -177,23 +177,23 @@ async function protocolarPeticao(guild, numero) {
 
 // ---- Criação (compartilhada entre /peticao e o /painel) ----
 // As três petições agora seguem a mesma lógica: protocoladas pelo Advogado em nome do
-// cliente (nome, CPF, endereço), com o CPF virando a chave de rastreio na ficha central
+// cliente (nome, RG, endereço), com o RG virando a chave de rastreio na ficha central
 // (utils/ficha.js). O cliente em si não precisa ter conta no Discord — quando tiver, o
 // Advogado vincula depois (follow-up com UserSelectMenu), o que também é o que faz o
 // cruzamento automático de antecedentes funcionar de verdade.
 
-async function criarPeticaoPorteArma({ guild, requerenteId, cpfCliente, nomeCliente, enderecoCliente, declaracao, relacaoOcorrencias }) {
+async function criarPeticaoPorteArma({ guild, requerenteId, rgCliente, nomeCliente, enderecoCliente, declaracao, relacaoOcorrencias }) {
   const { numero, canal } = await abrirTicketPeticao({
     guild, tipo: 'PorteArma', sigla: 'PA', requerenteId,
-    dados: { cpfCliente, nomeCliente, enderecoCliente, declaracao, relacaoOcorrencias: relacaoOcorrencias || null },
+    dados: { rgCliente, nomeCliente, enderecoCliente, declaracao, relacaoOcorrencias: relacaoOcorrencias || null },
   });
 
-  const ativo = porteAtivo(cpfCliente);
+  const ativo = porteAtivo(rgCliente);
   const embed = embedPeticao(db.buscarPorNumero('peticoes', numero))
     .addFields(
       { name: 'Declaração (maioridade/residência)', value: truncar(declaracao) },
       { name: 'Já possui porte ativo?', value: ativo ? `⚠️ Sim — ${ativo.numero}, válido até <t:${Math.floor(new Date(ativo.validadeAte).getTime() / 1000)}:D>` : 'Não' },
-      { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorCPF(cpfCliente)) },
+      { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorRG(rgCliente)) },
       { name: 'Referência — nível de risco', value: truncar(TABELA_RISCO) },
     );
   if (relacaoOcorrencias) embed.addFields({ name: 'Relação de ocorrências', value: truncar(relacaoOcorrencias) });
@@ -203,22 +203,22 @@ async function criarPeticaoPorteArma({ guild, requerenteId, cpfCliente, nomeClie
     content: `📋 **Checklist de documentos exigidos:**\n${DOCUMENTOS_NECESSARIOS.PorteArma}`,
     components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero))],
   });
-  await auditoria.registrar(guild, { acao: 'Petição de porte de arma aberta', executorId: requerenteId, referencia: `${numero}: CPF ${cpfCliente}` });
+  await auditoria.registrar(guild, { acao: 'Petição de porte de arma aberta', executorId: requerenteId, referencia: `${numero}: RG ${rgCliente}` });
   return { numero, canal };
 }
 
-async function criarPeticaoTrocaNome({ guild, requerenteId, cpfCliente, nomeAtual, nomeNovo, enderecoCliente, justificativa, jaUsouGratuita }) {
+async function criarPeticaoTrocaNome({ guild, requerenteId, rgCliente, nomeAtual, nomeNovo, enderecoCliente, justificativa, jaUsouGratuita }) {
   const { numero, canal } = await abrirTicketPeticao({
     guild, tipo: 'TrocaNome', sigla: 'TN', requerenteId,
-    dados: { cpfCliente, nomeCliente: nomeNovo, nomeAtual, nomeNovo, enderecoCliente, justificativa: justificativa || null, primeiraVez: !jaUsouGratuita },
+    dados: { rgCliente, nomeCliente: nomeNovo, nomeAtual, nomeNovo, enderecoCliente, justificativa: justificativa || null, primeiraVez: !jaUsouGratuita },
   });
 
   const embed = embedPeticao(db.buscarPorNumero('peticoes', numero))
     .addFields(
       { name: 'Nome atual', value: nomeAtual, inline: true },
       { name: 'Nome pretendido', value: nomeNovo, inline: true },
-      { name: 'Primeira troca deste CPF (gratuita)?', value: jaUsouGratuita ? '⚠️ Não — é a 2ª vez ou mais' : 'Sim' },
-      { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorCPF(cpfCliente)) },
+      { name: 'Primeira troca deste RG (gratuita)?', value: jaUsouGratuita ? '⚠️ Não — é a 2ª vez ou mais' : 'Sim' },
+      { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorRG(rgCliente)) },
     );
   if (justificativa) embed.addFields({ name: 'Justificativa', value: truncar(justificativa) });
 
@@ -227,24 +227,24 @@ async function criarPeticaoTrocaNome({ guild, requerenteId, cpfCliente, nomeAtua
     content: `📋 **Checklist de documentos exigidos:**\n${DOCUMENTOS_NECESSARIOS.TrocaNome}`,
     components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero))],
   });
-  await auditoria.registrar(guild, { acao: 'Petição de troca de nome aberta', executorId: requerenteId, referencia: `${numero}: CPF ${cpfCliente} "${nomeAtual}" → "${nomeNovo}"` });
+  await auditoria.registrar(guild, { acao: 'Petição de troca de nome aberta', executorId: requerenteId, referencia: `${numero}: RG ${rgCliente} "${nomeAtual}" → "${nomeNovo}"` });
   return { numero, canal };
 }
 
 // Limpeza de ficha exige justificativa a partir da 2ª vez, igual troca de nome — mas porte de
 // arma NÃO (a renovação de 15 em 15 dias é rotina, exigir justificativa toda vez só atrapalha).
-async function criarPeticaoLimpezaFicha({ guild, requerenteId, cpfCliente, nomeCliente, enderecoCliente, justificativa, jaTeveAntes }) {
+async function criarPeticaoLimpezaFicha({ guild, requerenteId, rgCliente, nomeCliente, enderecoCliente, justificativa, jaTeveAntes }) {
   const { numero, canal } = await abrirTicketPeticao({
     guild, tipo: 'LimpezaFicha', sigla: 'LF', requerenteId,
-    dados: { cpfCliente, nomeCliente, enderecoCliente, justificativa: justificativa || null, primeiraVez: !jaTeveAntes },
+    dados: { rgCliente, nomeCliente, enderecoCliente, justificativa: justificativa || null, primeiraVez: !jaTeveAntes },
   });
 
-  const temNovoAntecedente = cruzamento.temNovoAntecedenteEmPorCPF(cpfCliente, null, 15);
+  const temNovoAntecedente = cruzamento.temNovoAntecedenteEmPorRG(rgCliente, null, 15);
   const embed = embedPeticao(db.buscarPorNumero('peticoes', numero))
     .addFields(
       { name: 'Já teve limpeza de ficha deferida antes?', value: jaTeveAntes ? '⚠️ Sim — é a 2ª vez ou mais' : 'Não' },
       { name: 'Novo antecedente nos últimos 15 dias?', value: temNovoAntecedente ? '⚠️ Sim — indeferimento sumário indicado' : '✅ Não' },
-      { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorCPF(cpfCliente)) },
+      { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorRG(rgCliente)) },
     );
   if (justificativa) embed.addFields({ name: 'Justificativa', value: truncar(justificativa) });
 
@@ -253,17 +253,17 @@ async function criarPeticaoLimpezaFicha({ guild, requerenteId, cpfCliente, nomeC
     content: `📋 **Checklist de documentos exigidos:**\n${DOCUMENTOS_NECESSARIOS.LimpezaFicha}`,
     components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero))],
   });
-  await auditoria.registrar(guild, { acao: 'Petição de limpeza de ficha aberta', executorId: requerenteId, referencia: `${numero}: CPF ${cpfCliente}` });
+  await auditoria.registrar(guild, { acao: 'Petição de limpeza de ficha aberta', executorId: requerenteId, referencia: `${numero}: RG ${rgCliente}` });
   return { numero, canal };
 }
 
 // Alvará de Evento (Decreto 003/2026) — "cliente" aqui é o organizador do evento, mesmo padrão
-// de rastreio por CPF dos outros três tipos. Lotação (Art. 66, I/II) é só um selo informativo
+// de rastreio por RG dos outros três tipos. Lotação (Art. 66, I/II) é só um selo informativo
 // no card do pedido; não bloqueia nem muda o rito de decisão do Juiz.
-async function criarPeticaoAlvaraEvento({ guild, requerenteId, cpfCliente, nomeCliente, nomeEvento, localEvento, numeroPessoas }) {
+async function criarPeticaoAlvaraEvento({ guild, requerenteId, rgCliente, nomeCliente, nomeEvento, localEvento, numeroPessoas }) {
   const { numero, canal } = await abrirTicketPeticao({
     guild, tipo: 'AlvaraEvento', sigla: 'AE', requerenteId,
-    dados: { cpfCliente, nomeCliente, enderecoCliente: localEvento, nomeEvento, localEvento, numeroPessoas },
+    dados: { rgCliente, nomeCliente, enderecoCliente: localEvento, nomeEvento, localEvento, numeroPessoas },
   });
 
   const lotacao = classificarLotacao(numeroPessoas);
@@ -275,7 +275,7 @@ async function criarPeticaoAlvaraEvento({ guild, requerenteId, cpfCliente, nomeC
         name: 'Número estimado de pessoas',
         value: lotacao ? `${numeroPessoas} — ⚠️ lotação ${lotacao.rotulo} (Art. 66, inciso ${lotacao.inciso})` : `${numeroPessoas}`,
       },
-      { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorCPF(cpfCliente)) },
+      { name: 'Cruzamento automático', value: truncar(cruzamento.resumoTextoPorRG(rgCliente)) },
     );
 
   await canal.send({ embeds: [embed] });
@@ -283,18 +283,18 @@ async function criarPeticaoAlvaraEvento({ guild, requerenteId, cpfCliente, nomeC
     content: `📋 **Checklist de documentos exigidos:**\n${DOCUMENTOS_NECESSARIOS.AlvaraEvento}`,
     components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero))],
   });
-  await auditoria.registrar(guild, { acao: 'Petição de alvará de evento aberta', executorId: requerenteId, referencia: `${numero}: CPF ${cpfCliente} — "${nomeEvento}" (${numeroPessoas} pessoas)` });
+  await auditoria.registrar(guild, { acao: 'Petição de alvará de evento aberta', executorId: requerenteId, referencia: `${numero}: RG ${rgCliente} — "${nomeEvento}" (${numeroPessoas} pessoas)` });
   return { numero, canal };
 }
 
 // ---- Follow-ups pós-criação: vincular Discord do cliente (obrigatório) + endereço adicional ----
-// Modal do Discord só aceita 5 campos de texto — CPF, nome e endereço já lotam o modal, então
+// Modal do Discord só aceita 5 campos de texto — RG, nome e endereço já lotam o modal, então
 // o vínculo com uma conta de Discord (que exigiria um select, não um campo de texto) acontece
 // depois, como uma mensagem NO PRÓPRIO CANAL da petição (não ephemeral) — assim não se perde
 // se a pessoa fechar a mensagem, e o Juiz consegue ver que ainda falta antes de decidir.
 // É obrigatório: sem vincular, a petição não pode ser deferida nem indeferida (ver `decidir`).
 
-async function enviarFollowUpsCadastro(interaction, numero, cpfCliente, canal) {
+async function enviarFollowUpsCadastro(interaction, numero, rgCliente, canal) {
   // O select nativo do Discord só lista quem já está no servidor — se o cliente ainda não
   // entrou, o Advogado não consegue selecionar ninguém e o vínculo trava. O botão ao lado
   // deixa informar o ID/@menção na mão; quando a pessoa entrar depois, o bot sincroniza sozinho
@@ -310,7 +310,7 @@ async function enviarFollowUpsCadastro(interaction, numero, cpfCliente, canal) {
     components: [rowUser, rowManual],
   });
 
-  await perguntarMaisDados(interaction, numero, cpfCliente);
+  await perguntarMaisDados(interaction, numero, rgCliente);
 }
 
 function extrairMencaoOuId(texto) {
@@ -338,7 +338,7 @@ async function processarVincularManual(interaction, numero) {
   if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
   if (peticao.discordIdCliente) return interaction.reply({ content: 'Essa petição já tem cliente vinculado.', ephemeral: true });
 
-  ficha.vincularDiscordId(peticao.cpfCliente, usuarioId, `Petição ${numero} — vínculo manual`);
+  ficha.vincularDiscordId(peticao.rgCliente, usuarioId, `Petição ${numero} — vínculo manual`);
   db.atualizar('peticoes', numero, { discordIdCliente: usuarioId });
   await interaction.reply({
     content: `✅ Cliente vinculado: <@${usuarioId}> — se ainda não estiver no servidor, o apelido e os outros dados são aplicados automaticamente assim que entrar. Protocolando petição ${numero}...`,
@@ -348,20 +348,20 @@ async function processarVincularManual(interaction, numero) {
 }
 
 // Pergunta única (não mais um loop de sim/não só pra endereço) — quanto mais dado a ficha
-// acumula, mais fácil o SISBAJUS acha essa pessoa depois sem precisar de CPF nem Discord.
-async function perguntarMaisDados(interaction, numero, cpfCliente) {
+// acumula, mais fácil o SISBAJUS acha essa pessoa depois sem precisar de RG nem Discord.
+async function perguntarMaisDados(interaction, numero, rgCliente) {
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`painel:acao:peticao:maisdados:${numero}#${cpfCliente}`).setLabel('📎 Registrar mais dados do cliente').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`painel:acao:peticao:maisdados:${numero}#${rgCliente}`).setLabel('📎 Registrar mais dados do cliente').setStyle(ButtonStyle.Secondary),
   );
   await interaction.followUp({
-    content: '📎 Quer registrar mais algum dado do cliente na ficha (outro endereço, telefone, rede social)? Ajuda a achar essa pessoa depois mesmo sem saber CPF ou Discord dela. Opcional.',
+    content: '📎 Quer registrar mais algum dado do cliente na ficha (outro endereço, telefone, rede social)? Ajuda a achar essa pessoa depois mesmo sem saber RG ou Discord dela. Opcional.',
     components: [row], ephemeral: true,
   });
 }
 
 function abrirModalMaisDados(interaction, extra) {
-  const [numero, cpf] = extra.split('#');
-  const modal = new ModalBuilder().setCustomId(`painel:modal:peticao:maisdados:${numero}#${cpf}`).setTitle('Mais dados do cliente (opcional)');
+  const [numero, rg] = extra.split('#');
+  const modal = new ModalBuilder().setCustomId(`painel:modal:peticao:maisdados:${numero}#${rg}`).setTitle('Mais dados do cliente (opcional)');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('endereco').setLabel('Endereço adicional').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(200)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('telefone').setLabel('Telefone').setStyle(TextInputStyle.Short).setRequired(false)),
@@ -371,7 +371,7 @@ function abrirModalMaisDados(interaction, extra) {
 }
 
 async function processarMaisDados(interaction, extra) {
-  const [numero, cpf] = extra.split('#');
+  const [numero, rg] = extra.split('#');
   const endereco = interaction.fields.getTextInputValue('endereco');
   const telefone = interaction.fields.getTextInputValue('telefone');
   const rede = interaction.fields.getTextInputValue('rede');
@@ -379,12 +379,12 @@ async function processarMaisDados(interaction, extra) {
   if (!endereco && !telefone && !rede) {
     return interaction.reply({ content: 'Nenhum campo preenchido — nada foi registrado.', ephemeral: true });
   }
-  if (endereco) ficha.adicionarEndereco(cpf, endereco, numero);
-  if (telefone) ficha.adicionarTelefone(cpf, telefone, numero);
-  if (rede) ficha.adicionarRedeSocial(cpf, rede, numero);
+  if (endereco) ficha.adicionarEndereco(rg, endereco, numero);
+  if (telefone) ficha.adicionarTelefone(rg, telefone, numero);
+  if (rede) ficha.adicionarRedeSocial(rg, rede, numero);
 
   const salvos = [endereco && 'endereço', telefone && 'telefone', rede && 'rede social'].filter(Boolean).join(', ');
-  return interaction.reply({ content: `Registrado na ficha do CPF ${cpf}: ${salvos}.`, ephemeral: true });
+  return interaction.reply({ content: `Registrado na ficha do RG ${rg}: ${salvos}.`, ephemeral: true });
 }
 
 async function vincularClienteDiscord(interaction, numero) {
@@ -392,7 +392,7 @@ async function vincularClienteDiscord(interaction, numero) {
   const peticao = db.buscarPorNumero('peticoes', numero);
   if (!peticao) return interaction.update({ content: 'Petição não encontrada.', components: [] });
   if (peticao.discordIdCliente) return interaction.update({ content: 'Essa petição já tem cliente vinculado.', components: [] });
-  ficha.vincularDiscordId(peticao.cpfCliente, usuarioId, `Petição ${numero}`);
+  ficha.vincularDiscordId(peticao.rgCliente, usuarioId, `Petição ${numero}`);
   db.atualizar('peticoes', numero, { discordIdCliente: usuarioId });
   await interaction.update({ content: `✅ Cliente vinculado: <@${usuarioId}>. Protocolando petição ${numero}...`, components: [] });
   return protocolarPeticao(interaction.guild, numero);
@@ -406,7 +406,7 @@ function abrirModalPorteArma(interaction) {
   }
   const modal = new ModalBuilder().setCustomId('painel:modal:peticao:porte-arma').setTitle('Porte de arma — dados do cliente');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cpf').setLabel('CPF do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('endereco').setLabel('Endereço do cliente').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('declaracao').setLabel('Declaração: maioridade e residência fixa').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(400)),
@@ -421,7 +421,7 @@ function abrirModalTrocaNome(interaction) {
   }
   const modal = new ModalBuilder().setCustomId('painel:modal:peticao:troca-nome').setTitle('Troca de nome — dados do cliente');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cpf').setLabel('CPF do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome_atual').setLabel('Nome atual do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome_novo').setLabel('Nome pretendido').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('endereco').setLabel('Endereço do cliente').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
@@ -436,7 +436,7 @@ function abrirModalLimpezaFicha(interaction) {
   }
   const modal = new ModalBuilder().setCustomId('painel:modal:peticao:limpeza-ficha').setTitle('Limpeza de ficha — dados do cliente');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cpf').setLabel('CPF do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('endereco').setLabel('Endereço do cliente').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('justificativa').setLabel('Justificativa (obrigatório da 2ª vez)').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(400)),
@@ -452,7 +452,7 @@ function abrirModalAlvaraEvento(interaction) {
   }
   const modal = new ModalBuilder().setCustomId('painel:modal:peticao:alvara-evento').setTitle('Alvará de evento — dados do pedido');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('cpf').setLabel('CPF do organizador').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do organizador').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do organizador').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('evento').setLabel('Nome/descrição do evento').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('local').setLabel('Local do evento').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
@@ -468,76 +468,76 @@ async function processarModalAlvaraEvento(interaction) {
     return interaction.reply({ content: `"${pessoasTexto}" não é um número válido de pessoas. Abra a petição de novo e informe só o número (ex: 20).`, ephemeral: true });
   }
 
-  const cpf = interaction.fields.getTextInputValue('cpf');
+  const rg = interaction.fields.getTextInputValue('rg');
   await interaction.deferReply({ ephemeral: true });
   const local = interaction.fields.getTextInputValue('local');
   const { numero, canal } = await criarPeticaoAlvaraEvento({
-    guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
     nomeCliente: interaction.fields.getTextInputValue('nome'),
     nomeEvento: interaction.fields.getTextInputValue('evento'),
     localEvento: local, numeroPessoas,
   });
-  ficha.adicionarEndereco(cpf, local, numero);
+  ficha.adicionarEndereco(rg, local, numero);
   await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-  return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
+  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
 }
 
 async function processarModalPorteArma(interaction) {
-  const cpf = interaction.fields.getTextInputValue('cpf');
+  const rg = interaction.fields.getTextInputValue('rg');
   await interaction.deferReply({ ephemeral: true });
   const { numero, canal } = await criarPeticaoPorteArma({
-    guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
     nomeCliente: interaction.fields.getTextInputValue('nome'),
     enderecoCliente: interaction.fields.getTextInputValue('endereco'),
     declaracao: interaction.fields.getTextInputValue('declaracao'),
     relacaoOcorrencias: interaction.fields.getTextInputValue('relacao'),
   });
-  ficha.adicionarEndereco(cpf, interaction.fields.getTextInputValue('endereco'), numero);
+  ficha.adicionarEndereco(rg, interaction.fields.getTextInputValue('endereco'), numero);
   await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-  return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
+  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
 }
 
 async function processarModalTrocaNome(interaction) {
-  const cpf = interaction.fields.getTextInputValue('cpf');
+  const rg = interaction.fields.getTextInputValue('rg');
   const justificativa = interaction.fields.getTextInputValue('justificativa');
-  const jaTrocou = ficha.jaTrocouNomeAntes(cpf);
+  const jaTrocou = ficha.jaTrocouNomeAntes(rg);
   if (jaTrocou && !justificativa) {
-    return interaction.reply({ content: `Esse CPF (${cpf}) já teve uma troca de nome deferida antes — a partir da segunda vez é obrigatório preencher \`justificativa\` com o motivo da nova troca. Abra a petição de novo e preencha o campo.`, ephemeral: true });
+    return interaction.reply({ content: `Esse RG (${rg}) já teve uma troca de nome deferida antes — a partir da segunda vez é obrigatório preencher \`justificativa\` com o motivo da nova troca. Abra a petição de novo e preencha o campo.`, ephemeral: true });
   }
 
   await interaction.deferReply({ ephemeral: true });
   const endereco = interaction.fields.getTextInputValue('endereco');
   const { numero, canal } = await criarPeticaoTrocaNome({
-    guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
     nomeAtual: interaction.fields.getTextInputValue('nome_atual'),
     nomeNovo: interaction.fields.getTextInputValue('nome_novo'),
     enderecoCliente: endereco,
     justificativa, jaUsouGratuita: jaTrocou,
   });
-  ficha.adicionarEndereco(cpf, endereco, numero);
+  ficha.adicionarEndereco(rg, endereco, numero);
   await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-  return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
+  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
 }
 
 async function processarModalLimpezaFicha(interaction) {
-  const cpf = interaction.fields.getTextInputValue('cpf');
+  const rg = interaction.fields.getTextInputValue('rg');
   const justificativa = interaction.fields.getTextInputValue('justificativa');
-  const jaTeveAntes = ficha.jaTeveLimpezaFichaDeferida(cpf);
+  const jaTeveAntes = ficha.jaTeveLimpezaFichaDeferida(rg);
   if (jaTeveAntes && !justificativa) {
-    return interaction.reply({ content: `Esse CPF (${cpf}) já teve limpeza de ficha deferida antes — a partir da segunda vez é obrigatório preencher \`justificativa\`.`, ephemeral: true });
+    return interaction.reply({ content: `Esse RG (${rg}) já teve limpeza de ficha deferida antes — a partir da segunda vez é obrigatório preencher \`justificativa\`.`, ephemeral: true });
   }
 
   await interaction.deferReply({ ephemeral: true });
   const endereco = interaction.fields.getTextInputValue('endereco');
   const { numero, canal } = await criarPeticaoLimpezaFicha({
-    guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
     nomeCliente: interaction.fields.getTextInputValue('nome'),
     enderecoCliente: endereco,
     justificativa, jaTeveAntes,
   });
-  ficha.adicionarEndereco(cpf, endereco, numero);
+  ficha.adicionarEndereco(rg, endereco, numero);
   await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-  return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
+  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
 }
 
 // ---- Decisão (Juiz) ----
@@ -557,11 +557,11 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
   db.atualizar('peticoes', numero, campos);
   const peticao = db.buscarPorNumero('peticoes', numero);
 
-  // Nome civil só passa a valer de fato quando o Juiz defere — vinculado ao CPF do cliente,
+  // Nome civil só passa a valer de fato quando o Juiz defere — vinculado ao RG do cliente,
   // não ao ID de quem protocolou (o Advogado), já que é o cliente quem muda de nome.
   let apelidoAlterado = null;
-  if (status === 'Deferido' && peticao.tipo === 'TrocaNome' && peticao.cpfCliente) {
-    ficha.registrarTrocaNome(peticao.cpfCliente, peticao.nomeNovo);
+  if (status === 'Deferido' && peticao.tipo === 'TrocaNome' && peticao.rgCliente) {
+    ficha.registrarTrocaNome(peticao.rgCliente, peticao.nomeNovo);
 
     // Vínculo do Discord do cliente é obrigatório antes de deferir (ver `decidir`), então
     // sempre tem um ID aqui pra aplicar o apelido de verdade no servidor.
@@ -776,24 +776,24 @@ module.exports = {
     .setName('peticao')
     .setDescription('Petições administrativas — protocoladas por Advogado em nome do cliente')
     .addSubcommand(sub => sub.setName('porte-arma').setDescription('Advogado protocola porte de arma do cliente (anexe os documentos depois, no canal)')
-      .addStringOption(o => o.setName('cpf').setDescription('CPF do cliente').setRequired(true))
+      .addStringOption(o => o.setName('rg').setDescription('RG do cliente').setRequired(true))
       .addStringOption(o => o.setName('nome').setDescription('Nome completo do cliente').setRequired(true))
       .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true))
       .addStringOption(o => o.setName('declaracao').setDescription('Declaração de maioridade civil e residência fixa').setRequired(true))
       .addStringOption(o => o.setName('relacao_ocorrencias').setDescription('Relação objetiva das ocorrências, se alegar repetição')))
     .addSubcommand(sub => sub.setName('troca-nome').setDescription('Advogado protocola troca de nome do cliente (anexe a certidão depois, no canal)')
-      .addStringOption(o => o.setName('cpf').setDescription('CPF do cliente').setRequired(true))
+      .addStringOption(o => o.setName('rg').setDescription('RG do cliente').setRequired(true))
       .addStringOption(o => o.setName('nome_atual').setDescription('Nome completo atual do cliente').setRequired(true))
       .addStringOption(o => o.setName('nome_novo').setDescription('Nome completo pretendido').setRequired(true))
       .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true))
-      .addStringOption(o => o.setName('justificativa').setDescription('Obrigatório a partir da 2ª troca deste CPF')))
+      .addStringOption(o => o.setName('justificativa').setDescription('Obrigatório a partir da 2ª troca deste RG')))
     .addSubcommand(sub => sub.setName('limpeza-ficha').setDescription('Advogado protocola limpeza de ficha do cliente (anexe os documentos depois, no canal)')
-      .addStringOption(o => o.setName('cpf').setDescription('CPF do cliente').setRequired(true))
+      .addStringOption(o => o.setName('rg').setDescription('RG do cliente').setRequired(true))
       .addStringOption(o => o.setName('nome').setDescription('Nome completo do cliente').setRequired(true))
       .addStringOption(o => o.setName('endereco').setDescription('Endereço do cliente').setRequired(true))
-      .addStringOption(o => o.setName('justificativa').setDescription('Obrigatório a partir da 2ª vez deste CPF')))
+      .addStringOption(o => o.setName('justificativa').setDescription('Obrigatório a partir da 2ª vez deste RG')))
     .addSubcommand(sub => sub.setName('alvara-evento').setDescription('Advogado protocola alvará de evento em nome do organizador (Art. 68, Decreto 003/2026)')
-      .addStringOption(o => o.setName('cpf').setDescription('CPF do organizador').setRequired(true))
+      .addStringOption(o => o.setName('rg').setDescription('RG do organizador').setRequired(true))
       .addStringOption(o => o.setName('nome').setDescription('Nome completo do organizador').setRequired(true))
       .addStringOption(o => o.setName('evento').setDescription('Nome/descrição do evento').setRequired(true))
       .addStringOption(o => o.setName('local').setDescription('Local do evento').setRequired(true))
@@ -806,75 +806,75 @@ module.exports = {
     }
 
     if (sub === 'porte-arma') {
-      const cpf = interaction.options.getString('cpf');
+      const rg = interaction.options.getString('rg');
       await interaction.deferReply({ ephemeral: true });
       const endereco = interaction.options.getString('endereco');
       const { numero, canal } = await criarPeticaoPorteArma({
-        guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+        guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
         nomeCliente: interaction.options.getString('nome'), enderecoCliente: endereco,
         declaracao: interaction.options.getString('declaracao'),
         relacaoOcorrencias: interaction.options.getString('relacao_ocorrencias'),
       });
-      ficha.adicionarEndereco(cpf, endereco, numero);
+      ficha.adicionarEndereco(rg, endereco, numero);
       await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-      return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
+      return enviarFollowUpsCadastro(interaction, numero, rg, canal);
     }
 
     if (sub === 'troca-nome') {
-      const cpf = interaction.options.getString('cpf');
+      const rg = interaction.options.getString('rg');
       const justificativa = interaction.options.getString('justificativa');
-      const jaTrocou = ficha.jaTrocouNomeAntes(cpf);
+      const jaTrocou = ficha.jaTrocouNomeAntes(rg);
       if (jaTrocou && !justificativa) {
-        return interaction.reply({ content: `Esse CPF (${cpf}) já teve uma troca de nome deferida antes — a partir da segunda vez é obrigatório informar \`justificativa\`.`, ephemeral: true });
+        return interaction.reply({ content: `Esse RG (${rg}) já teve uma troca de nome deferida antes — a partir da segunda vez é obrigatório informar \`justificativa\`.`, ephemeral: true });
       }
 
       await interaction.deferReply({ ephemeral: true });
       const endereco = interaction.options.getString('endereco');
       const { numero, canal } = await criarPeticaoTrocaNome({
-        guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+        guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
         nomeAtual: interaction.options.getString('nome_atual'),
         nomeNovo: interaction.options.getString('nome_novo'),
         enderecoCliente: endereco,
         justificativa, jaUsouGratuita: jaTrocou,
       });
-      ficha.adicionarEndereco(cpf, endereco, numero);
+      ficha.adicionarEndereco(rg, endereco, numero);
       await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-      return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
+      return enviarFollowUpsCadastro(interaction, numero, rg, canal);
     }
 
     if (sub === 'limpeza-ficha') {
-      const cpf = interaction.options.getString('cpf');
+      const rg = interaction.options.getString('rg');
       const justificativa = interaction.options.getString('justificativa');
-      const jaTeveAntes = ficha.jaTeveLimpezaFichaDeferida(cpf);
+      const jaTeveAntes = ficha.jaTeveLimpezaFichaDeferida(rg);
       if (jaTeveAntes && !justificativa) {
-        return interaction.reply({ content: `Esse CPF (${cpf}) já teve limpeza de ficha deferida antes — a partir da segunda vez é obrigatório informar \`justificativa\`.`, ephemeral: true });
+        return interaction.reply({ content: `Esse RG (${rg}) já teve limpeza de ficha deferida antes — a partir da segunda vez é obrigatório informar \`justificativa\`.`, ephemeral: true });
       }
 
       await interaction.deferReply({ ephemeral: true });
       const endereco = interaction.options.getString('endereco');
       const { numero, canal } = await criarPeticaoLimpezaFicha({
-        guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+        guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
         nomeCliente: interaction.options.getString('nome'), enderecoCliente: endereco,
         justificativa, jaTeveAntes,
       });
-      ficha.adicionarEndereco(cpf, endereco, numero);
+      ficha.adicionarEndereco(rg, endereco, numero);
       await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-      return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
+      return enviarFollowUpsCadastro(interaction, numero, rg, canal);
     }
 
     if (sub === 'alvara-evento') {
-      const cpf = interaction.options.getString('cpf');
+      const rg = interaction.options.getString('rg');
       await interaction.deferReply({ ephemeral: true });
       const local = interaction.options.getString('local');
       const { numero, canal } = await criarPeticaoAlvaraEvento({
-        guild: interaction.guild, requerenteId: interaction.user.id, cpfCliente: cpf,
+        guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
         nomeCliente: interaction.options.getString('nome'),
         nomeEvento: interaction.options.getString('evento'),
         localEvento: local, numeroPessoas: interaction.options.getInteger('pessoas'),
       });
-      ficha.adicionarEndereco(cpf, local, numero);
+      ficha.adicionarEndereco(rg, local, numero);
       await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-      return enviarFollowUpsCadastro(interaction, numero, cpf, canal);
+      return enviarFollowUpsCadastro(interaction, numero, rg, canal);
     }
   },
 

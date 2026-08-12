@@ -39,7 +39,7 @@ function embedMedida(medida) {
       { name: 'Alvo', value: truncar(medida.alvo), inline: true },
       { name: 'Discord do alvo', value: medida.alvoDiscordId ? `<@${medida.alvoDiscordId}>` : 'Não identificado', inline: true },
       ...(medida.nomeAlvo ? [{ name: 'Nome civil do alvo', value: truncar(medida.nomeAlvo), inline: true }] : []),
-      ...(medida.cpfAlvo ? [{ name: 'CPF do alvo', value: medida.cpfAlvo, inline: true }] : []),
+      ...(medida.rgAlvo ? [{ name: 'RG do alvo', value: medida.rgAlvo, inline: true }] : []),
       { name: 'Motivo/Indícios', value: truncar(medida.motivo) },
       { name: 'Delegado', value: `<@${medida.delegado}>`, inline: true },
       { name: 'Promotor', value: `<@${medida.promotor}>`, inline: true },
@@ -146,7 +146,7 @@ function modalJustificativaMedidaDireta(chave, tipoValue, destinatarioRef) {
   if (destinatarioRef === 'fora') {
     linhas.push(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nomeCompleto').setLabel('Nome completo').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('idTexto').setLabel('CPF ou Discord ID').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('idTexto').setLabel('RG ou Discord ID').setStyle(TextInputStyle.Short).setRequired(true)),
     );
   }
   linhas.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('justificativa').setLabel('Justificativa do pedido').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)));
@@ -215,8 +215,8 @@ async function criarSolicitacaoMedidaDireta(interaction, chave) {
   if (destinatarioRef === 'fora') {
     const nomeCompleto = interaction.fields.getTextInputValue('nomeCompleto');
     const idTexto = interaction.fields.getTextInputValue('idTexto');
-    const { discordId, cpf } = partesProcesso.classificarIdLivre(idTexto);
-    partesProcesso.adicionarParte(numero, { papel: 'terceiro', nome: nomeCompleto, discordId, cpf, origem: 'manual_mandado', adicionadoPor: interaction.user.id });
+    const { discordId, rg } = partesProcesso.classificarIdLivre(idTexto);
+    partesProcesso.adicionarParte(numero, { papel: 'terceiro', nome: nomeCompleto, discordId, rg, origem: 'manual_mandado', adicionadoPor: interaction.user.id });
     destinatario = { nome: nomeCompleto, discordId };
   } else {
     const parte = (processo.partes || []).find(p => p.id === destinatarioRef);

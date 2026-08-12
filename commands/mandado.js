@@ -86,7 +86,7 @@ function modalTeorMandado(chave, tipoValue, destinatarioRef) {
   if (destinatarioRef === 'fora') {
     linhas.push(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nomeCompleto').setLabel('Nome completo').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('idTexto').setLabel('CPF ou Discord ID').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('idTexto').setLabel('RG ou Discord ID').setStyle(TextInputStyle.Short).setRequired(true)),
     );
   }
   linhas.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('teor').setLabel('Motivo / fundamentação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)));
@@ -106,8 +106,8 @@ function resolverDestinatario(interaction, numero, processo, destinatarioRef) {
   if (destinatarioRef === 'fora') {
     const nomeCompleto = interaction.fields.getTextInputValue('nomeCompleto');
     const idTexto = interaction.fields.getTextInputValue('idTexto');
-    const { discordId, cpf } = partesProcesso.classificarIdLivre(idTexto);
-    partesProcesso.adicionarParte(numero, { papel: 'terceiro', nome: nomeCompleto, discordId, cpf, origem: 'manual_mandado', adicionadoPor: interaction.user.id });
+    const { discordId, rg } = partesProcesso.classificarIdLivre(idTexto);
+    partesProcesso.adicionarParte(numero, { papel: 'terceiro', nome: nomeCompleto, discordId, rg, origem: 'manual_mandado', adicionadoPor: interaction.user.id });
     return { nome: nomeCompleto, discordId };
   }
   const parte = (processo.partes || []).find(p => p.id === destinatarioRef);
