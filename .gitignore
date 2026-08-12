@@ -1,4 +1,5 @@
 node_modules/
 .env
 dados.json
+dados.json.*
 *.log
