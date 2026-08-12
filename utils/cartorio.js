@@ -11,7 +11,7 @@ async function gerarResumoCartorio({ tipoAto, textoLivre = null, resumoFatos = n
   const apiKey = config.geminiApiKey;
   if (!apiKey) return null; // IA desligada (sem chave) — fluxo segue sem despacho.
 
-  const model = config.geminiModel || 'gemini-1.5-flash-latest';
+  const model = config.geminiModel || 'gemini-flash-latest';
   const prompt = [
     'Você é o(a) escrivão(ã) de um cartório judicial em um servidor de RP (roleplay jurídico).',
     'Escreva um DESPACHO DE CARTÓRIO curto (2 a 4 frases), em português formal jurídico, resumindo o ato abaixo pra o Juiz ou Promotor ler rápido e se situar.',
