@@ -149,43 +149,13 @@ async function verificarRenovacoesPorteArma(client) {
   }
 }
 
-// Job frequente (não diário — roda a cada ~10min, ver index.js): o Advogado tem 1h pra
-// vincular o Discord do cliente depois de abrir uma petição, senão ela nunca chega a ser
-// protocolada de verdade (nem Juiz é sorteado). Sem isso, uma petição esquecida ficava presa
-// pra sempre num canal que ninguém decide. Avisa aos 45min e cancela aos 60min.
-async function verificarVinculosPendentes(client, guild) {
-  const pendentes = db.todos('peticoes', p => p.status === 'Aguardando vínculo' && !p.discordIdCliente);
-  const agora = Date.now();
-
-  for (const p of pendentes) {
-    const criado = parseCriadoEm(p.criado_em);
-    if (!criado) continue;
-    const decorrido = agora - criado.getTime();
-
-    if (decorrido >= PRAZO_VINCULO_MS) {
-      db.atualizar('peticoes', p.numero, { status: 'Cancelada — prazo de vínculo expirado' });
-      const canal = await guild.channels.fetch(p.canalId).catch(() => null);
-      if (canal) {
-        // Frente 1.2: o canal é arquivado (bloqueia envio) mas NÃO some — fica o botão "Reabrir"
-        // pra Supervisão/Staff ressuscitar a petição com novo prazo, caso o cancelamento tenha
-        // sido só por os jogadores não estarem online no timer.
-        await canal.send({
-          content: `⏰ **Comunicação do Tribunal** — <@${p.requerenteId}>, o prazo de 1 (uma) hora para vinculação do cliente a esta petição transcorreu in albis. Esta petição **não foi protocolada** e o canal foi arquivado. A **Supervisão** ou a **Staff** pode reabri-la, ou protocole nova petição quando dispuser dos dados.`,
-          components: [new ActionRowBuilder().addComponents(peticaoCmd.botaoReabrirCaso(p.numero))],
-        });
-        await canais.arquivarCanal(canal);
-      }
-      await dmSeguro(client, p.requerenteId, `⏰ **Comunicação do Tribunal** — a petição ${p.numero} foi cancelada por decurso de prazo: a vinculação do cliente não foi realizada dentro de 1 (uma) hora.`);
-      continue;
-    }
-
-    if (decorrido >= AVISO_VINCULO_MS && !p.lembreteVinculoEnviado) {
-      db.atualizar('peticoes', p.numero, { lembreteVinculoEnviado: true });
-      const canal = await guild.channels.fetch(p.canalId).catch(() => null);
-      if (canal) await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${p.requerenteId}>, restam aproximadamente 15 (quinze) minutos para vinculação do cliente a esta petição, sob pena de cancelamento.` });
-      await dmSeguro(client, p.requerenteId, `⏰ **Comunicação do Tribunal** — a petição ${p.numero} será cancelada em aproximadamente 15 (quinze) minutos, caso o cliente não seja vinculado.`);
-    }
-  }
+// Frente 7: identidade do cliente = nome + RG e a petição é PROTOCOLADA já na abertura (não existe
+// mais o estado 'Aguardando vínculo' nem cancelamento por falta de vínculo de Discord). Este job
+// virou no-op — mantido só pra não quebrar o agendamento em index.js e por compatibilidade com
+// qualquer petição antiga que ainda estivesse nesse estado (o banco de produção foi zerado, então
+// não há nenhuma). Vincular o Discord do cliente passou a ser opcional e nunca cancela nada.
+async function verificarVinculosPendentes() {
+  return; // desativado na Frente 7
 }
 
 // Processo civil sem Juiz disponível na abertura ficava em "Aguardando sorteio de juiz" pra

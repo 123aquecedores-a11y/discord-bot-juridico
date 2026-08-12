@@ -133,10 +133,10 @@ async function solicitarCertidaoDaPeticao(interaction, numero) {
   return interaction.reply({ content: `✅ Certidão ${resultado.numero} requisitada em ${resultado.canal}.`, ephemeral: true });
 }
 
-// Juiz/Promotor só são sorteados depois que o cliente é vinculado (ver `protocolarPeticao`) —
-// sortear na abertura criava um beco sem saída real: o Juiz aparecia na fila, mas `decidir`
-// bloqueia sem o vínculo, e nada nunca lembrava o Advogado de completar. Assim, a petição só
-// "nasce pra valer" (com Juiz e prazo de decisão correndo) quando já está completa.
+// Frente 7: identidade do cliente = nome + RG; o @ do Discord é OPCIONAL. A petição é PROTOCOLADA
+// já na abertura (Juiz/Promotor sorteados por `protocolarPeticao`, chamado em enviarFollowUpsCadastro)
+// com base em nome+RG — não espera vínculo de Discord nenhum. Vincular o Discord do cliente segue
+// possível, mas opcional (só pra notificações/apelido) e nunca bloqueia a decisão.
 async function abrirTicketPeticao({ guild, tipo, sigla, requerenteId, dados }) {
   const numero = proximoNumero(db, 'peticoes', sigla, p => p.tipo === tipo);
 
@@ -146,7 +146,7 @@ async function abrirTicketPeticao({ guild, tipo, sigla, requerenteId, dados }) {
   });
 
   db.inserir('peticoes', {
-    numero, tipo, requerenteId, promotor: null, juiz: null, status: 'Aguardando vínculo', canalId: canal.id, ...dados,
+    numero, tipo, requerenteId, promotor: null, juiz: null, status: 'Aguardando sorteio de juiz', canalId: canal.id, ...dados,
   });
 
   // Só troca de nome deferida grava nomeCivil (ver ficha.registrarTrocaNome) — sem isso, a
@@ -355,18 +355,20 @@ async function reabrirCaso(interaction, numero) {
 }
 
 async function enviarFollowUpsCadastro(interaction, numero, rgCliente, canal) {
-  // O select nativo do Discord só lista quem já está no servidor — se o cliente ainda não
-  // entrou, o Advogado não consegue selecionar ninguém e o vínculo trava. O botão ao lado
-  // deixa informar o ID/@menção na mão; quando a pessoa entrar depois, o bot sincroniza sozinho
-  // (ver guildMemberAdd em index.js).
+  // Frente 7: protocola JÁ (sorteia Juiz/Promotor) com base em nome+RG — não espera vínculo nenhum.
+  await protocolarPeticao(interaction.guild, numero);
+
+  // Vincular o Discord do cliente continua possível, mas OPCIONAL: serve pra aplicar o apelido (se
+  // a pessoa existir/entrar no servidor) e pra notificações. Nunca bloqueia a decisão nem cancela a
+  // petição. O select nativo só lista quem já está no servidor; o botão ao lado aceita ID/@ na mão.
   const rowUser = new ActionRowBuilder().addComponents(
-    new UserSelectMenuBuilder().setCustomId(`painel:userselect:peticao:vincularcliente#${numero}`).setPlaceholder('Selecione o cliente no Discord'),
+    new UserSelectMenuBuilder().setCustomId(`painel:userselect:peticao:vincularcliente#${numero}`).setPlaceholder('Vincular Discord do cliente (opcional)'),
   );
   const rowManual = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`painel:acao:peticao:vincularmanual:${numero}`).setLabel('Cliente ainda não está no servidor').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`painel:acao:peticao:vincularmanual:${numero}`).setLabel('Informar @/ID na mão').setStyle(ButtonStyle.Secondary),
   );
   await canal.send({
-    content: `<@${interaction.user.id}> ⚠️ **Vínculo obrigatório**: selecione a conta de Discord do cliente abaixo antes que esta petição possa ser decidida. Isso é o que garante o cruzamento de antecedentes e mantém a ficha do cliente correta.`,
+    content: `<@${interaction.user.id}> 📎 *(Opcional)* Se o cliente tiver conta de Discord, dá pra vincular abaixo — só pra notificações e apelido. **Não é obrigatório**: a petição já foi protocolada por **nome + RG**.`,
     components: [rowUser, rowManual],
   });
 
@@ -392,11 +394,11 @@ async function processarVincularManual(interaction, numero) {
 
   ficha.vincularDiscordId(peticao.rgCliente, usuarioId, `Petição ${numero} — vínculo manual`);
   db.atualizar('peticoes', numero, { discordIdCliente: usuarioId });
-  await interaction.reply({
-    content: `✅ Cliente vinculado: <@${usuarioId}> — se ainda não estiver no servidor, o apelido e os outros dados são aplicados automaticamente assim que entrar. Protocolando petição ${numero}...`,
+  // Frente 7: opcional, não re-protocola (a petição já nasceu protocolada por nome+RG).
+  return interaction.reply({
+    content: `✅ Discord do cliente vinculado: <@${usuarioId}> — se ainda não estiver no servidor, o apelido é aplicado quando entrar. *(Opcional — a petição já estava protocolada por nome+RG.)*`,
     ephemeral: true,
   });
-  return protocolarPeticao(interaction.guild, numero);
 }
 
 // Pergunta única (não mais um loop de sim/não só pra endereço) — quanto mais dado a ficha
@@ -446,8 +448,9 @@ async function vincularClienteDiscord(interaction, numero) {
   if (peticao.discordIdCliente) return interaction.update({ content: 'Essa petição já tem cliente vinculado.', components: [] });
   ficha.vincularDiscordId(peticao.rgCliente, usuarioId, `Petição ${numero}`);
   db.atualizar('peticoes', numero, { discordIdCliente: usuarioId });
-  await interaction.update({ content: `✅ Cliente vinculado: <@${usuarioId}>. Protocolando petição ${numero}...`, components: [] });
-  return protocolarPeticao(interaction.guild, numero);
+  // Frente 7: a petição já foi protocolada por nome+RG na abertura — vincular o Discord é opcional
+  // e não re-protocola nada (só passa a permitir apelido/notificações pra essa conta).
+  return interaction.update({ content: `✅ Discord do cliente vinculado: <@${usuarioId}> *(opcional — a petição já estava protocolada por nome+RG)*.`, components: [] });
 }
 
 // ---- Modais do /painel ----
@@ -726,15 +729,8 @@ async function decidir(interaction, numero, acao) {
   if (!['Pendente', 'Diligência'].includes(peticao.status)) {
     return interaction.reply({ content: 'Essa petição já foi decidida (deferida ou indeferida).', ephemeral: true });
   }
-  // Vínculo do Discord do cliente é obrigatório pra decisão final — é o que garante que a
-  // ficha e o cruzamento de antecedentes fiquem corretos. "Diligência" ainda é permitido, já
-  // que não é uma decisão final e pode inclusive servir de lembrete pro Advogado vincular.
-  if ((acao === 'deferir' || acao === 'indeferir') && !peticao.discordIdCliente) {
-    return interaction.reply({
-      content: `Essa petição ainda não tem o Discord do cliente vinculado — é obrigatório antes de decidir. Peça pro Advogado <@${peticao.requerenteId}> selecionar no menu que apareceu neste canal quando a petição foi aberta.`,
-      ephemeral: true,
-    });
-  }
+  // Frente 7: o Discord do cliente NÃO é mais exigido pra decidir — identidade = nome + RG, e o
+  // cruzamento de antecedentes já funciona por RG. Vincular Discord é opcional.
 
   if (acao === 'deferir') {
     // Documento não é mais exigido na abertura — só vive como mensagem no canal. Por isso o
