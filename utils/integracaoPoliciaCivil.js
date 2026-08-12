@@ -112,12 +112,13 @@ async function processarRequerimento(message) {
   // manualmente (Camada 2, ver medida.js `anexarIndicios`).
   const indiciosPdfUrl = campoDoEmbed(embed, 'Indícios (PDF)') || campoDoEmbed(embed, 'Indícios');
 
-  // Discord/RG/Nome do alvo agora são obrigatórios — sem isso não dá pra vincular o alvo à
-  // ficha central (utils/ficha.js), e o cruzamento de antecedentes no SISBAJUS fica cego.
+  // RG + Nome do alvo são o registro principal (Parte 2) — obrigatórios. Discord do alvo é
+  // OPCIONAL: o réu/alvo pode existir só com RG+nome (nem todo alvo tem conta no servidor). O
+  // resto do fluxo de medida já tolera alvoDiscordId nulo (|| null, .filter(Boolean), guards).
+  // Delegado (exerce função) continua precisando de @menção válida.
   const erros = [];
   if (!delegadoId) erros.push('campo "Delegado solicitante" precisa ser uma @menção válida do Discord (não nome em texto)');
   if (!alvo) erros.push('campo "Alvo" ausente');
-  if (!alvoDiscordId) erros.push('campo "Discord do alvo" precisa ser uma @menção válida do Discord (não nome em texto)');
   if (!rgAlvo) erros.push('campo "RG do alvo" ausente');
   if (!nomeAlvo) erros.push('campo "Nome do alvo" ausente');
   if (!motivo) erros.push('campo "Motivo/Indícios" ausente');
