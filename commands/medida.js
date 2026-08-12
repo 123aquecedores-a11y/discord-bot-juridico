@@ -301,7 +301,7 @@ async function indeferirMedidaDireta(interaction, numero) {
   return interaction.reply({ content: `Medida ${numero} indeferida. Fica registrada no histórico do processo, sem mandado emitido.` });
 }
 
-async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvoDiscordId, motivo, semIndicios = false }) {
+async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvoDiscordId, rgAlvo = null, motivo, semIndicios = false }) {
   let promotorFinal = promotorId;
   if (!promotorFinal) {
     const promotores = rh.listarPorCargo('Promotor').filter(p => !p.licenca);
@@ -319,7 +319,7 @@ async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvo
   });
 
   db.inserir('medidas', {
-    numero, tipo, alvo, alvoDiscordId: alvoDiscordId || null, motivo,
+    numero, tipo, alvo, alvoDiscordId: alvoDiscordId || null, rgAlvo: rgAlvo || null, motivo,
     status: semIndicios ? 'Aguardando anexo de indícios' : 'Aguardando MP',
     delegado: delegadoId, promotor: promotorFinal, juiz: null,
     canalId: canal.id,
@@ -348,9 +348,10 @@ module.exports = {
         TIPOS_MEDIDA.forEach(t => o.addChoices({ name: t, value: t }));
         return o;
       })
-      .addStringOption(o => o.setName('alvo').setDescription('Pessoa/local alvo').setRequired(true))
+      .addStringOption(o => o.setName('alvo').setDescription('Nome/local do alvo').setRequired(true))
       .addStringOption(o => o.setName('motivo').setDescription('Motivo/indícios que fundamentam o pedido').setRequired(true))
-      .addUserOption(o => o.setName('alvo_discord').setDescription('Discord do alvo, se for pessoa identificada'))
+      .addStringOption(o => o.setName('alvo_rg').setDescription('RG do alvo (identidade civil, se for pessoa)'))
+      .addUserOption(o => o.setName('alvo_discord').setDescription('Discord do alvo (opcional, se tiver conta)'))
       .addUserOption(o => o.setName('promotor').setDescription('Promotor responsável por analisar')))
     .addSubcommand(sub => sub.setName('ver').setDescription('Ver detalhes de uma medida')
       .addStringOption(o => o.setName('numero').setDescription('Número da medida').setRequired(true).setAutocomplete(true)))
@@ -377,6 +378,7 @@ module.exports = {
         tipo: interaction.options.getString('tipo'),
         alvo: interaction.options.getString('alvo'),
         alvoDiscordId: interaction.options.getUser('alvo_discord')?.id || null,
+        rgAlvo: interaction.options.getString('alvo_rg') || null,
         motivo: interaction.options.getString('motivo'),
       });
 

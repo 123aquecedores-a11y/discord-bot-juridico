@@ -650,7 +650,7 @@ function botaoDecretarRevelia(numero) {
   );
 }
 
-async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, motivo, reusTexto, medidaNumero, atoMpNumero }) {
+async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, motivo, reusTexto, reuNome = null, reuRg = null, medidaNumero, atoMpNumero }) {
   const crimesEscolhidos = resolverCrimes(crimesTexto);
   if (crimesEscolhidos.length === 0) return { erro: 'Nenhum crime válido informado. Use os IDs mostrados em `/crime buscar`.' };
 
@@ -678,11 +678,11 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
   db.inserir('processos', {
     numero, tipo: 'Penal', status: 'Aguardando decisão do MP',
     crimes: crimesEscolhidos, motivo,
-    reus, advogados: [], delegado: delegadoId || null, promotor: promotorFinal, juiz: null,
+    reus, reuNome, reuRg, advogados: [], delegado: delegadoId || null, promotor: promotorFinal, juiz: null,
     canalId: canal.id, medidaVinculada: medidaNumero || null, atoMpVinculado: atoMpNumero || null, sentenca: null,
     // Registro unificado de partes (spec-atualizacoes-bot-juridico.md, seção 0) — réu(s) já
-    // identificado(s) na abertura nascem espelhados aqui também, sem substituir `reus`.
-    partes: partesProcesso.espelharPartesDaAbertura({ reus, adicionadoPor: delegadoId || promotorFinal }),
+    // identificado(s) na abertura nascem espelhados aqui (por @ e/ou por nome+RG — Frente 7).
+    partes: partesProcesso.espelharPartesDaAbertura({ reus, reuNome, reuRg, adicionadoPor: delegadoId || promotorFinal }),
   });
 
   // Réu é parte do processo desde que identificado — nunca fica trancado pra fora do canal.

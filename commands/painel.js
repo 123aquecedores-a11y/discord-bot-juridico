@@ -354,10 +354,14 @@ async function minhasPendencias(interaction) {
 // ---- Modais ----
 
 function abrirModalProcessoPenal(interaction) {
+  // Frente 7: réu segue identidade nome+RG (@ opcional), como no cível. Réu com Discord vai em
+  // "Menções @"; réu sem Discord entra por nome+RG. Nenhum é obrigatório (pode identificar depois).
   const modal = new ModalBuilder().setCustomId('painel:modal:processo:penal').setTitle('Abrir processo penal');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Descrição objetiva dos fatos').setStyle(TextInputStyle.Paragraph).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reus').setLabel('Menções @ dos réus (opcional)').setStyle(TextInputStyle.Short).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_nome').setLabel('Nome do réu (se não tiver Discord)').setStyle(TextInputStyle.Short).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_rg').setLabel('RG do réu').setStyle(TextInputStyle.Short).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reus').setLabel('Menções @ dos réus (se tiverem Discord)').setStyle(TextInputStyle.Short).setRequired(false)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('medida').setLabel('Nº da medida vinculada (opcional)').setStyle(TextInputStyle.Short).setRequired(false)),
   );
   return interaction.showModal(modal);
@@ -377,6 +381,8 @@ async function finalizarProcessoPenal(interaction) {
       crimesTexto: rascunho.crimes.join(','),
       motivo: rascunho.dados.motivo,
       reusTexto: rascunho.dados.reusTexto,
+      reuNome: rascunho.dados.reuNome,
+      reuRg: rascunho.dados.reuRg,
       medidaNumero: rascunho.dados.medidaNumero,
       atoMpNumero: rascunho.dados.atoMpNumero,
     });
@@ -1070,6 +1076,8 @@ async function tratarModal(interaction, modulo, acao, extra) {
         promotorId: null,
         motivo: interaction.fields.getTextInputValue('motivo'),
         reusTexto: interaction.fields.getTextInputValue('reus'),
+        reuNome: interaction.fields.getTextInputValue('reu_nome') || null,
+        reuRg: interaction.fields.getTextInputValue('reu_rg') || null,
         medidaNumero: interaction.fields.getTextInputValue('medida') || null,
       },
     });
