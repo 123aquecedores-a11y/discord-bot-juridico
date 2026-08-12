@@ -484,7 +484,7 @@ function abrirModalOficio(interaction, processoDetectado, destinatarioPreenchido
   const campoDestinatario = new TextInputBuilder().setCustomId('destinatario').setLabel('Destinatário').setStyle(TextInputStyle.Short).setRequired(true);
   if (destinatarioPreenchido) campoDestinatario.setValue(destinatarioPreenchido.slice(0, 100));
   modal.addComponents(
-    ...(processoDetectado ? [] : [new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('processo').setLabel('Número do processo vinculado').setStyle(TextInputStyle.Short).setRequired(true))]),
+    ...(processoDetectado ? [] : [new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('processo').setLabel('Processo vinculado (vazio = ofício avulso)').setStyle(TextInputStyle.Short).setRequired(false))]),
     new ActionRowBuilder().addComponents(campoDestinatario),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('assunto').setLabel('Assunto').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('conteudo').setLabel('Conteúdo').setStyle(TextInputStyle.Paragraph).setRequired(true)),
