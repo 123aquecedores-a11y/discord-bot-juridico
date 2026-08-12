@@ -50,6 +50,44 @@ async function gerarResumoCartorio({ tipoAto, textoLivre = null, resumoFatos = n
   }
 }
 
+// Revisão de texto livre (botão "✨ Revisar") — corrige SÓ a forma (gramática, concordância,
+// ortografia, pontuação, clareza) e PRESERVA o conteúdo/sentido. Nunca adiciona, remove ou
+// inventa informação, nem muda argumento/decisão. Temperatura baixa pra ser fiel. Opt-in: quem
+// chama mostra antes→depois e o autor decide se aceita (o bot não reescreve nada sozinho).
+async function revisarTexto(texto) {
+  const apiKey = config.geminiApiKey;
+  if (!apiKey || !texto || !texto.trim()) return null;
+  const model = config.geminiModel || 'gemini-flash-latest';
+  const prompt = [
+    'Você é um revisor de texto de um cartório judicial. Corrija APENAS a forma do texto abaixo:',
+    'gramática, concordância, ortografia, pontuação e clareza da redação.',
+    'REGRAS INEGOCIÁVEIS:',
+    '- Preserve EXATAMENTE o conteúdo, os fatos, nomes, números, datas e o sentido.',
+    '- NÃO adicione, remova nem invente informação. NÃO mude o argumento nem qualquer decisão.',
+    '- Mantenha o tom e o registro do autor (se já é formal, siga formal).',
+    '- Se o texto já estiver correto, devolva-o praticamente igual.',
+    'Responda apenas com o texto corrigido, sem comentários e sem aspas.',
+    '',
+    'Texto a revisar:',
+    texto,
+  ].join('\n');
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const resp = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 800 } }),
+    });
+    if (!resp.ok) { console.error('[cartorio] revisar respondeu', resp.status); return null; }
+    const data = await resp.json();
+    const t = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text).join('').trim();
+    return t || null;
+  } catch (e) {
+    console.error('[cartorio] revisar falha:', e.message);
+    return null;
+  }
+}
+
 // Monta o bloco pronto pra postar no canal (ou null se a IA não produziu nada). Deixa explícito
 // que é apoio informativo, pra ninguém confundir com decisão.
 async function despachoParaCanal(dados) {
@@ -58,4 +96,4 @@ async function despachoParaCanal(dados) {
   return `📝 **Despacho do Cartório** *(resumo automático — apoio informativo, não é decisão)*\n> ${texto.replace(/\n+/g, '\n> ')}`;
 }
 
-module.exports = { gerarResumoCartorio, despachoParaCanal };
+module.exports = { gerarResumoCartorio, despachoParaCanal, revisarTexto };
