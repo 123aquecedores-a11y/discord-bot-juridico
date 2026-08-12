@@ -190,11 +190,14 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('oficio')
     .setDescription('Emite ofícios vinculados a um processo')
+    // O Discord exige TODAS as opções obrigatórias antes das opcionais. Por isso 'processo'
+    // (opcional — vazio = ofício avulso) e 'aguarda_retorno' ficam por último. O handler lê por
+    // nome (getString/getBoolean), então a ordem aqui não muda a lógica.
     .addSubcommand(sub => sub.setName('criar').setDescription('Cria um ofício')
-      .addStringOption(o => o.setName('processo').setDescription('Número do processo (vazio = ofício avulso)').setRequired(false).setAutocomplete(true))
       .addStringOption(o => o.setName('destinatario').setDescription('Destinatário').setRequired(true))
       .addStringOption(o => o.setName('assunto').setDescription('Assunto').setRequired(true))
       .addStringOption(o => o.setName('conteudo').setDescription('Conteúdo').setRequired(true))
+      .addStringOption(o => o.setName('processo').setDescription('Número do processo (vazio = ofício avulso)').setRequired(false).setAutocomplete(true))
       .addBooleanOption(o => o.setName('aguarda_retorno').setDescription('Esse ofício espera resposta/documento de volta? (padrão: sim)').setRequired(false))),
 
   async execute(interaction) {
