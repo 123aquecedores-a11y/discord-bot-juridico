@@ -149,15 +149,17 @@ function peticoesDoRG(rg) {
   return db.todos('peticoes', p => p.rgCliente === normalizarRG(rg));
 }
 
-// Processo/medida não coletam RG (só petição coleta) — por isso o cruzamento aqui é pelos
-// IDs de Discord já vinculados à ficha, não pelo RG. Pega tanto quem já foi réu/autor num
-// processo quanto quem já foi alvo de uma medida cautelar.
+// Identidade da parte = nome + RG (Frente 7). Casa PRIMARIAMENTE por RG (reuRg/autorRg/partes[].rg
+// dos processos e rgAlvo das medidas) e TAMBÉM pelas contas de Discord já vinculadas à ficha — assim
+// uma pessoa com RG mas sem Discord ainda aparece cruzada. db.todos retorna cada registro uma vez.
 function registrosRelacionados(registro) {
   const ids = registro?.discordIds || [];
-  if (ids.length === 0) return { processos: [], medidas: [] };
-  const processos = db.todos('processos', p => ids.includes(p.autor) || (p.reus || []).some(r => ids.includes(r)));
-  const medidas = db.todos('medidas', m => ids.includes(m.alvoDiscordId));
-  return { processos, medidas };
+  const rg = registro?.rg || null;
+  const casaProcesso = p =>
+    (ids.length && (ids.includes(p.autor) || ids.includes(p.autorDiscordId) || (p.reus || []).some(r => ids.includes(r)))) ||
+    (rg && (p.reuRg === rg || p.autorRg === rg || (p.partes || []).some(x => x.rg === rg)));
+  const casaMedida = m => (ids.length && ids.includes(m.alvoDiscordId)) || (rg && m.rgAlvo === rg);
+  return { processos: db.todos('processos', casaProcesso), medidas: db.todos('medidas', casaMedida) };
 }
 
 // Chamado quando alguém entra no servidor (guildMemberAdd, index.js) — se essa conta já foi

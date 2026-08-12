@@ -103,9 +103,8 @@ function embedFicha(registro) {
     });
   }
 
-  if ((registro.discordIds || []).length > 0) {
-    embed.addFields({ name: 'Cruzamento de antecedentes', value: truncar(cruzamento.resumoTextoPorRG(registro.rg)) });
-  }
+  // Cruzamento por RG (Frente 7) — sempre exibido; funciona mesmo sem Discord vinculado à ficha.
+  embed.addFields({ name: 'Cruzamento de antecedentes', value: truncar(cruzamento.resumoTextoPorRG(registro.rg)) });
 
   return embed;
 }

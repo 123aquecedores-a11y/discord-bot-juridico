@@ -1,16 +1,25 @@
 // Cruzamento automático com os próprios processos penais do bot — usado pelas petições
 // administrativas antes da decisão do Juiz. Não integra com o MDT ainda (sem acesso à base).
 //
-// Petição é protocolada pelo Advogado em nome do cliente — o cruzamento precisa olhar pro
-// Discord do CLIENTE, não de quem preencheu. Por isso tudo aqui é indexado por RG: usa todo
-// ID de Discord já vinculado à ficha desse RG (a mesma pessoa pode ter usado contas
-// diferentes ao longo do tempo), mais o ID informado agora, se houver.
+// Identidade do cliente = nome + RG (Frente 7); o @ do Discord é OPCIONAL. Por isso o cruzamento
+// casa PRIMARIAMENTE por RG (contra reuRg e partes[].rg dos processos), e TAMBÉM por qualquer conta
+// de Discord já vinculada a esse RG (a mesma pessoa pode ter usado contas diferentes) — assim um
+// cliente com RG mas SEM Discord ainda é cruzado normalmente.
 const db = require('../database/db');
 const { parseCriadoEm } = require('./data');
 const ficha = require('./ficha');
 
-function processosPenaisDoRequerente(requerenteId) {
-  return db.todos('processos', p => p.tipo === 'Penal' && (p.reus || []).includes(requerenteId));
+// Processos penais em que a pessoa (identificada por RG e/ou pelas contas de Discord conhecidas)
+// figura como RÉU. db.todos retorna cada processo uma vez, então não há duplicação mesmo quando
+// casa por mais de um critério.
+function processosPenaisDoRG(rg, ids = []) {
+  return db.todos('processos', p => {
+    if (p.tipo !== 'Penal') return false;
+    if (ids.length && (p.reus || []).some(r => ids.includes(r))) return true;   // por conta de Discord
+    if (rg && p.reuRg === rg) return true;                                       // por RG (réu da abertura)
+    if (rg && (p.partes || []).some(x => x.papel === 'reu' && x.rg === rg)) return true; // por RG (parte)
+    return false;
+  });
 }
 
 function idsConhecidosDoRG(rg, discordIdInformado) {
@@ -20,18 +29,14 @@ function idsConhecidosDoRG(rg, discordIdInformado) {
 
 function verificarAntecedentesPorRG(rg, discordIdInformado) {
   const ids = idsConhecidosDoRG(rg, discordIdInformado);
-  if (ids.length === 0) {
-    return { temCondenacao: false, temProcessoAberto: false, condenacoes: [], abertos: [], semDiscordVinculado: true };
-  }
-  const processos = ids.flatMap(id => processosPenaisDoRequerente(id));
+  const processos = processosPenaisDoRG(rg, ids);
   const condenacoes = processos.filter(p => p.resultado === 'Condenado');
   const abertos = processos.filter(p => ['Aguardando decisão do MP', 'Instrução'].includes(p.status));
-  return { temCondenacao: condenacoes.length > 0, temProcessoAberto: abertos.length > 0, condenacoes, abertos, semDiscordVinculado: false };
+  return { temCondenacao: condenacoes.length > 0, temProcessoAberto: abertos.length > 0, condenacoes, abertos };
 }
 
 function resumoTextoPorRG(rg, discordIdInformado) {
   const r = verificarAntecedentesPorRG(rg, discordIdInformado);
-  if (r.semDiscordVinculado) return '⚠️ Cliente sem conta de Discord vinculada à ficha — não foi possível cruzar antecedentes automaticamente.';
   if (!r.temCondenacao && !r.temProcessoAberto) return '✅ Nenhuma condenação ou processo penal em andamento encontrado nos registros do bot.';
   const linhas = [];
   if (r.temCondenacao) linhas.push(`⚠️ Condenação(ões) registrada(s): ${r.condenacoes.map(p => p.numero).join(', ')}`);
@@ -39,15 +44,15 @@ function resumoTextoPorRG(rg, discordIdInformado) {
   return linhas.join('\n');
 }
 
-// Usado por Limpeza de Ficha: novo antecedente (processo penal aberto) nos últimos N dias,
-// em qualquer conta de Discord já vinculada a esse RG.
+// Usado por Limpeza de Ficha: novo antecedente (processo penal aberto) nos últimos N dias, casando
+// por RG e pelas contas de Discord já vinculadas a esse RG.
 function temNovoAntecedenteEmPorRG(rg, discordIdInformado, dias) {
   const limite = Date.now() - dias * 24 * 60 * 60 * 1000;
   const ids = idsConhecidosDoRG(rg, discordIdInformado);
-  return ids.some(id => processosPenaisDoRequerente(id).some(p => {
+  return processosPenaisDoRG(rg, ids).some(p => {
     const data = parseCriadoEm(p.criado_em);
     return data && data.getTime() >= limite;
-  }));
+  });
 }
 
 module.exports = { verificarAntecedentesPorRG, resumoTextoPorRG, temNovoAntecedenteEmPorRG };
