@@ -222,7 +222,10 @@ async function confirmarParecerMp(interaction, chave) {
     const excluir = [processo.delegado, processo.promotor, ...(processo.reus || [])];
     const juizId = rh.sortearJuiz({ excluirIds: excluir });
     if (!juizId) {
-      return interaction.editReply({ content: `Parecer registrado no processo ${numero}, mas não há Juiz ativo disponível para sorteio — a denúncia fica pendente até haver um.` });
+      // Sem Juiz agora: marca estado próprio pra o job de retry penal distribuir depois
+      // (verificarProcessosPenaisSemJuiz, prazos.js) — antes o processo ficava preso pra sempre.
+      db.atualizar('processos', numero, { status: 'Denúncia oferecida - aguardando juiz' });
+      return interaction.editReply({ content: `Parecer registrado e denúncia oferecida no processo ${numero}. Não há Juiz disponível agora, mas assim que houver um elegível o processo é **distribuído automaticamente** (o bot verifica a cada 10 min).` });
     }
 
     db.atualizar('processos', numero, { status: 'Instrução', juiz: juizId, juizDesde: new Date().toISOString() });

@@ -4,7 +4,7 @@ const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const config = require('./config');
 const {
   verificarPrazosJulgamento, verificarRenovacoesPorteArma, verificarVinculosPendentes,
-  verificarProcessosSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
+  verificarProcessosSemJuiz, verificarProcessosPenaisSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
   verificarMedidasAguardandoMP, verificarMedidasAguardandoJuiz, verificarMandadosPendentes,
   verificarApelacoesPendentes, verificarPrazosContestacao, DIA_MS,
 } = require('./utils/prazos');
@@ -73,6 +73,7 @@ client.once('ready', async () => {
   const rodarChecagensFrequentes = () => {
     verificarVinculosPendentes(client, guild).catch(err => console.error('Erro na checagem de vínculos pendentes:', err));
     verificarProcessosSemJuiz(guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (civil):', err));
+    verificarProcessosPenaisSemJuiz(guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (penal):', err));
     verificarPeticoesSemJuiz(guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (petição):', err));
     verificarDiligenciasPendentes(client, guild).catch(err => console.error('Erro na checagem de diligências pendentes:', err));
     verificarMedidasAguardandoMP(client, guild).catch(err => console.error('Erro na checagem de medidas aguardando MP:', err));

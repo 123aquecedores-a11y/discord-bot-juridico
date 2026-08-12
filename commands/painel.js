@@ -1404,6 +1404,20 @@ async function postarPainelFixo(guild, client) {
     estado.definir('painelMensagemId', mensagemFixa.id);
   }
 
+  // Garante SÓ 1 painel: apaga qualquer OUTRO painel do próprio bot que tenha sobrado (ex.: um
+  // painel antigo de antes do reset, quando o id salvo se perdeu e um novo foi postado). Só
+  // apaga mensagem DO BOT que é painel (tem o botão "abrir meu painel") — nunca mensagem de
+  // outra pessoa.
+  const lote = await canal.messages.fetch({ limit: 50 }).catch(() => null);
+  if (lote) {
+    for (const m of lote.values()) {
+      if (m.id === mensagemFixa.id) continue;
+      if (m.author?.id !== client.user.id) continue;
+      const ehPainel = (m.components || []).some(row => (row.components || []).some(c => c.customId === 'painel:acao:pessoal:abrirmenu'));
+      if (ehPainel) await m.delete().catch(() => {});
+    }
+  }
+
   // A limpeza automática do canal (apagar tudo que não fosse a mensagem fixa, a cada restart
   // e a cada 10min) foi DESLIGADA a pedido do operador — apagava mensagem de verdade que
   // alguém tinha postado no canal. limparCanalPainel continua definida abaixo, sem uso, caso

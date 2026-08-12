@@ -177,6 +177,33 @@ async function verificarProcessosSemJuiz(guild) {
   }
 }
 
+// Processo PENAL cuja denúncia foi oferecida sem Juiz disponível ficava preso pra sempre (não
+// havia retry como no civil). Roda no job frequente: assim que um Juiz elegível fica livre,
+// distribui e leva o processo pra Instrução, postando o painel completo pro Juiz atuar.
+async function verificarProcessosPenaisSemJuiz(guild) {
+  const processos = db.todos('processos', p => p.tipo === 'Penal' && p.status === 'Denúncia oferecida - aguardando juiz' && !p.juiz);
+
+  for (const p of processos) {
+    const juizId = rh.sortearJuiz({ excluirIds: [p.delegado, p.promotor, ...(p.reus || [])].filter(Boolean) });
+    if (!juizId) continue;
+
+    db.atualizar('processos', p.numero, { status: 'Instrução', juiz: juizId, juizDesde: new Date().toISOString() });
+    const canal = await guild.channels.fetch(p.canalId).catch(() => null);
+    if (canal) {
+      await canais.adicionarMembro(canal, juizId);
+      const atual = db.buscarPorNumero('processos', p.numero);
+      const reusTxt = (p.reus || []).map(id => `<@${id}>`).join(', ') || 'réu(s) a identificar';
+      const msgPainel = await canal.send({
+        content: `⚖️ **Comunicação do Tribunal** — <@${juizId}>, Vossa Senhoria foi distribuído(a) por sorteio para este processo (denúncia já oferecida, que aguardava julgador). Cite-se ${reusTxt} para instrução e julgamento.`,
+        embeds: [processoCmd.embedProcesso(atual)],
+        components: processoCmd.montarPainelAcoes(atual),
+      });
+      db.atualizar('processos', p.numero, { painelMsgId: msgPainel.id });
+    }
+    await processoCmd.postarOuAtualizarDiario(guild, p.numero);
+  }
+}
+
 // Diligência (Juiz pede documento/comprovação extra numa petição) não tinha prazo — se o
 // Advogado nunca anexasse, ficava parada pra sempre. 24h pra cumprir, aviso às 20h, indeferimento
 // automático se estourar (mesma lógica de "não cumpriu o exigido = pedido não sustentado").
@@ -353,7 +380,7 @@ async function verificarPrazosContestacao(client, guild) {
 
 module.exports = {
   verificarPrazosJulgamento, verificarRenovacoesPorteArma, verificarVinculosPendentes,
-  verificarProcessosSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
+  verificarProcessosSemJuiz, verificarProcessosPenaisSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
   verificarMedidasAguardandoMP, verificarMedidasAguardandoJuiz, verificarMandadosPendentes,
   verificarApelacoesPendentes, verificarPrazosContestacao,
   PRAZO_JULGAMENTO_DIAS, DIA_MS, HORA_MS, dmSeguro,
