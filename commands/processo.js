@@ -1166,9 +1166,9 @@ async function abrirModalHabilitacao(interaction, numero) {
 
   const modal = new ModalBuilder().setCustomId(`painel:modal:habilitacao:solicitar:${numero}`).setTitle('Solicitar habilitação');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente (réu)').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu').setLabel('Menção @ do réu que representa').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu').setLabel('Menção @ do réu (opcional)').setPlaceholder('Vazio se o réu não tem Discord').setStyle(TextInputStyle.Short).setRequired(false)),
   );
   return interaction.showModal(modal);
 }
@@ -1179,15 +1179,15 @@ async function criarHabilitacao(interaction, numero) {
 
   const nomeCliente = interaction.fields.getTextInputValue('nome');
   const rgCliente = interaction.fields.getTextInputValue('rg');
-  const reuId = extrairMencoes(interaction.fields.getTextInputValue('reu'))[0];
-
-  if (!reuId || !(processo.reus || []).includes(reuId)) {
-    return interaction.reply({ content: 'Marque (@menção) um réu que já faça parte deste processo.', ephemeral: true });
-  }
+  // Discord do réu é OPCIONAL (Parte 2): o cliente/réu é identificado por nome + RG. Se a menção
+  // veio e bate com um réu já no processo, vincula pra acesso ao canal; senão, segue só nome/RG.
+  const reuMencao = extrairMencoes(interaction.fields.getTextInputValue('reu') || '')[0] || null;
+  const reuId = reuMencao && (processo.reus || []).includes(reuMencao) ? reuMencao : null;
+  const reuRotulo = reuId ? `<@${reuId}>` : `**${nomeCliente}** (RG ${rgCliente})`;
 
   const habilitacoes = processo.habilitacoes || [];
   const novoId = habilitacoes.reduce((max, h) => Math.max(max, h.id || 0), 0) + 1;
-  const habilitacao = { id: novoId, reuId, advogadoId: interaction.user.id, nomeCliente, rgCliente, status: 'Pendente', criadoEm: new Date().toISOString() };
+  const habilitacao = { id: novoId, reuId, reuNome: nomeCliente, advogadoId: interaction.user.id, nomeCliente, rgCliente, status: 'Pendente', criadoEm: new Date().toISOString() };
   db.atualizar('processos', numero, { habilitacoes: [...habilitacoes, habilitacao] });
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
@@ -1197,7 +1197,7 @@ async function criarHabilitacao(interaction, numero) {
       .setColor(0xf1c40f)
       .addFields(
         { name: 'Advogado', value: `<@${interaction.user.id}>`, inline: true },
-        { name: 'Réu representado', value: `<@${reuId}>`, inline: true },
+        { name: 'Réu representado', value: reuRotulo, inline: true },
         { name: 'Cliente', value: truncar(`${nomeCliente} — RG ${rgCliente}`) },
       );
     const botoes = new ActionRowBuilder().addComponents(
@@ -1209,8 +1209,8 @@ async function criarHabilitacao(interaction, numero) {
 
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'habilitacao_solicitada', titulo: '🖋️ Habilitação de advogado solicitada',
-    detalhe: `<@${interaction.user.id}> pediu habilitação para defender <@${reuId}> (cliente: ${nomeCliente}).`,
-    executorId: interaction.user.id, metadata: { habilitacaoId: novoId, advogadoId: interaction.user.id, reuId },
+    detalhe: `<@${interaction.user.id}> pediu habilitação para defender ${reuRotulo}.`,
+    executorId: interaction.user.id, metadata: { habilitacaoId: novoId, advogadoId: interaction.user.id, reuId, reuNome: nomeCliente },
   });
   await repostarPainel(interaction.guild, numero);
 
@@ -1231,6 +1231,8 @@ async function decidirHabilitacao(interaction, chave, aprovar) {
   if (!alvo || alvo.status !== 'Pendente') {
     return interaction.reply({ content: 'Esse pedido não existe mais ou já foi decidido.', ephemeral: true });
   }
+  // Réu pode ser só nome (sem Discord) — evita exibir "<@null>".
+  const reuRef = alvo.reuId ? `<@${alvo.reuId}>` : `**${alvo.reuNome || 'o réu'}**`;
 
   const novoStatus = aprovar ? 'Aprovado' : 'Negado';
   const atualizadas = habilitacoes.map(h => h.id === habId ? { ...h, status: novoStatus } : h);
@@ -1243,21 +1245,21 @@ async function decidirHabilitacao(interaction, chave, aprovar) {
       // Só faz sentido oferecer o botão de contestação se a citação já aconteceu — se ainda
       // não, o botão é postado depois, no momento da citação (ver emitirIntimacao).
       if (processo.tipo === 'Civil' && processo.status === 'Aguardando contestação') {
-        await canal.send({ content: `<@${alvo.advogadoId}> — clique abaixo para anexar a contestação em nome de <@${alvo.reuId}>.`, components: [botaoAnexarContestacao(numero, alvo.id)] });
+        await canal.send({ content: `<@${alvo.advogadoId}> — clique abaixo para anexar a contestação em nome de ${reuRef}.`, components: [botaoAnexarContestacao(numero, alvo.id)] });
       }
     }
   }
 
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'habilitacao_decidida', titulo: `🖋️ Habilitação ${novoStatus.toLowerCase()}`,
-    detalhe: `Habilitação de <@${alvo.advogadoId}> para defender <@${alvo.reuId}> foi ${novoStatus.toLowerCase()}.`,
+    detalhe: `Habilitação de <@${alvo.advogadoId}> para defender ${reuRef} foi ${novoStatus.toLowerCase()}.`,
     executorId: interaction.user.id, metadata: { habilitacaoId: habId, resultado: novoStatus },
   });
   await repostarPainel(interaction.guild, numero);
 
   const embed = new EmbedBuilder()
     .setColor(aprovar ? 0x2ecc71 : 0xe74c3c)
-    .setDescription(`Habilitação de <@${alvo.advogadoId}> para defender <@${alvo.reuId}> foi **${novoStatus.toLowerCase()}**.`);
+    .setDescription(`Habilitação de <@${alvo.advogadoId}> para defender ${reuRef} foi **${novoStatus.toLowerCase()}**.`);
   return interaction.update({ embeds: [embed], components: [] });
 }
 

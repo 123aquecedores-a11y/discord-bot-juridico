@@ -1,6 +1,7 @@
 // Job diário: prazo de 7 dias corridos pro Juiz julgar um processo em Instrução, contado a
 // partir da distribuição (juizDesde). Não mexe em revelia — isso continua manual do Juiz.
 const db = require('../database/db');
+const config = require('../config');
 const canais = require('./canais');
 const rh = require('./rh');
 const { parseCriadoEm } = require('./data');
@@ -48,6 +49,11 @@ function partesDoProcesso(p) {
 }
 
 async function dmSeguro(client, userId, content) {
+  // Avisos de prazo por DM (privado) ficam DESLIGADOS por padrão — o operador pediu pra não
+  // encher o privado sobre processos. Os mesmos avisos continuam aparecendo NO CANAL do
+  // processo/medida (escalonamento público), então nada de informação se perde. Pra religar o
+  // DM, defina AVISOS_POR_DM=1 no .env.
+  if (!config.avisosPorDmLigado) return;
   try {
     const user = await client.users.fetch(userId);
     await user.send({ content });

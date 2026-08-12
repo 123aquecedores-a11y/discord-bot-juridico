@@ -78,4 +78,8 @@ module.exports = {
   // segue normal (fallback gracioso). Chave grátis em https://aistudio.google.com/app/apikey
   geminiApiKey: process.env.GEMINI_API_KEY || null,
   geminiModel: process.env.GEMINI_MODEL || null, // default no utils/cartorio.js
+
+  // Avisos de prazo por DM (privado) — DESLIGADO por padrão (operador não quer DM sobre
+  // processos). Os avisos continuam no canal do processo. Religa com AVISOS_POR_DM=1.
+  avisosPorDmLigado: process.env.AVISOS_POR_DM === '1',
 };
