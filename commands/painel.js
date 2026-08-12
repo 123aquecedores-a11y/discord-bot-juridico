@@ -43,6 +43,15 @@ function anexoBrasao() {
   return fs.existsSync(CAMINHO_BRASAO) ? [{ attachment: CAMINHO_BRASAO, name: 'brasao.png' }] : [];
 }
 
+// Confirmação efêmera que se AUTO-APAGA depois de `ms` (some sozinha da tela de quem clicou, pra
+// não acumular "aberto em X" no canal do painel). O ato em si já está no canal do processo; isso
+// é só o aviso pra quem clicou.
+async function respostaSumindo(interaction, payload, ms = 45000) {
+  const r = await interaction.editReply(payload);
+  setTimeout(() => interaction.deleteReply().catch(() => {}), ms);
+  return r;
+}
+
 function embedMenuPrincipal() {
   const embed = new EmbedBuilder()
     .setTitle('⚖️ Painel Jurídico')
@@ -380,7 +389,7 @@ async function finalizarProcessoPenal(interaction) {
       if (canalAto) await canalAto.send({ content: `Processo ${resultado.numero} aberto a partir deste ato: ${resultado.canal}` });
     }
 
-    return interaction.editReply({ content: `Processo penal ${resultado.numero} aberto em ${resultado.canal}.`, embeds: [], components: [] });
+    return respostaSumindo(interaction, { content: `Processo penal ${resultado.numero} aberto em ${resultado.canal}.`, embeds: [], components: [] });
   } finally {
     // Sempre limpa o rascunho — sucesso ou erro — pra um clique repetido em "Finalizar"
     // nunca tentar criar o processo (e o canal) de novo com os mesmos dados.
@@ -1047,7 +1056,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
       reuNome: interaction.fields.getTextInputValue('reu_nome'),
       reuDiscordId,
     });
-    return interaction.editReply({ content: `Processo civil ${resultado.numero} aberto em ${resultado.canal}.` });
+    return respostaSumindo(interaction, { content: `Processo civil ${resultado.numero} aberto em ${resultado.canal}.` });
   }
 
   if (modulo === 'crimepick' && acao === 'buscar') {
@@ -1215,7 +1224,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
       motivo: interaction.fields.getTextInputValue('motivo'),
     });
     if (resultado.erro) return interaction.editReply({ content: resultado.erro });
-    return interaction.editReply({ content: `Medida ${resultado.numero} registrada em ${resultado.canal}.` });
+    return respostaSumindo(interaction, { content: `Medida ${resultado.numero} registrada em ${resultado.canal}.` });
   }
 
   if (modulo === 'mandado' && acao === 'ver') {
@@ -1243,7 +1252,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
       instituicao: oficioCmd.instituicaoDoEmissor(interaction),
     });
     if (resultado.erro) return interaction.editReply({ content: resultado.erro });
-    return interaction.editReply({ content: `Ofício ${resultado.numero} expedido em ${resultado.canal}.` });
+    return respostaSumindo(interaction, { content: `Ofício ${resultado.numero} expedido em ${resultado.canal}.` });
   }
 
   if (modulo === 'crime' && acao === 'buscar') {

@@ -17,6 +17,7 @@ const documentoPng = require('../services/gerarDocumentoPNG');
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const dossie = require('../utils/dossie');
 const { aguardarAnexoPDF } = require('../utils/anexoPdf');
+const cartorio = require('../utils/cartorio');
 const anexos = require('../utils/anexos');
 const mandadoCmd = require('./mandado');
 const medidaCmd = require('./medida');
@@ -1669,8 +1670,11 @@ async function peticionar(interaction, numero) {
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal && processo.juiz) {
+    // IA "cartório" lê o PDF e resume pro Juiz (best-effort). Se estiver off/falhar, segue sem.
+    const resumo = await cartorio.resumirPdf(anexo.url, { tipoAto: 'petição avulsa' }).catch(() => null);
+    const despacho = resumo ? `\n\n📝 **Despacho do Cartório** *(resumo automático da IA — apoio, não é decisão)*\n> ${resumo.replace(/\n+/g, '\n> ')}` : '';
     await canal.send({
-      content: `<@${processo.juiz}> — petição protocolada por <@${interaction.user.id}>.`,
+      content: `<@${processo.juiz}> — petição protocolada por <@${interaction.user.id}>.${despacho}`,
       components: [botoesDeferirIndeferirPeticao(numero, novoId)],
       files: [{ attachment: anexo.url, name: anexo.nomeArquivo }],
     });

@@ -96,4 +96,41 @@ async function despachoParaCanal(dados) {
   return `📝 **Despacho do Cartório** *(resumo automático — apoio informativo, não é decisão)*\n> ${texto.replace(/\n+/g, '\n> ')}`;
 }
 
-module.exports = { gerarResumoCartorio, despachoParaCanal, revisarTexto };
+// Lê um PDF (por URL) e resume o conteúdo real — o Gemini é multimodal, então baixa o PDF e
+// manda inline pra IA. Mesmo princípio: só RESUME, nunca decide. Retorna null (fallback) se não
+// houver chave, o PDF não baixar, for grande demais, ou a API falhar.
+async function resumirPdf(pdfUrl, { tipoAto = 'documento' } = {}) {
+  const apiKey = config.geminiApiKey;
+  if (!apiKey || !pdfUrl) return null;
+  const model = config.geminiModel || 'gemini-flash-latest';
+  try {
+    const pdfResp = await fetch(pdfUrl);
+    if (!pdfResp.ok) return null;
+    const buf = Buffer.from(await pdfResp.arrayBuffer());
+    if (buf.length > 18 * 1024 * 1024) return null; // limite do envio inline (~20MB)
+    const prompt = [
+      `Você é o(a) escrivão(ã) do cartório. Leia o PDF anexado (${tipoAto}) e escreva um resumo`,
+      'curto (3 a 5 frases), em português formal jurídico, tom de despacho, do que o documento',
+      'contém: pontos principais, pedidos e datas relevantes.',
+      'NUNCA decida nada (não defira, indefira, conclua culpa/mérito). Só resuma o conteúdo real.',
+      'Se não conseguir ler o documento, responda exatamente: "Não foi possível ler o documento."',
+    ].join(' ');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const resp = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 500 },
+      }),
+    });
+    if (!resp.ok) { console.error('[cartorio] resumirPdf respondeu', resp.status); return null; }
+    const data = await resp.json();
+    const t = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text).join('').trim();
+    return t && t !== 'Não foi possível ler o documento.' ? t : null;
+  } catch (e) {
+    console.error('[cartorio] resumirPdf falha:', e.message);
+    return null;
+  }
+}
+
+module.exports = { gerarResumoCartorio, despachoParaCanal, revisarTexto, resumirPdf };
