@@ -7,6 +7,7 @@ const { isAdmin, isSuperStaff } = require('../utils/permissoes');
 const config = require('../config');
 const auditoria = require('../utils/auditoria');
 const db = require('../database/db');
+const { truncar } = require('../utils/texto');
 
 // Título que vai na frente do apelido quando o cargo é aprovado (ex: "Juiz Fulano").
 // Desembargador abrevia pra caber no limite de 32 caracteres do apelido do Discord.
@@ -187,6 +188,81 @@ async function negarSolicitacao(interaction, id) {
   return interaction.editReply({ embeds: [embed], components: [] }).catch(() => {});
 }
 
+// ---- Ficha funcional do judiciário (Parte 6) ----
+// Estatísticas de atuação de cada membro, calculadas na hora a partir dos autos existentes
+// (sem contagem manual). Os campos usados batem com o resto do código: processos têm
+// juiz/promotor/delegado/status/habilitacoes, medidas têm delegado/promotor, petições têm
+// requerenteId, apelações têm desembargadorId.
+const EMOJI_CARGO = { Delegado: '👮', Promotor: '🧑‍⚖️', Juiz: '⚖️', Advogado: '🛡️', Desembargador: '🏛️', Procurador: '⚖️' };
+
+function estatisticasDe(id, cargo, dados) {
+  const { processos, medidas, peticoes, apelacoes, habilitacoes } = dados;
+  switch (cargo) {
+    case 'Juiz': {
+      const julgados = processos.filter(p => p.juiz === id && p.status === 'Encerrado').length;
+      const emAndamento = processos.filter(p => p.juiz === id && !['Encerrado', 'Arquivado'].includes(p.status)).length;
+      return `${julgados} caso(s) julgado(s)${emAndamento ? ` · ${emAndamento} em andamento` : ''}`;
+    }
+    case 'Promotor': {
+      const denuncias = processos.filter(p => p.promotor === id && p.juiz).length;
+      const arquivados = processos.filter(p => p.promotor === id && p.status === 'Arquivado').length;
+      const med = medidas.filter(m => m.promotor === id).length;
+      return `${denuncias} denúncia(s) · ${arquivados} arquivamento(s) · ${med} medida(s)`;
+    }
+    case 'Advogado': {
+      const pet = peticoes.filter(p => p.requerenteId === id).length;
+      const hab = habilitacoes.filter(h => h.advogadoId === id && h.status === 'Aprovado').length;
+      return `${pet} petição(ões) · ${hab} habilitação(ões) aprovada(s)`;
+    }
+    case 'Delegado': {
+      const med = medidas.filter(m => m.delegado === id).length;
+      return `${med} medida(s) solicitada(s)`;
+    }
+    case 'Desembargador': {
+      const apel = apelacoes.filter(a => a.desembargadorId === id).length;
+      return `${apel} apelação(ões) relatada(s)`;
+    }
+    case 'Procurador': {
+      const med = medidas.filter(m => m.promotor === id).length;
+      return `${med} atuação(ões) no MP`;
+    }
+    default: return '—';
+  }
+}
+
+function fichaFuncional() {
+  const dados = {
+    processos: db.todos('processos'),
+    medidas: db.todos('medidas'),
+    peticoes: db.todos('peticoes'),
+    apelacoes: db.todos('apelacoes'),
+    habilitacoes: [],
+  };
+  dados.habilitacoes = dados.processos.flatMap(p => p.habilitacoes || []);
+
+  const embed = new EmbedBuilder().setTitle('🏛️ Ficha Funcional do Judiciário').setColor(0x2c3e50);
+  let algum = false;
+  for (const cargo of rh.CARGOS) {
+    const membros = rh.listarPorCargo(cargo);
+    if (!membros.length) continue;
+    algum = true;
+    const linhas = membros.map(m => {
+      const nome = m.nomePersonagem ? ` **${m.nomePersonagem}**` : '';
+      const licenca = m.licenca ? ' *(de licença)*' : '';
+      return `• <@${m.discordId}>${nome}${licenca}\n   ↳ ${estatisticasDe(m.discordId, cargo, dados)}`;
+    });
+    embed.addFields({ name: `${EMOJI_CARGO[cargo] || ''} ${cargo}`, value: truncar(linhas.join('\n'), 1024) });
+  }
+  embed.setDescription(algum
+    ? 'Atuação de cada membro, calculada automaticamente a partir dos autos.'
+    : 'Nenhum membro do judiciário cadastrado ainda. Use **🪪 Solicitar cargo** pra começar.');
+  return embed;
+}
+
+async function mostrarFichaFuncional(interaction) {
+  return interaction.reply({ embeds: [fichaFuncional()], ephemeral: true });
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('rh')
@@ -257,4 +333,6 @@ module.exports = {
   solicitarCargo,
   aprovarSolicitacao,
   negarSolicitacao,
+  fichaFuncional,
+  mostrarFichaFuncional,
 };

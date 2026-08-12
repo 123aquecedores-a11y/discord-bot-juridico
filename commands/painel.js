@@ -91,6 +91,7 @@ function botoesMenuPrincipal(interaction) {
     linha(
       botaoSe(true, 'painel:acao:pessoal:pendencias', '📌 Minhas pendências', ButtonStyle.Secondary),
       botaoSe(true, 'painel:acao:cargo:solicitar', '🪪 Solicitar cargo', ButtonStyle.Secondary),
+      botaoSe(true, 'painel:acao:cargo:ficha', '🏅 Ficha do judiciário', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:menu:rh', '👥 RH', ButtonStyle.Secondary),
     ),
   ].filter(Boolean);
@@ -608,6 +609,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     }
     if (acao === 'aprovar') return rhCmd.aprovarSolicitacao(interaction, extra);
     if (acao === 'negar') return rhCmd.negarSolicitacao(interaction, extra);
+    if (acao === 'ficha') return rhCmd.mostrarFichaFuncional(interaction);
   }
 
   if (modulo === 'pessoal') {
