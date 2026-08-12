@@ -271,16 +271,84 @@ function montarBlocoSecoes(tipoDocumento, dados) {
   }
 }
 
+// Um único Chromium é reaproveitado por todos os documentos/banners (abrir um por documento
+// estouraria a memória). O gerenciamento abaixo cuida de três coisas que faltavam:
+//  1) flags amigáveis a container — sobretudo --disable-dev-shm-usage: sem ela o Chromium tenta
+//     usar o /dev/shm minúsculo do container e trava/estoura ao renderizar (causa clássica de
+//     crash em Railway/Render e afins);
+//  2) auto-recuperação: se o Chromium morrer (OOM/crash), a instância morta é descartada e
+//     religada no próximo uso, em vez de deixar TODA geração de PNG quebrada até reiniciar o bot;
+//  3) desligamento por ociosidade: depois de um tempo sem gerar nada, o Chromium é fechado pra
+//     devolver memória ao container, e religa sozinho quando voltar a ser preciso.
+const LAUNCH_OPTS = {
+  headless: 'new',
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--no-zygote',
+  ],
+};
+const BROWSER_IDLE_MS = 5 * 60 * 1000;
+
 let browserInstance = null;
+let browserBootPromise = null; // evita abrir dois Chromium em pedidos quase simultâneos
+let idleTimer = null;
+let activeJobs = 0;
 
 async function getBrowser() {
-  if (!browserInstance) {
-    browserInstance = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  if (browserInstance && browserInstance.connected) return browserInstance;
+  if (!browserBootPromise) {
+    browserBootPromise = puppeteer.launch(LAUNCH_OPTS).then(browser => {
+      browserInstance = browser;
+      // Chromium caiu (ex: morto por falta de memória): esquece a instância morta pra religar
+      // no próximo uso, em vez de tentar usar um browser fantasma e quebrar todos os documentos.
+      browser.on('disconnected', () => {
+        if (browserInstance === browser) browserInstance = null;
+        browserBootPromise = null;
+      });
+      return browser;
+    }).catch(err => {
+      browserBootPromise = null; // libera nova tentativa no próximo pedido
+      throw err;
     });
   }
-  return browserInstance;
+  return browserBootPromise;
+}
+
+function agendarDesligamentoOcioso() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (activeJobs > 0) return; // ainda gerando algo — não desliga agora
+    const b = browserInstance;
+    browserInstance = null;
+    browserBootPromise = null;
+    if (b && b.connected) b.close().catch(() => {});
+  }, BROWSER_IDLE_MS);
+  if (idleTimer.unref) idleTimer.unref(); // o timer não deve segurar o processo Node vivo
+}
+
+// Renderiza um HTML em PNG reusando o Chromium compartilhado. Centraliza newPage/close e a
+// contagem de trabalhos ativos (pra não desligar o Chromium no meio de uma geração).
+async function renderHtmlToPng(html, viewport, { fullPage = false } = {}) {
+  activeJobs++;
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  try {
+    const browser = await getBrowser();
+    const page = await browser.newPage();
+    try {
+      await page.setViewport(viewport);
+      await page.setContent(html, { waitUntil: 'networkidle0' });
+      return await page.screenshot({ type: 'png', fullPage });
+    } finally {
+      await page.close().catch(() => {});
+    }
+  } finally {
+    activeJobs--;
+    agendarDesligamentoOcioso();
+  }
 }
 
 // Carrega os logos uma única vez e mantém em memória como base64, pra não ler o arquivo do
@@ -349,18 +417,7 @@ async function gerarDocumentoPNG(dados) {
     .replace(/\{\{NUMERO_PROCESSO\}\}/g, dados.numeroProcesso)
     .replace(/\{\{DATA_EMISSAO\}\}/g, dados.dataEmissao);
 
-  const browser = await getBrowser();
-  const page = await browser.newPage();
-  await page.setViewport({ width: 794, height: 1123 });
-  await page.setContent(html, { waitUntil: 'networkidle0' });
-
-  const buffer = await page.screenshot({
-    type: 'png',
-    fullPage: true,
-  });
-
-  await page.close();
-  return buffer;
+  return renderHtmlToPng(html, { width: 794, height: 1123 }, { fullPage: true });
 }
 
 // PNG é uma imagem estática — <@id> não vira menção clicável nela como vira no texto do
@@ -372,4 +429,4 @@ async function nomeExibicao(guild, discordId) {
   return membro ? membro.displayName : `Usuário ${discordId}`;
 }
 
-module.exports = { gerarDocumentoPNG, nomeExibicao, getBrowser };
+module.exports = { gerarDocumentoPNG, nomeExibicao, getBrowser, renderHtmlToPng };
