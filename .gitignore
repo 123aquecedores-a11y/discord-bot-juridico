@@ -1,4 +1,6 @@
 node_modules/
 .env
 dados.json
+dados.backup.json
+dados.json.bak-reset
 *.log

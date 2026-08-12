@@ -43,6 +43,30 @@ function salvar(dados) {
   fs.writeFileSync(DB_PATH, JSON.stringify(dados, null, 2));
 }
 
+// Estrutura de um banco NOVO: todas as tabelas vazias, com a semente de instituições (a única
+// tabela que nasce populada). É o mesmo que carregar() cria quando o arquivo não existe.
+function estruturaVazia() {
+  return Object.fromEntries(TABELAS.map(t => [t, tabelaVazia(t)]));
+}
+
+// Reset controlado do banco (produção/Railway). Roda UMA vez, no carregamento do módulo (antes de
+// qualquer leitura), quando RESETAR_BANCO está ligada. Serve pra "subir limpo" no volume persistente
+// sem acesso manual ao arquivo: sobrescreve o banco com a estrutura vazia e guarda o anterior em
+// <arquivo>.bak-reset. ATENÇÃO: enquanto a flag estiver ligada, TODO redeploy zera de novo — depois
+// de subir limpo, REMOVA/ZERE a variável RESETAR_BANCO no Railway.
+function resetarSeConfigurado() {
+  const flag = String(process.env.RESETAR_BANCO || '').trim().toLowerCase();
+  if (flag !== '1' && flag !== 'true' && flag !== 'sim') return;
+  try {
+    if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, DB_PATH + '.bak-reset');
+  } catch (e) {
+    console.error('[db] RESETAR_BANCO: falha ao salvar backup .bak-reset:', e.message);
+  }
+  fs.writeFileSync(DB_PATH, JSON.stringify(estruturaVazia(), null, 2));
+  console.warn(`[db] ⚠️ RESETAR_BANCO ATIVO — banco ZERADO em ${DB_PATH} (backup em ${DB_PATH}.bak-reset). REMOVA a variável RESETAR_BANCO no Railway pra não zerar de novo no próximo deploy.`);
+}
+resetarSeConfigurado();
+
 function gerarId(dados) {
   const todosRegistros = TABELAS.flatMap(t => dados[t]);
   const maiorId = todosRegistros.reduce((max, r) => Math.max(max, r.id || 0), 0);

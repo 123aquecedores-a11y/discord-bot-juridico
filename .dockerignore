@@ -1,0 +1,13 @@
+# NUNCA copiar pra imagem: node_modules do Windows (binários nativos incompatíveis com Linux),
+# segredos (.env) e dados locais (dados.json). O npm ci reinstala tudo limpo dentro da imagem.
+node_modules
+.cache
+.git
+.gitignore
+.env
+.env.*
+dados.json
+dados.backup.json
+dados.json.bak-reset
+*.log
+npm-debug.log*

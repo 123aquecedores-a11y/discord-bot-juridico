@@ -275,9 +275,14 @@ let browserInstance = null;
 
 async function getBrowser() {
   if (!browserInstance) {
+    // No Railway (Docker) o Chromium vem do apt e PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    // aponta pra ele. Local (Windows/dev), a variável fica vazia e o Puppeteer usa o Chromium
+    // que ele mesmo baixou. Sem passar isso, com PUPPETEER_SKIP_DOWNLOAD=1 o launch não acha
+    // navegador e os PNGs não saem.
     browserInstance = await puppeteer.launch({
       headless: 'new',
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      ...(process.env.PUPPETEER_EXECUTABLE_PATH ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH } : {}),
     });
   }
   return browserInstance;
