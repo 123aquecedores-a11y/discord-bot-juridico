@@ -18,6 +18,11 @@ const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const dossie = require('../utils/dossie');
 const { aguardarAnexoPDF } = require('../utils/anexoPdf');
 const cartorio = require('../utils/cartorio');
+
+// Rascunho da decisão entre o modal e a publicação — guarda o texto da sentença enquanto o Juiz
+// decide se revisa por IA. Em memória (dura segundos); se sumir (restart), é só refazer no "Julgar".
+const rascunhoDecisao = new Map();
+const chaveDecisao = (uid, numero) => `${uid}:${numero}`;
 const anexos = require('../utils/anexos');
 const mandadoCmd = require('./mandado');
 const medidaCmd = require('./medida');
@@ -1991,6 +1996,64 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
   return interaction.editReply({ embeds: [embedResultado], components: [] });
 }
 
+// Publicação da sentença (após o Juiz escolher revisar ou não) — lê o rascunho, gera o PNG e
+// posta. `usarRevisado` decide entre o texto revisado pela IA e o original.
+async function executarSentenca(interaction, numero, usarRevisado) {
+  const chave = chaveDecisao(interaction.user.id, numero);
+  const d = rascunhoDecisao.get(chave);
+  if (!d) return interaction.reply({ content: 'A prévia da sentença expirou. Refaça pelo botão "Julgar".', ephemeral: true }).catch(() => {});
+  rascunhoDecisao.delete(chave);
+  const texto = usarRevisado && d.textoRevisado ? d.textoRevisado : d.texto;
+  const { pena, regime, resultado } = d;
+
+  // Defer público ANTES do PNG (Puppeteer) — a sentença é pública no canal.
+  await interaction.deferReply();
+  db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaEm: new Date().toISOString() });
+
+  const processo = db.buscarPorNumero('processos', numero);
+  const nomeJuiz = await documentoPng.nomeExibicao(interaction.guild, processo.juiz);
+  const nomeReu = processo.reuNome || (
+    (processo.reus || []).length
+      ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(interaction.guild, id)))).join(' e ')
+      : 'o(a) réu(ré)'
+  );
+  const nomeAutor = processo.autorNome || (processo.autor ? await documentoPng.nomeExibicao(interaction.guild, processo.autor) : 'a parte autora');
+  const crimeDescricao = (processo.crimes || []).map(c => crimeLabel(c)).join(', ') || 'crime não especificado';
+
+  const TIPO_DOCUMENTO_SENTENCA = {
+    'Penal:Condenado': 'sentenca_penal_condenatoria', 'Penal:Absolvido': 'sentenca_penal_absolutoria',
+    'Civil:Procedente': 'sentenca_civel_procedente', 'Civil:Improcedente': 'sentenca_civel_improcedente',
+  };
+  const tipoDocumento = TIPO_DOCUMENTO_SENTENCA[`${processo.tipo}:${resultado}`];
+
+  const pngSentenca = await documentoPng.gerarDocumentoPNG({
+    tipoDocumento, orgaoEmissor: 'judiciario',
+    subunidade: processo.tipo === 'Penal' ? 'Comarca de São Paulo — Vara Criminal' : 'Comarca de São Paulo — Vara Cível',
+    tituloDocumento: 'SENTENÇA', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),
+    destinatario: processo.tipo === 'Penal' ? 'Réu(s)' : 'Autor e Réu(s)', corpoTexto: texto,
+    nomeReu, nomeAutor, crimeDescricao, pena, regime, nomeAssinante: nomeJuiz, cargoAssinante: 'Juiz de Direito',
+  }).catch(err => { console.error('Falha ao gerar PNG da sentença:', err.message); return null; });
+
+  const msgSentenca = await interaction.editReply({
+    content: documentos.textoSentenca(processo), embeds: [embedProcesso(processo)], components: [botaoRecorrer(numero)],
+    ...(pngSentenca ? { files: [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] } : {}),
+  });
+  const anexoUrlSentenca = msgSentenca?.attachments?.first()?.url || null;
+
+  if (processo.tipo === 'Penal') {
+    await devolutivaPoliciaCivil.enviarSentencaPoliciaCivil({ processo, texto: documentos.textoSentenca(processo), pngBuffer: pngSentenca });
+  }
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'sentenca', titulo: `⚖️ Sentença — ${resultado}`,
+    detalhe: texto, executorId: interaction.user.id, anexoUrl: anexoUrlSentenca, metadata: { resultado, pena, regime },
+  });
+  await repostarPainel(interaction.guild, numero);
+  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+  if (canal) await canais.arquivarCanal(canal);
+  await auditoria.registrar(interaction.guild, { acao: `Sentença: ${resultado}`, executorId: interaction.user.id, referencia: `Processo ${numero}` });
+  await postarOuAtualizarDiario(interaction.guild, numero);
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('processo')
@@ -2168,76 +2231,43 @@ module.exports = {
     const texto = rotulosAtenuantes.length ? `${textoDigitado}\n\nAtenuada em razão de: ${rotulosAtenuantes.join(', ')}.` : textoDigitado;
     rascunhoSentenca.limpar(interaction.user.id, numero);
 
-    // Defer ANTES de gerar o PNG (Puppeteer) — sem isso, a janela de 3s do Discord pra
-    // reconhecer a interação estoura enquanto o Chromium sobe (principalmente no primeiro uso
-    // depois do bot subir, ou num container com menos CPU), e o usuário vê "a interação falhou"
-    // mesmo com a sentença tendo sido salva. Não-ephemeral: a sentença é pública no canal.
-    await interaction.deferReply();
-
-    db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaEm: new Date().toISOString() });
-
-    const processo = db.buscarPorNumero('processos', numero);
-    const nomeJuiz = await documentoPng.nomeExibicao(interaction.guild, processo.juiz);
-    // Civil sempre tem reuNome (texto livre, nome do personagem/empresa — o apelido do
-    // jogador no Discord não representa a parte) — só resolve @menção quando não há esse
-    // campo (caso do Penal, onde réu só existe como menção mesmo).
-    const nomeReu = processo.reuNome || (
-      (processo.reus || []).length
-        ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(interaction.guild, id)))).join(' e ')
-        : 'o(a) réu(ré)'
-    );
-    const nomeAutor = processo.autorNome || (processo.autor ? await documentoPng.nomeExibicao(interaction.guild, processo.autor) : 'a parte autora');
-    const crimeDescricao = (processo.crimes || []).map(c => crimeLabel(c)).join(', ') || 'crime não especificado';
-
-    const TIPO_DOCUMENTO_SENTENCA = {
-      'Penal:Condenado': 'sentenca_penal_condenatoria',
-      'Penal:Absolvido': 'sentenca_penal_absolutoria',
-      'Civil:Procedente': 'sentenca_civel_procedente',
-      'Civil:Improcedente': 'sentenca_civel_improcedente',
-    };
-    const tipoDocumento = TIPO_DOCUMENTO_SENTENCA[`${processo.tipo}:${resultado}`];
-
-    const pngSentenca = await documentoPng.gerarDocumentoPNG({
-      tipoDocumento,
-      orgaoEmissor: 'judiciario',
-      subunidade: processo.tipo === 'Penal' ? 'Comarca de São Paulo — Vara Criminal' : 'Comarca de São Paulo — Vara Cível',
-      tituloDocumento: 'SENTENÇA',
-      numeroProcesso: numero,
-      dataEmissao: documentos.dataExtenso(),
-      destinatario: processo.tipo === 'Penal' ? 'Réu(s)' : 'Autor e Réu(s)',
-      corpoTexto: texto,
-      nomeReu, nomeAutor, crimeDescricao, pena, regime,
-      nomeAssinante: nomeJuiz,
-      cargoAssinante: 'Juiz de Direito',
-    }).catch(err => { console.error('Falha ao gerar PNG da sentença:', err.message); return null; });
-
-    const msgSentenca = await interaction.editReply({
-      content: documentos.textoSentenca(processo), embeds: [embedProcesso(processo)], components: [botaoRecorrer(numero)],
-      ...(pngSentenca ? { files: [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] } : {}),
+    // Em vez de publicar direto, guarda o rascunho e oferece a revisão por IA DENTRO do fluxo
+    // dos Fundamentos (Discord não deixa botão dentro do modal, então é o passo logo após).
+    rascunhoDecisao.set(chaveDecisao(interaction.user.id, numero), { texto, pena, regime, resultado });
+    return interaction.reply({
+      content: `📝 **Fundamentos da sentença** *(prévia)*:\n> ${truncar(texto, 850).replace(/\n/g, '\n> ')}\n\nQuer que a **IA revise a redação** (gramática/clareza, **sem mudar o sentido**) antes de publicar? Você decide.`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`painel:acao:sentenca:revisar:${numero}`).setLabel('✨ Revisar com IA').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`painel:acao:sentenca:publicar:${numero}`).setLabel('✅ Publicar assim').setStyle(ButtonStyle.Success),
+      )],
+      ephemeral: true,
     });
-    const anexoUrlSentenca = msgSentenca?.attachments?.first()?.url || null;
-
-    // Se o processo nasceu de uma medida pedida pela Polícia Civil (codigoExterno), devolve o
-    // desfecho pra eles também — fecha o ciclo mandado → instrução → sentença.
-    if (processo.tipo === 'Penal') {
-      await devolutivaPoliciaCivil.enviarSentencaPoliciaCivil({ processo, texto: documentos.textoSentenca(processo), pngBuffer: pngSentenca });
-    }
-
-    await andamentos.registrar(interaction.guild, numero, {
-      tipo: 'sentenca', titulo: `⚖️ Sentença — ${resultado}`,
-      detalhe: texto, executorId: interaction.user.id, anexoUrl: anexoUrlSentenca, metadata: { resultado, pena, regime },
-    });
-    // processo aqui já está com status 'Encerrado' (refetch acima) — painelAtual retorna null
-    // e isso só limpa os componentes do painel antigo, sem postar um novo. Certo: processo
-    // sentenciado não deveria mais oferecer "Julgar"/"Emitir intimação" clicáveis.
-    await repostarPainel(interaction.guild, numero);
-
-    const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
-    if (canal) await canais.arquivarCanal(canal);
-
-    await auditoria.registrar(interaction.guild, { acao: `Sentença: ${resultado}`, executorId: interaction.user.id, referencia: `Processo ${numero}` });
-    await postarOuAtualizarDiario(interaction.guild, numero);
   },
+
+  // Gera a revisão por IA e mostra antes→depois; o Juiz escolhe qual publicar.
+  async revisarSentencaTexto(interaction, numero) {
+    const d = rascunhoDecisao.get(chaveDecisao(interaction.user.id, numero));
+    if (!d) return interaction.update({ content: 'A prévia da sentença expirou. Refaça pelo botão "Julgar".', components: [] }).catch(() => {});
+    await interaction.deferUpdate();
+    const revisado = await cartorio.revisarTexto(d.texto).catch(() => null);
+    if (!revisado) {
+      return interaction.editReply({
+        content: '⚠️ A revisão por IA não está disponível agora. Pode publicar com o texto original.',
+        components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`painel:acao:sentenca:publicar:${numero}`).setLabel('✅ Publicar assim').setStyle(ButtonStyle.Success))],
+      });
+    }
+    d.textoRevisado = revisado;
+    return interaction.editReply({
+      content: `**📄 Original:**\n> ${truncar(d.texto, 650).replace(/\n/g, '\n> ')}\n\n**✨ Revisado pela IA:**\n> ${truncar(revisado, 650).replace(/\n/g, '\n> ')}`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`painel:acao:sentenca:usarrevisado:${numero}`).setLabel('Usar revisado').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`painel:acao:sentenca:publicar:${numero}`).setLabel('Manter original').setStyle(ButtonStyle.Secondary),
+      )],
+    });
+  },
+
+  async publicarSentenca(interaction, numero) { return executarSentenca(interaction, numero, false); },
+  async usarRevisadoSentenca(interaction, numero) { return executarSentenca(interaction, numero, true); },
 
   criarProcessoPenal,
   criarProcessoCivil,

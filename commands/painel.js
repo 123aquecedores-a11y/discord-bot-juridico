@@ -623,6 +623,12 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'ficha') return rhCmd.mostrarFichaFuncional(interaction);
   }
 
+  if (modulo === 'sentenca') {
+    if (acao === 'revisar') return processoCmd.revisarSentencaTexto(interaction, extra);
+    if (acao === 'publicar') return processoCmd.publicarSentenca(interaction, extra);
+    if (acao === 'usarrevisado') return processoCmd.usarRevisadoSentenca(interaction, extra);
+  }
+
   if (modulo === 'revisar' && acao === 'abrir') {
     const modal = new ModalBuilder().setCustomId('painel:modal:revisar:texto').setTitle('✨ Revisar texto (IA)');
     modal.addComponents(new ActionRowBuilder().addComponents(
