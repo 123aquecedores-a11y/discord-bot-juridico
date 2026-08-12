@@ -73,4 +73,9 @@ module.exports = {
   // Prazo de contestação no processo civil (dias corridos, contados da citação) — pontual e
   // específico desse trecho do fluxo, não é o prazo geral de julgamento (ver utils/prazos.js).
   prazoContestacaoDias: Number(process.env.PRAZO_CONTESTACAO_DIAS) || 15,
+
+  // IA "cartório" (Parte 5) — Google Gemini via REST. Sem a chave, a IA fica desligada e o bot
+  // segue normal (fallback gracioso). Chave grátis em https://aistudio.google.com/app/apikey
+  geminiApiKey: process.env.GEMINI_API_KEY || null,
+  geminiModel: process.env.GEMINI_MODEL || null, // default no utils/cartorio.js
 };
