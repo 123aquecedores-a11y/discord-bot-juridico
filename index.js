@@ -53,6 +53,12 @@ client.once('ready', async () => {
     return;
   }
 
+  // Simulador de alto fluxo (só quando SIMULAR=1) — cria tickets ao vivo pra teste. Ver
+  // scripts/simulador.js. Roda em paralelo, sem travar o bot (que segue respondendo normalmente).
+  if (process.env.SIMULAR === '1') {
+    require('./scripts/simulador').run(client, guild).catch(err => console.error('[simulador] erro:', err));
+  }
+
   const rodarChecagens = () => {
     verificarPrazosJulgamento(client, guild).catch(err => console.error('Erro na checagem diária de prazos:', err));
     verificarRenovacoesPorteArma(client).catch(err => console.error('Erro na checagem diária de porte de arma:', err));
