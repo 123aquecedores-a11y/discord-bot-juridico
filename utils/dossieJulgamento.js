@@ -51,14 +51,12 @@ async function postarDossie(canal, processo, documentos, acordao = null) {
   const botoes = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`processo:julgar:${processo.numero}`).setLabel('Julgar').setStyle(ButtonStyle.Success),
   );
-  // "Requerer novas provas" só existe no cenário de reabertura (acordao presente) — o handler
-  // é implementado na Fase 4 desta spec; o botão já nasce aqui porque faz parte do desenho do
-  // cartão em si (seção 2), mesmo antes da Fase 4 estar pronta.
-  if (acordao) {
-    botoes.addComponents(
-      new ButtonBuilder().setCustomId(`painel:acao:processo:requererprovas:${processo.numero}`).setLabel('Requerer novas provas').setStyle(ButtonStyle.Secondary),
-    );
-  }
+  // "Requerer novas provas" reabre a instrução — e "Concluso para julgamento" é sempre
+  // reabrível, então o botão aparece SEMPRE (não só na anulação/acordão). Antes ele só surgia
+  // com acordão, o que capava o ciclo requerer→concluir em 1 vez (ponta solta da auditoria).
+  botoes.addComponents(
+    new ButtonBuilder().setCustomId(`painel:acao:processo:requererprovas:${processo.numero}`).setLabel('Requerer novas provas').setStyle(ButtonStyle.Secondary),
+  );
 
   return canal.send({ embeds: [embed], components: [botoes] });
 }

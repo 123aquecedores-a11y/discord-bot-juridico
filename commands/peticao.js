@@ -613,8 +613,8 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
       // Não é terminal — reposta os botões pra não precisar rolar o canal inteiro pra achar
       // os antigos assim que o documento pedido for anexado.
       await canal.send({
-        content: `<@${peticao.requerenteId}> assim que anexar o que foi pedido, avise <@${peticao.juiz}> pra decidir de novo.`,
-        components: [botoesDecisao(numero)],
+        content: `<@${peticao.requerenteId}> — clique em **"📎 Anexar documento"** abaixo pra juntar o que o Juiz pediu; depois avise <@${peticao.juiz}> pra decidir de novo.`,
+        components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero)), botoesDecisao(numero)],
       });
     } else {
       // Deferido/Indeferido: mesma sentença formal e padrão pros três tipos de petição.

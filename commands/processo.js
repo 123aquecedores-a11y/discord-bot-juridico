@@ -330,6 +330,14 @@ const CATALOGO_ACOES = [
     botao: (numero) => new ButtonBuilder().setCustomId(`processo:julgar:${numero}`).setLabel('Julgar').setStyle(ButtonStyle.Primary),
   },
   {
+    // Citação do réu no civil (inicia o prazo de contestação) — a intimação genérica NÃO faz
+    // isso; só o "Receber e intimar" dispara a transição pra "Aguardando contestação". Antes só
+    // existia na mensagem de abertura (ficava enterrada); agora nasce no painel também.
+    id: 'citar_reu_civil', grupo: 1, cargo: ['Juiz'],
+    quando: (p) => p.tipo === 'Civil' && p.status === 'Aguardando defesa',
+    botao: (numero) => new ButtonBuilder().setCustomId(`painel:acao:processo:recebereintimar:${numero}`).setLabel('📨 Receber e citar réu').setStyle(ButtonStyle.Success),
+  },
+  {
     id: 'gerenciar_defesa', grupo: 1, cargo: ['Juiz'],
     quando: faseComJuiz,
     botao: (numero) => new ButtonBuilder().setCustomId(`painel:acao:processo:gerenciardefesa:${numero}`).setLabel('Gerenciar defesa').setStyle(ButtonStyle.Secondary),
