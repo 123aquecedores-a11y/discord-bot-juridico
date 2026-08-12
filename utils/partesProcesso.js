@@ -39,6 +39,11 @@ function espelharPartesDaAbertura({ reus = [], reuNome = null, autorId = null, a
   for (const discordId of reus) {
     partes.push({ papel: 'reu', nome: reuNome, discordId, rg: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
   }
+  // Réu só por nome (sem Discord — Parte 2): mesmo sem id no array `reus`, ele precisa virar
+  // parte pra aparecer na lista de destinatários de intimação/mandado (igual ao autor abaixo).
+  if (reus.length === 0 && reuNome) {
+    partes.push({ papel: 'reu', nome: reuNome, discordId: null, rg: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
+  }
   if (autorId || autorNome) {
     partes.push({ papel: 'autor', nome: autorNome, discordId: autorId || null, rg: null, origem: 'abertura', adicionadoEm: agora, adicionadoPor });
   }

@@ -242,16 +242,21 @@ function fichaFuncional() {
 
   const embed = new EmbedBuilder().setTitle('🏛️ Ficha Funcional do Judiciário').setColor(0x2c3e50);
   let algum = false;
+  // Limites do Discord: campo de embed ≤ 1024 chars, embed inteiro ≤ 6000. Com muitos membros
+  // isso estoura, então limita quantos aparecem por cargo e corta o valor com folga (900 < 1024,
+  // e 6 cargos × 900 < 6000). Excedente vira "…e mais N".
+  const LIMITE_POR_CARGO = 12;
   for (const cargo of rh.CARGOS) {
     const membros = rh.listarPorCargo(cargo);
     if (!membros.length) continue;
     algum = true;
-    const linhas = membros.map(m => {
+    const linhas = membros.slice(0, LIMITE_POR_CARGO).map(m => {
       const nome = m.nomePersonagem ? ` **${m.nomePersonagem}**` : '';
       const licenca = m.licenca ? ' *(de licença)*' : '';
       return `• <@${m.discordId}>${nome}${licenca}\n   ↳ ${estatisticasDe(m.discordId, cargo, dados)}`;
     });
-    embed.addFields({ name: `${EMOJI_CARGO[cargo] || ''} ${cargo}`, value: truncar(linhas.join('\n'), 1024) });
+    if (membros.length > LIMITE_POR_CARGO) linhas.push(`*…e mais ${membros.length - LIMITE_POR_CARGO}*`);
+    embed.addFields({ name: `${EMOJI_CARGO[cargo] || ''} ${cargo}`, value: truncar(linhas.join('\n'), 900) });
   }
   embed.setDescription(algum
     ? 'Atuação de cada membro, calculada automaticamente a partir dos autos.'

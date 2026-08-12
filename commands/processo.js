@@ -1088,7 +1088,8 @@ async function processarSelecaoPapelParteTardia(interaction, numero) {
   const papel = interaction.values[0];
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:partetardia:${numero}#${papel}`).setTitle(`Adicionar ${ROTULO_PAPEL_PARTE[papel]}`.slice(0, 45));
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nomeCompleto').setLabel('Nome completo da parte').setStyle(TextInputStyle.Short).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nomeCompleto').setLabel('Nome completo da parte').setPlaceholder('Ex: Ricardo Fernandes').setStyle(TextInputStyle.Short).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG da parte').setPlaceholder('Ex: 12.345.678-9').setStyle(TextInputStyle.Short).setRequired(false)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mencao').setLabel('Menção @ Discord (opcional)').setPlaceholder('Vazio se a pessoa não tem Discord').setStyle(TextInputStyle.Short).setRequired(false)),
   );
   return interaction.showModal(modal);
@@ -1103,10 +1104,11 @@ async function confirmarParteTardia(interaction, chave) {
   }
 
   const nomeCompleto = (interaction.fields.getTextInputValue('nomeCompleto') || '').trim() || null;
+  const rg = (interaction.fields.getTextInputValue('rg') || '').trim() || null;
   const discordId = extrairMencoes(interaction.fields.getTextInputValue('mencao') || '')[0] || null;
-  // Discord opcional (Parte 2): basta o nome. Só barra se não veio nem nome nem menção.
-  if (!discordId && !nomeCompleto) {
-    return interaction.reply({ content: 'Informe pelo menos o **nome** da parte (a menção do Discord é opcional).', ephemeral: true });
+  // RG + nome é o registro principal (Parte 2); Discord é opcional. Só barra se não veio NADA.
+  if (!discordId && !nomeCompleto && !rg) {
+    return interaction.reply({ content: 'Informe pelo menos o **nome** ou o **RG** da parte (a menção do Discord é opcional).', ephemeral: true });
   }
 
   if (papel === 'reu') {
@@ -1114,7 +1116,7 @@ async function confirmarParteTardia(interaction, chave) {
     if (discordId) {
       const resultado = await vincularReu({ guild: interaction.guild, numero, reusTexto: `<@${discordId}>`, executorId: interaction.user.id });
       if (resultado.erro) return interaction.reply({ content: resultado.erro, ephemeral: true });
-      partesProcesso.adicionarParte(numero, { papel: 'reu', nome: nomeCompleto, discordId, origem: 'parte_tardia', adicionadoPor: interaction.user.id });
+      partesProcesso.adicionarParte(numero, { papel: 'reu', nome: nomeCompleto, rg, discordId, origem: 'parte_tardia', adicionadoPor: interaction.user.id });
       return interaction.reply({ content: `Réu adicionado ao processo ${numero}, com acesso liberado no canal.`, ephemeral: true });
     }
     // Sem Discord: réu registrado só por nome (sem acesso ao canal, que exige conta no Discord).
@@ -1132,7 +1134,7 @@ async function confirmarParteTardia(interaction, chave) {
 
   // Testemunha NÃO ganha acesso ao canal — só fica registrada, disponível pra depoimento
   // (seção 0) e, nas próximas fases, pra mandado/intimação escolherem ela como destinatário.
-  partesProcesso.adicionarParte(numero, { papel, nome: nomeCompleto, discordId, origem: 'parte_tardia', adicionadoPor: interaction.user.id });
+  partesProcesso.adicionarParte(numero, { papel, nome: nomeCompleto, rg, discordId, origem: 'parte_tardia', adicionadoPor: interaction.user.id });
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) {
