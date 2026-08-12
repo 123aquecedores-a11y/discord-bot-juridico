@@ -86,7 +86,7 @@ function embedPeticao(p) {
 // petição inicial civil já usa (spec-andamentos-processuais_4.md, seção 8.4) — antes o pedido
 // só dizia "anexe direto na conversa", sem virar `documento` de verdade nos autos.
 function botaoAnexarDocumentoPeticao(numero) {
-  return new ButtonBuilder().setCustomId(`painel:acao:peticao:anexardocumento:${numero}`).setLabel('📎 Anexar documento').setStyle(ButtonStyle.Primary);
+  return new ButtonBuilder().setCustomId(`painel:acao:peticao:anexardocumento:${numero}`).setLabel('📎 Anexar petição/documento').setStyle(ButtonStyle.Primary);
 }
 
 async function anexarDocumentoPeticao(interaction, numero) {
@@ -666,7 +666,7 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
       // Não é terminal — reposta os botões pra não precisar rolar o canal inteiro pra achar
       // os antigos assim que o documento pedido for anexado.
       await canal.send({
-        content: `<@${peticao.requerenteId}> — clique em **"📎 Anexar documento"** abaixo pra juntar o que o Juiz pediu; depois avise <@${peticao.juiz}> pra decidir de novo.`,
+        content: `<@${peticao.requerenteId}> — clique em **"📎 Anexar petição/documento"** abaixo pra juntar o que o Juiz pediu; depois avise <@${peticao.juiz}> pra decidir de novo.`,
         components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero)), botoesDecisao(numero)],
       });
     } else {
