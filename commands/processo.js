@@ -672,8 +672,9 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
   const processo = db.buscarPorNumero('processos', numero);
   const componentes = [botoesCivilAbertura(numero), botaoAnexarPeticaoInicial(numero)];
   if (juizId) componentes.push(...botoesJuiz(numero));
+  const avisoSemJuiz = juizId ? '' : '\n\n⚠️ **Nenhum Juiz foi sorteado ainda.** Não há Juiz elegível — provavelmente porque o único Juiz cadastrado é parte/advogado deste processo (juiz não julga a própria causa), ou não há Juiz cadastrado. Assim que existir um Juiz elegível, o sorteio acontece **automaticamente** (o bot tenta de novo a cada 10 min). O painel completo (Julgar, etc.) aparece quando houver Juiz.';
   await canal.send({
-    content: `<@${advogadoId}>${juizId ? ` <@${juizId}>` : ''}\n📎 Clique em **"Anexar petição inicial"** abaixo pra juntar o PDF aos autos.`,
+    content: `<@${advogadoId}>${juizId ? ` <@${juizId}>` : ''}\n📎 Clique em **"Anexar petição inicial"** abaixo pra juntar o PDF aos autos.${avisoSemJuiz}`,
     embeds: [embedProcesso(processo)], components: componentes,
   });
 
