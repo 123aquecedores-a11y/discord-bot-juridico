@@ -70,4 +70,49 @@ async function aguardarAnexoPDF(interaction, { timeoutMs = 10 * 60 * 1000 } = {}
   };
 }
 
-module.exports = { aguardarAnexoPDF };
+// Variante do aguardarAnexoPDF para "Anexar prova" (lote 5, Função 5): coleta VÁRIOS arquivos de
+// QUALQUER tipo (foto/vídeo/PDF/etc.) do mesmo autor, num único fato. Abre a mesma janela
+// temporária de SendMessages (só pro autor, num canal bloqueado) e a fecha no final. NÃO apaga as
+// mensagens do autor — apagar mataria o link do anexo (requisito "provas nunca somem"). A janela
+// fecha por inatividade (idleMs sem novo anexo) OU pelo teto total (timeoutMs). Retorna
+// { arquivos: [{ url, nomeArquivo }], autorId, dataEnvio } ou null se nada foi enviado.
+async function aguardarAnexos(interaction, { timeoutMs = 90 * 1000, idleMs = 25 * 1000 } = {}) {
+  const seg = Math.round(timeoutMs / 1000);
+  const segIdle = Math.round(idleMs / 1000);
+
+  // ACK dentro dos 3s ANTES de mexer em permissão (mesma razão do aguardarAnexoPDF acima).
+  await interaction.reply({
+    content: `📎 Envie o(s) arquivo(s) como anexo nas próximas mensagens deste canal — pode mandar vários do mesmo fato. A janela fecha após ${segIdle}s sem novo envio (ou ${seg}s no total).`,
+    ephemeral: true,
+  });
+
+  const bloqueado = interaction.channel && canais.canalTemConversaBloqueada(interaction.channel);
+  if (bloqueado) await interaction.channel.permissionOverwrites.edit(interaction.user.id, { SendMessages: true }).catch(() => {});
+  const relockar = async () => {
+    if (bloqueado) await interaction.channel.permissionOverwrites.edit(interaction.user.id, { SendMessages: false }).catch(() => {});
+  };
+
+  const arquivos = [];
+  const collector = interaction.channel.createMessageCollector({
+    filter: (msg) => msg.author.id === interaction.user.id && msg.attachments.size > 0,
+    time: timeoutMs,
+    idle: idleMs,
+  });
+  await new Promise((resolve) => {
+    collector.on('collect', (msg) => {
+      for (const anexo of msg.attachments.values()) {
+        arquivos.push({ url: anexo.url, nomeArquivo: anexo.name || 'arquivo' });
+      }
+    });
+    collector.on('end', () => resolve());
+  });
+
+  await relockar();
+  if (arquivos.length === 0) {
+    await interaction.followUp({ content: '⏱️ Tempo esgotado. Nenhum arquivo recebido.', ephemeral: true }).catch(() => {});
+    return null;
+  }
+  return { arquivos, autorId: interaction.user.id, dataEnvio: new Date() };
+}
+
+module.exports = { aguardarAnexoPDF, aguardarAnexos };

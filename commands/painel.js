@@ -701,6 +701,8 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'historicoclique') return processoCmd.verHistoricoProcesso(interaction, extra);
     if (acao === 'solicitardocumento') return abrirSelectTipoDocumentoExterno(interaction, extra);
     if (acao === 'peticionar') return processoCmd.peticionar(interaction, extra);
+    if (acao === 'anexarprova') return processoCmd.abrirModalAnexarProva(interaction, extra);
+    if (acao === 'rolprovas') return processoCmd.verRolProvas(interaction, extra);
     if (acao === 'deferirpeticao') return processoCmd.decidirPeticao(interaction, extra, true);
     if (acao === 'indeferirpeticao') return processoCmd.decidirPeticao(interaction, extra, false);
     if (acao === 'listar') return processoCmd.listarProcessos(interaction, null);
@@ -1069,6 +1071,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'mandado' && acao === 'emitir') return mandadoCmd.emitirMandado(interaction, extra);
   if (modulo === 'medida' && acao === 'solicitardireta') return medidaCmd.criarSolicitacaoMedidaDireta(interaction, extra);
   if (modulo === 'processo' && acao === 'depoimento') return processoCmd.registrarDepoimentoHandler(interaction, extra);
+  if (modulo === 'processo' && acao === 'anexarprova') return processoCmd.salvarProva(interaction, extra);
 
   if (modulo === 'processo' && acao === 'penal') {
     rascunhoCrimes.iniciar(interaction.user.id, {
