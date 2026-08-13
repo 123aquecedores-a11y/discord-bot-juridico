@@ -1576,7 +1576,8 @@ async function decidirHabilitacao(interaction, chave, aprovar) {
   const reuRef = alvo.reuId ? `<@${alvo.reuId}>` : `**${alvo.reuNome || 'o réu'}**`;
 
   const novoStatus = aprovar ? 'Aprovado' : 'Negado';
-  const atualizadas = habilitacoes.map(h => h.id === habId ? { ...h, status: novoStatus } : h);
+  // aprovadoEm marca o início do prazo de 24h para apresentar defesa (Parte B, penal).
+  const atualizadas = habilitacoes.map(h => h.id === habId ? { ...h, status: novoStatus, aprovadoEm: aprovar ? new Date().toISOString() : (h.aprovadoEm || null) } : h);
   db.atualizar('processos', numero, { habilitacoes: atualizadas });
 
   if (aprovar) {
@@ -1657,7 +1658,7 @@ async function adicionarAdvogadoSelecionado(interaction, numero) {
   const hab = {
     id: novoId, reuId, reuNome: processo.reuNome || null, advogadoId: advId,
     nomeCliente: processo.reuNome || null, rgCliente: processo.reuRg || null,
-    status: 'Aprovado', criadoEm: new Date().toISOString(), adicionadoPor: interaction.user.id,
+    status: 'Aprovado', criadoEm: new Date().toISOString(), aprovadoEm: new Date().toISOString(), adicionadoPor: interaction.user.id,
   };
   db.atualizar('processos', numero, { habilitacoes: [...habilitacoes, hab] });
 
@@ -2080,7 +2081,14 @@ async function peticionar(interaction, numero) {
   const peticoesDoProcesso = processo.peticoes || [];
   const novoId = peticoesDoProcesso.reduce((max, p) => Math.max(max, p.id || 0), 0) + 1;
   const peticaoNova = { id: novoId, advogadoId: interaction.user.id, url: anexo.url, nomeArquivo: anexo.nomeArquivo, status: 'Pendente', criadaEm: new Date().toISOString() };
-  db.atualizar('processos', numero, { peticoes: [...peticoesDoProcesso, peticaoNova] });
+  const patchPeticao = { peticoes: [...peticoesDoProcesso, peticaoNova] };
+  // Penal: a 1ª petição de um advogado habilitado (constituído ou dativo) conta como DEFESA
+  // apresentada — cumpre o prazo de 24h e para o re-sorteio de defensor dativo (Parte B).
+  const ehDefensor = (processo.habilitacoes || []).some(h => h.status === 'Aprovado' && h.advogadoId === interaction.user.id);
+  if (processo.tipo === 'Penal' && ehDefensor && !processo.defesaApresentadaEm) {
+    patchPeticao.defesaApresentadaEm = new Date().toISOString();
+  }
+  db.atualizar('processos', numero, patchPeticao);
 
   anexos.criarDocumento({
     tipo: 'peticao_avulsa', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,

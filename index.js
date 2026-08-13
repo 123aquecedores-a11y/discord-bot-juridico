@@ -6,7 +6,8 @@ const {
   verificarPrazosJulgamento, verificarRenovacoesPorteArma, verificarVinculosPendentes,
   verificarProcessosSemJuiz, verificarProcessosPenaisSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
   verificarMedidasAguardandoMP, verificarMedidasAguardandoJuiz, verificarMandadosPendentes,
-  verificarApelacoesPendentes, verificarPrazosContestacao, DIA_MS,
+  verificarApelacoesPendentes, verificarPrazosContestacao,
+  verificarPrazoHabilitacao, verificarPrazoDefesa, DIA_MS,
 } = require('./utils/prazos');
 const ficha = require('./utils/ficha');
 const integracaoPoliciaCivil = require('./utils/integracaoPoliciaCivil');
@@ -86,6 +87,8 @@ client.once('ready', async () => {
     verificarMandadosPendentes(client, guild).catch(err => console.error('Erro na checagem de mandados pendentes:', err));
     verificarApelacoesPendentes(client, guild).catch(err => console.error('Erro na checagem de apelações pendentes:', err));
     verificarPrazosContestacao(client, guild).catch(err => console.error('Erro na checagem de prazos de contestação:', err));
+    verificarPrazoHabilitacao(client, guild).catch(err => console.error('Erro na checagem de prazo de habilitação (48h):', err));
+    verificarPrazoDefesa(client, guild).catch(err => console.error('Erro na checagem de prazo de defesa (24h):', err));
   };
   rodarChecagensFrequentes();
   setInterval(rodarChecagensFrequentes, DEZ_MIN_MS);

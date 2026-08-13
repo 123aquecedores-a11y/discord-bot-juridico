@@ -5,6 +5,7 @@ const db = require('../database/db');
 const config = require('../config');
 const canais = require('./canais');
 const rh = require('./rh');
+const andamentos = require('./andamentos');
 const { parseCriadoEm } = require('./data');
 const processoCmd = require('../commands/processo');
 const peticaoCmd = require('../commands/peticao');
@@ -46,6 +47,10 @@ const PRAZO_VINCULO_MS = HORA_MS; // 1h pro Advogado vincular o Discord do clien
 const AVISO_VINCULO_MS = 45 * 60 * 1000; // aviso aos 45min, faltando ~15min pro prazo
 const PRAZO_DILIGENCIA_MS = 24 * HORA_MS; // 24h pro Advogado cumprir a diligência pedida pelo Juiz
 const AVISO_DILIGENCIA_MS = 20 * HORA_MS; // aviso aos 20h, faltando ~4h
+// Prazos de defesa PENAL (habilitação por código): 48h pro réu constituir advogado (senão o bot
+// sorteia defensor dativo) e 24h pra apresentar defesa (senão avisa; se era dativo, re-sorteia).
+const PRAZO_HABILITACAO_MS = 48 * HORA_MS;
+const PRAZO_DEFESA_MS = 24 * HORA_MS;
 
 // Medida "Aguardando MP" (Promotor decidir aprovar/negar) e "Aprovada - aguardando juiz"
 // (Juiz referendar/negar) não tinham prazo nenhum — podiam ficar paradas pra sempre sem
@@ -367,10 +372,111 @@ async function verificarPrazosContestacao(client, guild) {
   }
 }
 
+// ---- Prazos de defesa PENAL (habilitação por código + defensor dativo) ----
+// PENAL não tem revelia (ampla defesa obrigatória, ninguém julgado sem advogado): se o réu não
+// constitui advogado, o Juízo nomeia defensor dativo e o processo segue COM defesa. "Revelia" é
+// só do cível (fluxo de contestação, não tocado aqui).
+
+function advogadosOcupados(p) {
+  return new Set([
+    p.delegado, p.promotor, p.juiz, p.autor,
+    ...(p.reus || []),
+    ...(p.habilitacoes || []).map(h => h.advogadoId),
+  ].filter(Boolean));
+}
+
+// Sorteia um Advogado disponível (cargo Advogado, sem licença) que NÃO atue no processo (evita
+// conflito). `excluirExtra` tira também um defensor específico (ex.: o dativo que falhou).
+function sortearDefensorDativo(p, excluirExtra = []) {
+  const ocupados = advogadosOcupados(p);
+  for (const e of excluirExtra) ocupados.add(e);
+  const disponiveis = rh.listarPorCargo('Advogado').filter(a => !a.licenca && !ocupados.has(a.discordId));
+  if (disponiveis.length === 0) return null;
+  return disponiveis[Math.floor(Math.random() * disponiveis.length)].discordId;
+}
+
+// Habilita um defensor dativo (Aprovado direto, SEM código) e grava aprovadoEm (base do prazo 24h).
+async function nomearDefensorDativo(guild, p, advId) {
+  const habs = p.habilitacoes || [];
+  const novoId = habs.reduce((max, h) => Math.max(max, h.id || 0), 0) + 1;
+  const agora = new Date().toISOString();
+  const hab = {
+    id: novoId, reuId: (p.reus || [])[0] || null, reuNome: p.reuNome || null, advogadoId: advId,
+    nomeCliente: p.reuNome || null, rgCliente: p.reuRg || null, status: 'Aprovado', dativo: true,
+    criadoEm: agora, aprovadoEm: agora,
+  };
+  db.atualizar('processos', p.numero, { habilitacoes: [...habs, hab] });
+  const canal = await guild.channels.fetch(p.canalId).catch(() => null);
+  if (canal) await canais.adicionarMembro(canal, advId).catch(() => {});
+  return canal;
+}
+
+// (1) 48h pro réu constituir advogado — a partir da intimação marcada como cumprida.
+async function verificarPrazoHabilitacao(client, guild) {
+  const pendentes = db.todos('processos', p =>
+    p.tipo === 'Penal' && p.intimacaoReuCumpridaEm && !p.avisoPrazoHabilitacaoEnviado
+    && !STATUS_TERMINAIS.includes(p.status)
+    && !(p.habilitacoes || []).some(h => h.status === 'Aprovado'));
+  const agora = Date.now();
+  for (const p of pendentes) {
+    if (agora < new Date(p.intimacaoReuCumpridaEm).getTime() + PRAZO_HABILITACAO_MS) continue;
+    db.atualizar('processos', p.numero, { avisoPrazoHabilitacaoEnviado: true });
+
+    const dativo = sortearDefensorDativo(p);
+    const canal = await guild.channels.fetch(p.canalId).catch(() => null);
+    const ping = p.juiz ? `<@${p.juiz}> ` : '';
+    if (!dativo) {
+      if (canal) await canal.send({ content: `${ping}⏰ **Comunicação do Tribunal** — Processo ${p.numero}: 48h sem advogado constituído e **não há advogado disponível** para nomear defensor dativo. Providencie manualmente — o réu não pode ficar sem defesa.` });
+      await andamentos.registrar(guild, p.numero, { tipo: 'prazo_habilitacao_vencido', titulo: '⏰ 48h sem advogado (sem dativo disponível)', detalhe: '48h sem advogado constituído e sem advogado disponível para defensor dativo.', executorId: null });
+      continue;
+    }
+    await nomearDefensorDativo(guild, p, dativo);
+    if (canal) await canal.send({ content: `${ping}⏰ **Comunicação do Tribunal** — Processo ${p.numero}: 48h sem advogado constituído. Nomeado **defensor dativo** <@${dativo}>, habilitado automaticamente. O processo segue COM defesa — 24h para apresentá-la.\n<@${dativo}> — você foi nomeado **defensor dativo** neste processo.` });
+    await andamentos.registrar(guild, p.numero, { tipo: 'defensor_dativo_nomeado', titulo: '⚖️ Defensor dativo nomeado', detalhe: `48h sem advogado constituído — defensor dativo <@${dativo}> nomeado e habilitado automaticamente.`, executorId: null, metadata: { advogadoId: dativo } });
+  }
+}
+
+// (2) 24h pra apresentar defesa — a partir da habilitação (constituída OU por sorteio).
+async function verificarPrazoDefesa(client, guild) {
+  const agora = Date.now();
+  const processos = db.todos('processos', p =>
+    p.tipo === 'Penal' && !p.defesaApresentadaEm && !STATUS_TERMINAIS.includes(p.status)
+    && (p.habilitacoes || []).some(h => h.status === 'Aprovado' && h.aprovadoEm && !h.avisoDefesaEnviado));
+  for (const p of processos) {
+    const hab = (p.habilitacoes || [])
+      .filter(h => h.status === 'Aprovado' && h.aprovadoEm && !h.avisoDefesaEnviado)
+      .sort((a, b) => new Date(b.aprovadoEm) - new Date(a.aprovadoEm))[0];
+    if (!hab) continue;
+    if (agora < new Date(hab.aprovadoEm).getTime() + PRAZO_DEFESA_MS) continue;
+
+    db.atualizar('processos', p.numero, { habilitacoes: p.habilitacoes.map(h => h.id === hab.id ? { ...h, avisoDefesaEnviado: true } : h) });
+    const canal = await guild.channels.fetch(p.canalId).catch(() => null);
+    const ping = p.juiz ? `<@${p.juiz}> ` : '';
+
+    if (hab.dativo) {
+      // Dativo que não atuou → re-sorteia outro (nunca deixa o réu sem defesa).
+      const novo = sortearDefensorDativo(p, [hab.advogadoId]);
+      if (novo) {
+        await nomearDefensorDativo(guild, p, novo);
+        if (canal) await canal.send({ content: `${ping}⏰ Processo ${p.numero}: o defensor dativo <@${hab.advogadoId}> não apresentou defesa em 24h. **Re-sorteado** o defensor dativo <@${novo}>.\n<@${novo}> — você foi nomeado **defensor dativo** (24h para a defesa).` });
+        await andamentos.registrar(guild, p.numero, { tipo: 'defensor_dativo_ressorteado', titulo: '⚖️ Defensor dativo re-sorteado', detalhe: `Defensor dativo <@${hab.advogadoId}> não apresentou defesa em 24h — re-sorteado <@${novo}>.`, executorId: null, metadata: { anterior: hab.advogadoId, novo } });
+      } else if (canal) {
+        await canal.send({ content: `${ping}⏰ Processo ${p.numero}: defensor dativo não apresentou defesa em 24h e **não há outro advogado** para re-sorteio. Providencie manualmente.` });
+        await andamentos.registrar(guild, p.numero, { tipo: 'prazo_defesa_vencido', titulo: '⏰ Defesa não apresentada (sem re-sorteio)', detalhe: 'Defensor dativo não apresentou defesa em 24h e não há advogado para re-sorteio.', executorId: null });
+      }
+    } else {
+      // Advogado constituído → avisa o advogado (está no Discord) + Juiz ciente.
+      if (canal) await canal.send({ content: `<@${hab.advogadoId}> ⏰ **Comunicação do Tribunal** — Processo ${p.numero}: o prazo de 24h para apresentar a defesa venceu. Apresente a defesa o quanto antes.${p.juiz ? ` (Juiz <@${p.juiz}> ciente.)` : ''}` });
+      await andamentos.registrar(guild, p.numero, { tipo: 'prazo_defesa_vencido', titulo: '⏰ Prazo de defesa vencido', detalhe: `Advogado constituído <@${hab.advogadoId}> não apresentou defesa em 24h.`, executorId: null, metadata: { advogadoId: hab.advogadoId } });
+    }
+  }
+}
+
 module.exports = {
   verificarPrazosJulgamento, verificarRenovacoesPorteArma, verificarVinculosPendentes,
   verificarProcessosSemJuiz, verificarProcessosPenaisSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
   verificarMedidasAguardandoMP, verificarMedidasAguardandoJuiz, verificarMandadosPendentes,
   verificarApelacoesPendentes, verificarPrazosContestacao,
+  verificarPrazoHabilitacao, verificarPrazoDefesa,
   PRAZO_JULGAMENTO_DIAS, DIA_MS, HORA_MS, dmSeguro,
 };
