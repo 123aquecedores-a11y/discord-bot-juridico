@@ -5,7 +5,7 @@ const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
 const rh = require('../utils/rh');
 const canais = require('../utils/canais');
 const config = require('../config');
-const { penaTexto, crimeLabel, resolverCrimesTexto } = require('../utils/crimesTexto');
+const { penaTexto, crimeLabel, resolverCrimesTexto, normalizarCrime } = require('../utils/crimesTexto');
 const { ATENUANTES, labelsDe } = require('../utils/atenuantes');
 const rascunhoSentenca = require('../utils/rascunhoSentenca');
 const { truncar } = require('../utils/texto');
@@ -1414,6 +1414,25 @@ async function confirmarParteTardia(interaction, chave) {
 
 // ---- Habilitação de advogado (nome + RG do cliente, réu específico, aprovação do Juiz) ----
 
+// Normaliza nome/RG pra comparação tolerante (sem acento/caixa/pontuação) — usado na validação
+// da habilitação por código (o advogado tem que acertar os dados do réu).
+function normalizarDado(s) {
+  return normalizarCrime(s).replace(/[.\-\s/]/g, '');
+}
+function dadosBatemComReu(processo, nome, rg) {
+  const nomeIn = normalizarDado(nome);
+  const rgIn = normalizarDado(rg);
+  const alvos = [{ nome: processo.reuNome, rg: processo.reuRg }];
+  for (const p of (processo.partes || [])) {
+    if (/r[ée]u/i.test(p.papel || '')) alvos.push({ nome: p.nome, rg: p.rg });
+  }
+  return alvos.some(a => a.nome && a.rg && normalizarDado(a.nome) === nomeIn && normalizarDado(a.rg) === rgIn);
+}
+function habilitacaoBloqueada(processo, uid) {
+  const t = (processo.tentativasHabilitacao || []).find(x => x.advogadoId === uid);
+  return !!(t && t.erros >= 3);
+}
+
 async function abrirModalHabilitacao(interaction, numero) {
   if (!temCargo(interaction, 'Advogado')) {
     return interaction.reply({ content: 'Só Advogados podem solicitar habilitação.', ephemeral: true });
@@ -1421,36 +1440,95 @@ async function abrirModalHabilitacao(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (!processoPublico(processo)) {
-    return interaction.reply({ content: 'Esse processo ainda está em fase de inquérito, sem publicidade — aguarde a denúncia.', ephemeral: true });
+    return interaction.reply({ content: 'Esse processo ainda não está aberto para habilitação da defesa.', ephemeral: true });
   }
   if (!processo.juiz) {
     return interaction.reply({ content: 'Esse processo ainda não tem Juiz sorteado — tente novamente em instantes.', ephemeral: true });
   }
+  if ((processo.habilitacoes || []).some(h => h.advogadoId === interaction.user.id && (h.status === 'Pendente' || h.status === 'Aprovado'))) {
+    return interaction.reply({ content: 'Você já tem um pedido de habilitação (pendente ou aprovado) neste processo.', ephemeral: true });
+  }
 
   const modal = new ModalBuilder().setCustomId(`painel:modal:habilitacao:solicitar:${numero}`).setTitle('Solicitar habilitação');
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente (réu)').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu').setLabel('Menção @ do réu (opcional)').setPlaceholder('Vazio se o réu não tem Discord').setStyle(TextInputStyle.Short).setRequired(false)),
-  );
+  if (processo.tipo === 'Penal') {
+    // Habilitação por CÓDIGO (Parte A). Bloqueia após 3 tentativas erradas.
+    if (habilitacaoBloqueada(processo, interaction.user.id)) {
+      return interaction.reply({ content: '🚫 Você atingiu 3 tentativas erradas e está bloqueado para habilitação neste processo. Fale com a Supervisão se for engano.', ephemeral: true });
+    }
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente (réu)').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('codigo').setLabel('Código de 4 dígitos (da intimação do réu)').setStyle(TextInputStyle.Short).setRequired(true).setMinLength(4).setMaxLength(4)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('aviso').setLabel('Digite SIM (ciente do aviso)').setPlaceholder('Dados falsos ou adivinhar o código = infração sujeita a sanção').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(5)),
+    );
+  } else {
+    // Cível — fluxo antigo, intocado (nome/RG + menção opcional do réu).
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nome').setLabel('Nome completo do cliente (réu)').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('rg').setLabel('RG do cliente').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu').setLabel('Menção @ do réu (opcional)').setPlaceholder('Vazio se o réu não tem Discord').setStyle(TextInputStyle.Short).setRequired(false)),
+    );
+  }
   return interaction.showModal(modal);
 }
 
 async function criarHabilitacao(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  return processo.tipo === 'Penal'
+    ? criarHabilitacaoPenal(interaction, processo, numero)
+    : criarHabilitacaoCivil(interaction, processo, numero);
+}
 
+// Penal: valida código (100%) + dados do réu; 3ª tentativa errada bloqueia + loga.
+async function criarHabilitacaoPenal(interaction, processo, numero) {
+  const uid = interaction.user.id;
+  if (habilitacaoBloqueada(processo, uid)) {
+    return interaction.reply({ content: '🚫 Você está bloqueado para habilitação neste processo (3 tentativas erradas).', ephemeral: true });
+  }
+  const nomeCliente = (interaction.fields.getTextInputValue('nome') || '').trim();
+  const rgCliente = (interaction.fields.getTextInputValue('rg') || '').trim();
+  const codigoInformado = (interaction.fields.getTextInputValue('codigo') || '').trim();
+
+  const codigoOk = !!processo.codigoHabilitacao && codigoInformado === processo.codigoHabilitacao;
+  const dadosOk = dadosBatemComReu(processo, nomeCliente, rgCliente);
+
+  if (!codigoOk || !dadosOk) {
+    const tentativas = processo.tentativasHabilitacao || [];
+    const entrada = tentativas.find(t => t.advogadoId === uid);
+    const erros = (entrada?.erros || 0) + 1;
+    const nova = { advogadoId: uid, erros, bloqueadoEm: erros >= 3 ? new Date().toISOString() : null };
+    const atualizadas = entrada ? tentativas.map(t => t.advogadoId === uid ? nova : t) : [...tentativas, nova];
+    db.atualizar('processos', numero, { tentativasHabilitacao: atualizadas });
+    await auditoria.registrar(interaction.guild, { acao: 'Tentativa de habilitação recusada', executorId: uid, referencia: `Processo ${numero} — tentativa ${erros}/3 (${!codigoOk ? 'código' : 'dados'} incorreto)` });
+    if (erros >= 3) {
+      await andamentos.registrar(interaction.guild, numero, { tipo: 'habilitacao_bloqueada', titulo: '🚫 Advogado bloqueado (habilitação)', detalhe: `<@${uid}> foi bloqueado após 3 tentativas erradas de habilitação.`, executorId: null, metadata: { advogadoId: uid, tentativas: erros } });
+    }
+    const msg = erros >= 3
+      ? '🚫 Dados ou código incorretos. Você atingiu **3 tentativas** e está **bloqueado** para habilitação neste processo (registrado no log).'
+      : `❌ Dados ou código incorretos. Restam **${3 - erros}** tentativa(s). Informar dados falsos ou tentar adivinhar o código é infração sujeita a sanção.`;
+    return interaction.reply({ content: msg, ephemeral: true });
+  }
+
+  return registrarPedidoHabilitacao(interaction, processo, numero, { nomeCliente, rgCliente, reuId: (processo.reus || [])[0] || null, codigoValidado: true });
+}
+
+// Cível: fluxo antigo (nome/RG + menção opcional), sem código.
+async function criarHabilitacaoCivil(interaction, processo, numero) {
   const nomeCliente = interaction.fields.getTextInputValue('nome');
   const rgCliente = interaction.fields.getTextInputValue('rg');
-  // Discord do réu é OPCIONAL (Parte 2): o cliente/réu é identificado por nome + RG. Se a menção
-  // veio e bate com um réu já no processo, vincula pra acesso ao canal; senão, segue só nome/RG.
   const reuMencao = extrairMencoes(interaction.fields.getTextInputValue('reu') || '')[0] || null;
   const reuId = reuMencao && (processo.reus || []).includes(reuMencao) ? reuMencao : null;
-  const reuRotulo = reuId ? `<@${reuId}>` : `**${nomeCliente}** (RG ${rgCliente})`;
+  return registrarPedidoHabilitacao(interaction, processo, numero, { nomeCliente, rgCliente, reuId, codigoValidado: false });
+}
 
+// Cria o pedido pendente e encaminha ao Juiz (portão que já existia — aprovação continua do Juiz).
+async function registrarPedidoHabilitacao(interaction, processo, numero, { nomeCliente, rgCliente, reuId, codigoValidado }) {
+  const uid = interaction.user.id;
+  const reuRotulo = reuId ? `<@${reuId}>` : `**${nomeCliente}** (RG ${rgCliente})`;
   const habilitacoes = processo.habilitacoes || [];
   const novoId = habilitacoes.reduce((max, h) => Math.max(max, h.id || 0), 0) + 1;
-  const habilitacao = { id: novoId, reuId, reuNome: nomeCliente, advogadoId: interaction.user.id, nomeCliente, rgCliente, status: 'Pendente', criadoEm: new Date().toISOString() };
+  const habilitacao = { id: novoId, reuId, reuNome: nomeCliente, advogadoId: uid, nomeCliente, rgCliente, status: 'Pendente', criadoEm: new Date().toISOString() };
   db.atualizar('processos', numero, { habilitacoes: [...habilitacoes, habilitacao] });
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
@@ -1459,10 +1537,11 @@ async function criarHabilitacao(interaction, numero) {
       .setTitle(`⚖️ Pedido de habilitação — Processo ${numero}`)
       .setColor(0xf1c40f)
       .addFields(
-        { name: 'Advogado', value: `<@${interaction.user.id}>`, inline: true },
+        { name: 'Advogado', value: `<@${uid}>`, inline: true },
         { name: 'Réu representado', value: reuRotulo, inline: true },
         { name: 'Cliente', value: truncar(`${nomeCliente} — RG ${rgCliente}`) },
       );
+    if (codigoValidado) embed.addFields({ name: 'Código', value: '✅ validado', inline: true });
     const botoes = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`painel:acao:habilitacao:aprovar:${numero}#${novoId}`).setLabel('Aprovar').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`painel:acao:habilitacao:negar:${numero}#${novoId}`).setLabel('Negar').setStyle(ButtonStyle.Danger),
@@ -1472,12 +1551,11 @@ async function criarHabilitacao(interaction, numero) {
 
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'habilitacao_solicitada', titulo: '🖋️ Habilitação de advogado solicitada',
-    detalhe: `<@${interaction.user.id}> pediu habilitação para defender ${reuRotulo}.`,
-    executorId: interaction.user.id, metadata: { habilitacaoId: novoId, advogadoId: interaction.user.id, reuId, reuNome: nomeCliente },
+    detalhe: `<@${uid}> pediu habilitação para defender ${reuRotulo}${codigoValidado ? ' (código validado)' : ''}.`,
+    executorId: uid, metadata: { habilitacaoId: novoId, advogadoId: uid, reuId, reuNome: nomeCliente },
   });
   await repostarPainel(interaction.guild, numero);
-
-  return interaction.reply({ content: 'Pedido de habilitação enviado ao Juiz do processo.', ephemeral: true });
+  return interaction.reply({ content: `✅ ${codigoValidado ? 'Código validado. ' : ''}Pedido de habilitação enviado ao Juiz do processo.`, ephemeral: true });
 }
 
 async function decidirHabilitacao(interaction, chave, aprovar) {
