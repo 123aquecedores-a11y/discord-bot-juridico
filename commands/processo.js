@@ -488,6 +488,13 @@ const CATALOGO_ACOES = [
     quando: () => true,
     botao: (numero) => botaoGerenciar(numero),
   },
+  // Voltar fase (lote 5, Função 3) — só nasce quando há uma volta direta possível (alvoVoltarFase).
+  // Ato concluído (sentença/arquivamento de mérito) não aparece aqui: vai pelo caminho de anulação.
+  {
+    id: 'voltar_fase', grupo: 2, cargo: ['Juiz', 'Desembargador', 'Procurador'],
+    quando: (p) => !!alvoVoltarFase(p),
+    botao: (numero) => botaoVoltarFase(numero),
+  },
 ];
 
 // Fonte única do customId: pega o botão de uma ação pelo id do catálogo. É o que deixa
@@ -2224,6 +2231,111 @@ async function removerCrime(interaction, numero) {
   return interaction.update({ content: `Crime(s) removido(s): ${nomes}.`, components: [] });
 }
 
+// ---- Voltar fase (lote 5, Função 3) ----
+// ESTENDE o mecanismo de reabertura que já existe (requererNovasProvas/concluirInstrução +
+// canais.reabrirCanal + reinício de prazo via juizDesde). NÃO desfaz ato concluído: sentença e
+// arquivamento de mérito só se revertem pelo caminho de anulação (Desembargador) / revisão de
+// arquivamento (Procurador) — o botão redireciona pra lá em vez de fazer um "voltar" solto. Motivo
+// obrigatório, documentos já juntados permanecem nos autos (referentes à fase reaberta), andamento
+// + auditoria.
+
+// Fase-alvo do "voltar" a partir do status atual, ou null se não há volta direta (ato concluído).
+function alvoVoltarFase(processo) {
+  const penal = processo.tipo === 'Penal';
+  switch (processo.status) {
+    case 'Concluso para julgamento': return { para: penal ? 'Em instrução' : 'Aguardando defesa', reabrirCanal: false };
+    case 'Em instrução': return { para: 'Instrução', reabrirCanal: false };
+    case 'Arquivado sem julgamento de mérito': return { para: penal ? 'Instrução' : 'Aguardando defesa', reabrirCanal: true };
+    default: return null;
+  }
+}
+
+function podeVoltarFase(interaction, processo) {
+  if (isSuperStaff(interaction) || isAdmin(interaction)) return true;
+  if (temCargo(interaction, 'Desembargador') || temCargo(interaction, 'Procurador')) return true;
+  return processo.juiz === interaction.user.id;
+}
+
+function botaoVoltarFase(numero) {
+  return new ButtonBuilder().setCustomId(`painel:acao:processo:voltarfase:${numero}`).setLabel('↩️ Voltar fase').setStyle(ButtonStyle.Secondary);
+}
+
+async function abrirModalVoltarFase(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeVoltarFase(interaction, processo)) {
+    return interaction.reply({ content: 'Só o Juiz do processo (ou Desembargador/Procurador/Staff) pode voltar a fase.', ephemeral: true });
+  }
+  const alvo = alvoVoltarFase(processo);
+  if (!alvo) {
+    const dica = processo.status === 'Encerrado'
+      ? 'Este processo já tem **sentença** — para desfazê-la o caminho é a **anulação em grau de recurso** (Desembargador), não "voltar fase".'
+      : processo.status === 'Arquivado'
+        ? 'Arquivamento de mérito se reverte pela **revisão de arquivamento** (Procurador), não por "voltar fase".'
+        : 'Não há fase anterior para voltar a partir do status atual.';
+    return interaction.reply({ content: `⚠️ ${dica}`, ephemeral: true });
+  }
+  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:voltarfase:${numero}`).setTitle('Voltar fase');
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('motivo').setLabel(`Motivo (volta p/ "${alvo.para}")`.slice(0, 45)).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(500),
+  ));
+  return interaction.showModal(modal);
+}
+
+async function voltarFase(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeVoltarFase(interaction, processo)) return interaction.reply({ content: 'Sem permissão pra voltar a fase.', ephemeral: true });
+  const alvo = alvoVoltarFase(processo);
+  if (!alvo) return interaction.reply({ content: 'Não há fase anterior para voltar a partir do status atual.', ephemeral: true });
+  const motivo = (interaction.fields.getTextInputValue('motivo') || '').trim();
+  if (!motivo) return interaction.reply({ content: 'O motivo é obrigatório.', ephemeral: true });
+
+  const statusAntigo = processo.status;
+  await interaction.deferReply({ ephemeral: true });
+
+  // Reabre o canal se o processo estava arquivado (partes voltam a ter acesso).
+  if (alvo.reabrirCanal) {
+    const canalArq = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+    if (canalArq) {
+      const partes = [
+        processo.delegado, processo.promotor, processo.juiz, processo.autor,
+        ...(processo.reus || []),
+        ...((processo.habilitacoes || []).filter(h => h.status === 'Aprovado').map(h => h.advogadoId)),
+      ].filter(Boolean);
+      await canais.reabrirCanal(canalArq, partes).catch(() => {});
+    }
+  }
+
+  // Aplica a volta: status + reinício do relógio de julgamento (juizDesde) e rearme do aviso de
+  // "sem juiz". Ao voltar pra antes da contestação (cível), zera o estado do prazo de contestação.
+  const patch = { status: alvo.para };
+  if (processo.juiz) { patch.juizDesde = new Date().toISOString(); patch.avisoSemJuizEnviado = false; }
+  if (alvo.para === 'Aguardando defesa') {
+    patch.prazoContestacaoAte = null; patch.citacaoEm = null; patch.avisoPrazoContestacaoEnviado = false;
+  }
+  db.atualizar('processos', numero, patch);
+
+  // Nota da reabertura no canal (+ botão de reconcluir instrução quando aplicável).
+  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+  if (canal) {
+    const componentes = alvo.para === 'Em instrução' ? [new ActionRowBuilder().addComponents(botaoConcluirInstrucao(numero))] : [];
+    await canal.send({
+      content: `↩️ **Fase revertida** por <@${interaction.user.id}>: de "${statusAntigo}" para "${alvo.para}".\n**Motivo:** ${motivo}\nOs documentos já juntados permanecem nos autos, referentes à fase reaberta.`,
+      components: componentes,
+    }).catch(() => {});
+  }
+
+  await auditoria.registrar(interaction.guild, { acao: 'Volta de fase', executorId: interaction.user.id, referencia: `Processo ${numero}: "${statusAntigo}" → "${alvo.para}"`, motivo });
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'fase_revertida', titulo: '↩️ Fase revertida',
+    detalhe: `Processo voltou de "${statusAntigo}" para "${alvo.para}" por <@${interaction.user.id}>. Motivo: ${motivo}`,
+    executorId: interaction.user.id, metadata: { de: statusAntigo, para: alvo.para },
+  });
+  await repostarPainel(interaction.guild, numero);
+  return interaction.editReply({ content: `Fase revertida para **${alvo.para}**.` });
+}
+
 // ---- Recurso/Apelação (só quem perdeu, conforme o resultado estruturado da sentença) ----
 
 // Sem bypass de admin de propósito — recorrer é ato de parte (só quem de fato perdeu a causa),
@@ -2923,6 +3035,8 @@ module.exports = {
   abrirAdicionarAdvogado,
   adicionarAdvogadoSelecionado,
   abrirRemoverAdvogado,
+  abrirModalVoltarFase,
+  voltarFase,
   painelAtual,
   repostarPainel,
   pedirRevisaoArquivamento,
