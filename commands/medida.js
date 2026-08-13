@@ -298,7 +298,7 @@ async function indeferirMedidaDireta(interaction, numero) {
   await auditoria.registrar(interaction.guild, { acao: 'Medida indeferida (solicitação direta)', executorId: interaction.user.id, referencia: numero });
   // Fica só registrado no histórico do processo (auditoria acima já cumpre isso) — sem gerar
   // mandado, exatamente como pede a spec.
-  return interaction.reply({ content: `Medida ${numero} indeferida. Fica registrada no histórico do processo, sem mandado emitido.` });
+  return interaction.reply({ content: `Medida ${numero} indeferida. Fica registrada no histórico do processo, sem mandado emitido.`, ephemeral: true });
 }
 
 async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvoDiscordId, rgAlvo = null, motivo, semIndicios = false }) {
@@ -875,8 +875,14 @@ module.exports = {
     // por trás — o responsável pelo cumprimento nesse caso é o Delegado do próprio processo.
     const processoDoMandado = mandado.processoVinculado ? db.buscarPorNumero('processos', mandado.processoVinculado) : null;
     const responsavelCumprimento = medida?.delegado || processoDoMandado?.delegado;
-    if (responsavelCumprimento && interaction.user.id !== responsavelCumprimento && !isSuperStaff(interaction)) {
-      return interaction.reply({ content: `Só o Delegado responsável por este mandado pode cumpri-lo — no caso, <@${responsavelCumprimento}>.`, ephemeral: true });
+    // Sem Delegado responsável definido a checagem NÃO pode curto-circuitar (senão qualquer um
+    // cumpriria o mandado) — nesse caso exige Staff. Com responsável, só ele (ou SuperStaff).
+    if (responsavelCumprimento) {
+      if (interaction.user.id !== responsavelCumprimento && !isSuperStaff(interaction)) {
+        return interaction.reply({ content: `Só o Delegado responsável por este mandado pode cumpri-lo — no caso, <@${responsavelCumprimento}>.`, ephemeral: true });
+      }
+    } else if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
+      return interaction.reply({ content: 'Este mandado não tem Delegado responsável definido — só a Staff pode registrar o cumprimento.', ephemeral: true });
     }
 
     // aguardarAnexoPDF já consome a resposta inicial da interação (reply pedindo o PDF) — não
@@ -1012,6 +1018,7 @@ module.exports = {
   async autocomplete(interaction) {
     const foco = interaction.options.getFocused().toLowerCase();
     const resultados = db.todos('medidas', m => m.numero.toLowerCase().includes(foco))
+      .filter(m => temAcessoMedida(interaction, m)) // não sugere medidas sigilosas a quem não é parte
       .slice(0, 25)
       .map(m => ({ name: `${m.numero} — ${m.tipo} — ${m.status}`.slice(0, 100), value: m.numero }));
     await interaction.respond(resultados);

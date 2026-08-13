@@ -89,9 +89,20 @@ function botaoAnexarDocumentoPeticao(numero) {
   return new ButtonBuilder().setCustomId(`painel:acao:peticao:anexardocumento:${numero}`).setLabel('📎 Anexar petição/documento').setStyle(ButtonStyle.Primary);
 }
 
+// Gate das ações de manutenção da petição (anexar documento, vincular cliente, mais dados): só
+// quem é parte da petição (advogado requerente, Juiz ou Promotor do caso) ou Staff — não basta
+// ter acesso ao canal. Antes essas ações rodavam sem nenhuma checagem de cargo/parte.
+function podeMexerNaPeticao(interaction, peticao) {
+  if (isAdmin(interaction) || isSuperStaff(interaction)) return true;
+  return [peticao.requerenteId, peticao.juiz, peticao.promotor].filter(Boolean).includes(interaction.user.id);
+}
+
+const RECUSA_MEXER_PETICAO = 'Só as partes desta petição (advogado requerente, Juiz/Promotor do caso) ou a Staff podem fazer isso.';
+
 async function anexarDocumentoPeticao(interaction, numero) {
   const peticao = db.buscarPorNumero('peticoes', numero);
   if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
+  if (!podeMexerNaPeticao(interaction, peticao)) return interaction.reply({ content: RECUSA_MEXER_PETICAO, ephemeral: true });
 
   const anexo = await aguardarAnexoPDF(interaction);
   if (!anexo) return;
@@ -390,6 +401,7 @@ async function processarVincularManual(interaction, numero) {
   }
   const peticao = db.buscarPorNumero('peticoes', numero);
   if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
+  if (!podeMexerNaPeticao(interaction, peticao)) return interaction.reply({ content: RECUSA_MEXER_PETICAO, ephemeral: true });
   if (peticao.discordIdCliente) return interaction.reply({ content: 'Essa petição já tem cliente vinculado.', ephemeral: true });
 
   ficha.vincularDiscordId(peticao.rgCliente, usuarioId, `Petição ${numero} — vínculo manual`);
@@ -415,6 +427,9 @@ async function perguntarMaisDados(interaction, numero, rgCliente) {
 
 function abrirModalMaisDados(interaction, extra) {
   const [numero, rg] = extra.split('#');
+  const peticao = db.buscarPorNumero('peticoes', numero);
+  if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
+  if (!podeMexerNaPeticao(interaction, peticao)) return interaction.reply({ content: RECUSA_MEXER_PETICAO, ephemeral: true });
   const modal = new ModalBuilder().setCustomId(`painel:modal:peticao:maisdados:${numero}#${rg}`).setTitle('Mais dados do cliente (opcional)');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('endereco').setLabel('Endereço adicional').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(200)),
@@ -426,6 +441,9 @@ function abrirModalMaisDados(interaction, extra) {
 
 async function processarMaisDados(interaction, extra) {
   const [numero, rg] = extra.split('#');
+  const peticao = db.buscarPorNumero('peticoes', numero);
+  if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
+  if (!podeMexerNaPeticao(interaction, peticao)) return interaction.reply({ content: RECUSA_MEXER_PETICAO, ephemeral: true });
   const endereco = interaction.fields.getTextInputValue('endereco');
   const telefone = interaction.fields.getTextInputValue('telefone');
   const rede = interaction.fields.getTextInputValue('rede');
@@ -445,6 +463,7 @@ async function vincularClienteDiscord(interaction, numero) {
   const usuarioId = interaction.values[0];
   const peticao = db.buscarPorNumero('peticoes', numero);
   if (!peticao) return interaction.update({ content: 'Petição não encontrada.', components: [] });
+  if (!podeMexerNaPeticao(interaction, peticao)) return interaction.reply({ content: RECUSA_MEXER_PETICAO, ephemeral: true });
   if (peticao.discordIdCliente) return interaction.update({ content: 'Essa petição já tem cliente vinculado.', components: [] });
   ficha.vincularDiscordId(peticao.rgCliente, usuarioId, `Petição ${numero}`);
   db.atualizar('peticoes', numero, { discordIdCliente: usuarioId });

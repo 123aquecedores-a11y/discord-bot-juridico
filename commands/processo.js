@@ -2258,6 +2258,9 @@ async function salvarProva(interaction, numero) {
 async function verRolProvas(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!ehParteDoProcesso(interaction, processo)) {
+    return interaction.reply({ content: 'Só as partes do processo podem consultar o rol de provas.', ephemeral: true });
+  }
   const provas = processo.provas || [];
   if (provas.length === 0) return interaction.reply({ content: 'Nenhuma prova juntada a este processo ainda.', ephemeral: true });
   const linhas = provas.map(p => {
@@ -2679,6 +2682,11 @@ async function salvarManifestacaoLivre(interaction, numero) {
   if (!ehMembroDoMp(interaction)) return interaction.reply({ content: 'Sem permissão.', ephemeral: true });
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  // Só o Promotor responsável por ESTE processo (ou SuperStaff) manifesta/requer em nome do MP —
+  // não qualquer membro do MP. Mesmo padrão de oferecer/arquivar em tratarManifestacaoMp.
+  if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Promotor responsável por este processo pode manifestar/requerer pelo MP — no caso, <@${processo.promotor}>.`, ephemeral: true });
+  }
   const descricao = (interaction.fields.getTextInputValue('descricao') || '').trim();
   const ehRequerimento = (interaction.fields.getTextInputValue('tipo') || '').trim().toLowerCase().startsWith('req');
   if (!descricao) return interaction.reply({ content: 'O teor do ato é obrigatório.', ephemeral: true });

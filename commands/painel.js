@@ -301,8 +301,10 @@ async function abrirSubmenu(interaction, modulo) {
 
 // ---- Listagens diretas ---- (embeds de medida/mandado moram nos próprios módulos — Frente 4a.5)
 
-async function listarEResponder(interaction, tabela, embedFn) {
-  const rows = db.todos(tabela).slice(0, 15);
+async function listarEResponder(interaction, tabela, embedFn, filtroAcesso = null) {
+  let rows = db.todos(tabela);
+  if (filtroAcesso) rows = rows.filter(r => filtroAcesso(interaction, r)); // esconde itens sigilosos de quem não tem acesso
+  rows = rows.slice(0, 15);
   if (rows.length === 0) return interaction.reply({ content: 'Nenhum registro encontrado.', ephemeral: true });
   return interaction.reply({ embeds: [embedFn(rows)], ephemeral: true });
 }
@@ -791,7 +793,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
       return interaction.update({ embeds: [new EmbedBuilder().setColor(0xe67e22).setDescription('Qual o tipo de medida?')], components: [row, botaoVoltar()] });
     }
     if (acao === 'ver') return abrirModalVerNumero(interaction, 'medida');
-    if (acao === 'listar') return listarEResponder(interaction, 'medidas', medidaCmd.embedListaMedidas);
+    if (acao === 'listar') return listarEResponder(interaction, 'medidas', medidaCmd.embedListaMedidas, medidaCmd.temAcessoMedida);
     if (acao === 'negarjuiz') return medidaCmd.abrirModalNegarJuiz(interaction, extra);
     if (acao === 'revisarfund') return medidaCmd.revisarFundMedida(interaction, extra);
     if (acao === 'publicarfund') return medidaCmd.executarDecisaoMedida(interaction, extra, false);
@@ -807,7 +809,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
 
   if (modulo === 'mandado') {
     if (acao === 'ver') return abrirModalVerNumero(interaction, 'mandado');
-    if (acao === 'listar') return listarEResponder(interaction, 'mandados', mandadoCmd.embedListaMandados);
+    if (acao === 'listar') return listarEResponder(interaction, 'mandados', mandadoCmd.embedListaMandados, mandadoCmd.temAcessoMandado);
     if (acao === 'emitir') return mandadoCmd.abrirSelectTipo(interaction, extra);
   }
 

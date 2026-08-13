@@ -229,6 +229,7 @@ module.exports = {
   async autocomplete(interaction) {
     const foco = interaction.options.getFocused().toLowerCase();
     const resultados = db.todos('processos', p => p.numero.toLowerCase().includes(foco))
+      .filter(p => processoCmd.processoPublico(p) || processoCmd.temAcessoTotal(interaction, p)) // não sugere inquérito sigiloso a quem não é parte
       .slice(0, 25)
       .map(p => ({ name: `${p.numero} — ${p.tipo} — ${p.status}`.slice(0, 100), value: p.numero }));
     await interaction.respond(resultados);

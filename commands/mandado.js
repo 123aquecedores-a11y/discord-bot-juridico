@@ -261,6 +261,7 @@ module.exports = {
   async autocomplete(interaction) {
     const foco = interaction.options.getFocused().toLowerCase();
     const resultados = db.todos('mandados', m => m.numero.toLowerCase().includes(foco))
+      .filter(m => temAcessoMandado(interaction, m)) // não sugere mandados sigilosos a quem não tem acesso
       .slice(0, 25)
       .map(m => ({ name: `${m.numero} — ${m.tipo} — ${m.status}`.slice(0, 100), value: m.numero }));
     await interaction.respond(resultados);

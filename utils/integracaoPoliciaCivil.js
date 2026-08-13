@@ -168,18 +168,21 @@ async function processarRequerimento(message) {
   if (message.channelId !== config.canalRequerimentoPoliciaCivilId) return;
   if (!message.webhookId || message.embeds.length === 0) return;
 
-  // Frente 2.1 — autenticidade além do "tem webhookId": se o id do webhook esperado da Polícia
-  // Civil estiver configurado, exige que seja EXATAMENTE ele (rejeita e loga o resto — possível
-  // forjação). Sem o id configurado, mantém o comportamento antigo, mas avisa (1x) que a validação
-  // forte está desligada, pra não ficar uma brecha silenciosa.
-  if (config.webhookRequerimentoPoliciaCivilId) {
-    if (message.webhookId !== config.webhookRequerimentoPoliciaCivilId) {
-      console.warn(`[integracaoPC] Requerimento REJEITADO — webhook ${message.webhookId} ≠ esperado (possível forjação de pedido da Polícia Civil).`);
-      return;
+  // Frente 2.1 — autenticidade além do "tem webhookId". Sem o id do webhook esperado da Polícia
+  // Civil configurado NÃO dá pra provar a origem: qualquer webhook criado no canal (ou a URL
+  // vazada) poderia forjar uma medida cautelar atribuída a um Delegado arbitrário. Por isso agora
+  // FALHA FECHADO — sem a env WEBHOOK_REQUERIMENTO_POLICIA_CIVIL_ID, todo requerimento é rejeitado
+  // (loga 1x). Com o id configurado, exige que o webhook seja EXATAMENTE ele.
+  if (!config.webhookRequerimentoPoliciaCivilId) {
+    if (!avisouWebhookNaoConfigurado) {
+      avisouWebhookNaoConfigurado = true;
+      console.error('[integracaoPC] WEBHOOK_REQUERIMENTO_POLICIA_CIVIL_ID não configurado — requerimentos da Polícia Civil REJEITADOS (fail-closed). Defina o id do webhook da Polícia Civil no .env pra habilitar a integração.');
     }
-  } else if (!avisouWebhookNaoConfigurado) {
-    avisouWebhookNaoConfigurado = true;
-    console.warn('[integracaoPC] WEBHOOK_REQUERIMENTO_POLICIA_CIVIL_ID não configurado — validação forte de autenticidade DESLIGADA (qualquer webhook nesse canal é aceito). Defina o id do webhook da Polícia Civil no .env pra fechar a brecha (Frente 2.1).');
+    return;
+  }
+  if (message.webhookId !== config.webhookRequerimentoPoliciaCivilId) {
+    console.warn(`[integracaoPC] Requerimento REJEITADO — webhook ${message.webhookId} ≠ esperado (possível forjação de pedido da Polícia Civil).`);
+    return;
   }
 
   const embed = message.embeds[0];

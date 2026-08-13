@@ -43,6 +43,11 @@ module.exports = {
   },
 
   async processarModalAdicionar(interaction) {
+    // Re-checa a permissão no submit do modal — a interação do modal é separada da que abriu o
+    // formulário (execute), então não dá pra confiar só naquele gate anterior.
+    if (!podeGerenciar(interaction)) {
+      return interaction.reply({ content: 'Só Procurador ou Staff/Administração podem editar o cadastro de instituições.', ephemeral: true });
+    }
     const nome = interaction.fields.getTextInputValue('nome');
     const slug = interaction.fields.getTextInputValue('slug').trim();
     const paiTexto = interaction.fields.getTextInputValue('pai').trim().toLowerCase();

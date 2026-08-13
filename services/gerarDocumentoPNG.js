@@ -148,50 +148,61 @@ function escapeHtml(text) {
  * resto (relatório, dispositivo, fecho) é montado pelo bot ao redor.
  */
 function montarBlocoSecoes(tipoDocumento, dados) {
+  // Escapa TODO campo que entra cru no HTML (não só o corpoTexto): nome do réu/autor, crime,
+  // pena, regime, destinatário, nº do processo e assinante são texto livre do usuário e poderiam
+  // injetar HTML/CSS no documento renderizado pelo Puppeteer.
   const corpo = escapeHtml(dados.corpoTexto);
+  const nomeReu = escapeHtml(dados.nomeReu);
+  const nomeAutor = escapeHtml(dados.nomeAutor);
+  const crimeDescricao = escapeHtml(dados.crimeDescricao);
+  const pena = escapeHtml(dados.pena);
+  const regime = escapeHtml(dados.regime);
+  const destinatario = escapeHtml(dados.destinatario);
+  const numeroProcesso = escapeHtml(dados.numeroProcesso);
+  const nomeAssinante = escapeHtml(dados.nomeAssinante);
 
   switch (tipoDocumento) {
     case 'sentenca_penal_condenatoria':
       return `
         <div class="secao-titulo">I – Relatório</div>
-        <div class="corpo">O Ministério Público ofereceu denúncia em face de ${dados.nomeReu}, imputando-lhe a prática de ${dados.crimeDescricao}.</div>
+        <div class="corpo">O Ministério Público ofereceu denúncia em face de ${nomeReu}, imputando-lhe a prática de ${crimeDescricao}.</div>
         <div class="secao-titulo">II – Fundamentação</div>
         <div class="corpo">${corpo}</div>
         <div class="secao-titulo">III – Dispositivo</div>
-        <div class="dispositivo">Ante o exposto, JULGO PROCEDENTE a pretensão punitiva estatal para CONDENAR ${dados.nomeReu}, como incurso(a) nas sanções de ${dados.crimeDescricao}, à pena de ${dados.pena}, em regime inicial ${dados.regime}.</div>
+        <div class="dispositivo">Ante o exposto, JULGO PROCEDENTE a pretensão punitiva estatal para CONDENAR ${nomeReu}, como incurso(a) nas sanções de ${crimeDescricao}, à pena de ${pena}, em regime inicial ${regime}.</div>
         <div class="corpo" style="margin-top:14px;">P.R.I.C.</div>
       `;
 
     case 'sentenca_penal_absolutoria':
       return `
         <div class="secao-titulo">I – Relatório</div>
-        <div class="corpo">O Ministério Público ofereceu denúncia em face de ${dados.nomeReu}, imputando-lhe a prática de ${dados.crimeDescricao}.</div>
+        <div class="corpo">O Ministério Público ofereceu denúncia em face de ${nomeReu}, imputando-lhe a prática de ${crimeDescricao}.</div>
         <div class="secao-titulo">II – Fundamentação</div>
         <div class="corpo">${corpo}</div>
         <div class="secao-titulo">III – Dispositivo</div>
-        <div class="dispositivo">Ante o exposto, JULGO IMPROCEDENTE a pretensão punitiva estatal e ABSOLVO ${dados.nomeReu}, nos termos do artigo 386 do Código de Processo Penal.</div>
+        <div class="dispositivo">Ante o exposto, JULGO IMPROCEDENTE a pretensão punitiva estatal e ABSOLVO ${nomeReu}, nos termos do artigo 386 do Código de Processo Penal.</div>
         <div class="corpo" style="margin-top:14px;">P.R.I.C.</div>
       `;
 
     case 'sentenca_civel_procedente':
       return `
         <div class="secao-titulo">I – Relatório</div>
-        <div class="corpo">${dados.nomeAutor} ajuizou a presente ação em face de ${dados.nomeReu}.</div>
+        <div class="corpo">${nomeAutor} ajuizou a presente ação em face de ${nomeReu}.</div>
         <div class="secao-titulo">II – Fundamentação</div>
         <div class="corpo">${corpo}</div>
         <div class="secao-titulo">III – Dispositivo</div>
-        <div class="dispositivo">Ante o exposto, JULGO PROCEDENTE o pedido formulado por ${dados.nomeAutor}.</div>
+        <div class="dispositivo">Ante o exposto, JULGO PROCEDENTE o pedido formulado por ${nomeAutor}.</div>
         <div class="corpo" style="margin-top:14px;">P.R.I.C.</div>
       `;
 
     case 'sentenca_civel_improcedente':
       return `
         <div class="secao-titulo">I – Relatório</div>
-        <div class="corpo">${dados.nomeAutor} ajuizou a presente ação em face de ${dados.nomeReu}.</div>
+        <div class="corpo">${nomeAutor} ajuizou a presente ação em face de ${nomeReu}.</div>
         <div class="secao-titulo">II – Fundamentação</div>
         <div class="corpo">${corpo}</div>
         <div class="secao-titulo">III – Dispositivo</div>
-        <div class="dispositivo">Ante o exposto, JULGO IMPROCEDENTE o pedido formulado por ${dados.nomeAutor}, nos termos do artigo 487, I, do Código de Processo Civil.</div>
+        <div class="dispositivo">Ante o exposto, JULGO IMPROCEDENTE o pedido formulado por ${nomeAutor}, nos termos do artigo 487, I, do Código de Processo Civil.</div>
         <div class="corpo" style="margin-top:14px;">P.R.I.C.</div>
       `;
 
@@ -207,14 +218,14 @@ function montarBlocoSecoes(tipoDocumento, dados) {
     // separado, que já acontece em botoesJuiz/oferecer quando o Juiz é sorteado).
     case 'parecer_mp_denuncia':
       return `
-        <div class="corpo">Com base no relatório do inquérito policial e nos elementos de convicção coligidos, em face de ${dados.nomeReu}, pela prática, em tese, de ${dados.crimeDescricao}:</div>
+        <div class="corpo">Com base no relatório do inquérito policial e nos elementos de convicção coligidos, em face de ${nomeReu}, pela prática, em tese, de ${crimeDescricao}:</div>
         <div class="corpo" style="margin-top:10px;">${corpo}</div>
         <div class="dispositivo">Ante o exposto, o Ministério Público OFERECE DENÚNCIA em face do(a) indiciado(a) acima qualificado(a), requerendo o recebimento, autuação e regular processamento, nos termos do artigo 41 do Código de Processo Penal.</div>
       `;
 
     case 'parecer_mp_arquivamento':
       return `
-        <div class="corpo">Trata-se de inquérito instaurado para apurar, em tese, a prática de ${dados.crimeDescricao}.</div>
+        <div class="corpo">Trata-se de inquérito instaurado para apurar, em tese, a prática de ${crimeDescricao}.</div>
         <div class="corpo" style="margin-top:10px;">${corpo}</div>
         <div class="dispositivo">Ante o exposto, o Ministério Público PROMOVE O ARQUIVAMENTO do presente inquérito, por ausência de justa causa para o oferecimento de denúncia, nos termos do artigo 28 do Código de Processo Penal, sem prejuízo de reabertura caso surjam novas provas.</div>
       `;
@@ -222,14 +233,14 @@ function montarBlocoSecoes(tipoDocumento, dados) {
     case 'oficio':
       return `
         <div class="corpo">Senhor(a) destinatário(a),</div>
-        <div class="corpo" style="margin-top:10px;">Por determinação de ${dados.nomeAssinante}, nos autos do processo nº ${dados.numeroProcesso}, encaminho o presente para:</div>
+        <div class="corpo" style="margin-top:10px;">Por determinação de ${nomeAssinante}, nos autos do processo nº ${numeroProcesso}, encaminho o presente para:</div>
         <div class="corpo" style="margin-top:10px;">${corpo}</div>
         <div class="corpo" style="margin-top:14px;">Atenciosamente.</div>
       `;
 
     case 'mandado_citacao':
       return `
-        <div class="corpo">MANDA ao Oficial de Justiça que proceda à CITAÇÃO de ${dados.destinatario}, para que tome conhecimento da presente ação, cujo objeto consiste em:</div>
+        <div class="corpo">MANDA ao Oficial de Justiça que proceda à CITAÇÃO de ${destinatario}, para que tome conhecimento da presente ação, cujo objeto consiste em:</div>
         <div class="corpo" style="margin-top:10px;">${corpo}</div>
         <div class="dispositivo">CUMPRA-SE.</div>
       `;
@@ -237,7 +248,7 @@ function montarBlocoSecoes(tipoDocumento, dados) {
     case 'mandado_intimacao':
     case 'intimacao':
       return `
-        <div class="corpo">MANDA ao Oficial de Justiça que proceda à INTIMAÇÃO de ${dados.destinatario}, para que tome ciência da seguinte determinação:</div>
+        <div class="corpo">MANDA ao Oficial de Justiça que proceda à INTIMAÇÃO de ${destinatario}, para que tome ciência da seguinte determinação:</div>
         <div class="corpo" style="margin-top:10px;">${corpo}</div>
         <div class="dispositivo">CUMPRA-SE.</div>
       `;
@@ -342,17 +353,29 @@ async function gerarDocumentoPNG(dados) {
 
   const blocoSecoes = montarBlocoSecoes(dados.tipoDocumento, dados);
 
+  // Escapa TODO campo de texto livre antes de entrar no template (subunidade, título, destinatário,
+  // assinante, cargo, nº do processo, data) — não só o corpo. LOGO_IMG_TAG e BLOCO_SECOES são HTML
+  // já montado pelo bot (logo é <img>; o bloco já teve seus campos escapados), por isso não são
+  // reescapados. As substituições usam função pra que um '$' no valor não vire padrão de replace.
+  const subunidade = escapeHtml(dados.subunidade);
+  const tituloDocumento = escapeHtml(dados.tituloDocumento);
+  const destinatario = escapeHtml(dados.destinatario);
+  const nomeAssinante = escapeHtml(dados.nomeAssinante);
+  const cargoAssinante = escapeHtml(dados.cargoAssinante);
+  const numeroProcesso = escapeHtml(dados.numeroProcesso);
+  const dataEmissao = escapeHtml(dados.dataEmissao);
+
   const html = TEMPLATE_BASE
-    .replace('{{LOGO_IMG_TAG}}', getLogoImgTag(dados.orgaoEmissor))
-    .replace('{{ORGAO_LINHA1}}', ORGAOS[dados.orgaoEmissor][0])
-    .replace('{{ORGAO_LINHA2}}', dados.subunidade)
-    .replace('{{TITULO_DOCUMENTO}}', dados.tituloDocumento)
-    .replace('{{DESTINATARIO}}', dados.destinatario)
-    .replace('{{BLOCO_SECOES}}', blocoSecoes)
-    .replace('{{NOME_ASSINANTE}}', dados.nomeAssinante)
-    .replace('{{CARGO_ASSINANTE}}', dados.cargoAssinante)
-    .replace(/\{\{NUMERO_PROCESSO\}\}/g, dados.numeroProcesso)
-    .replace(/\{\{DATA_EMISSAO\}\}/g, dados.dataEmissao);
+    .replace('{{LOGO_IMG_TAG}}', () => getLogoImgTag(dados.orgaoEmissor))
+    .replace('{{ORGAO_LINHA1}}', () => ORGAOS[dados.orgaoEmissor][0])
+    .replace('{{ORGAO_LINHA2}}', () => subunidade)
+    .replace('{{TITULO_DOCUMENTO}}', () => tituloDocumento)
+    .replace('{{DESTINATARIO}}', () => destinatario)
+    .replace('{{BLOCO_SECOES}}', () => blocoSecoes)
+    .replace('{{NOME_ASSINANTE}}', () => nomeAssinante)
+    .replace('{{CARGO_ASSINANTE}}', () => cargoAssinante)
+    .replace(/\{\{NUMERO_PROCESSO\}\}/g, () => numeroProcesso)
+    .replace(/\{\{DATA_EMISSAO\}\}/g, () => dataEmissao);
 
   const browser = await getBrowser();
   const page = await browser.newPage();
