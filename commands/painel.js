@@ -705,6 +705,9 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'rolprovas') return processoCmd.verRolProvas(interaction, extra);
     if (acao === 'gerenciar') return processoCmd.abrirGerenciar(interaction, extra);
     if (acao === 'voltarfase') return processoCmd.abrirModalVoltarFase(interaction, extra);
+    if (acao === 'manifestacaomp') return processoCmd.abrirManifestacaoMp(interaction, extra);
+    if (acao === 'deferirreqmp') return processoCmd.decidirRequerimentoMp(interaction, extra, true);
+    if (acao === 'indeferirreqmp') return processoCmd.decidirRequerimentoMp(interaction, extra, false);
     if (acao === 'addadvogado') return processoCmd.abrirAdicionarAdvogado(interaction, extra);
     if (acao === 'removeradvogado') return processoCmd.abrirRemoverAdvogado(interaction, extra);
     if (acao === 'deferirpeticao') return processoCmd.decidirPeticao(interaction, extra, true);
@@ -924,6 +927,10 @@ async function tratarSelect(interaction, modulo, campo, extra) {
     return processoCmd.removerCrime(interaction, extra);
   }
 
+  if (modulo === 'processo' && campo === 'manifestacaomp') {
+    return processoCmd.tratarManifestacaoMp(interaction, extra);
+  }
+
   if (modulo === 'processo' && campo === 'destinatariointimacao') {
     return processoCmd.processarSelecaoDestinatarioIntimacao(interaction, extra);
   }
@@ -1093,6 +1100,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'processo' && acao === 'gerenciarnome') return processoCmd.salvarGerenciarCampo(interaction, extra, 'nome');
   if (modulo === 'processo' && acao === 'gerenciaraddcrime') return processoCmd.salvarAddCrime(interaction, extra);
   if (modulo === 'processo' && acao === 'voltarfase') return processoCmd.voltarFase(interaction, extra);
+  if (modulo === 'processo' && acao === 'manifestacaomplivre') return processoCmd.salvarManifestacaoLivre(interaction, extra);
 
   if (modulo === 'processo' && acao === 'penal') {
     rascunhoCrimes.iniciar(interaction.user.id, {

@@ -76,13 +76,13 @@ async function aguardarAnexoPDF(interaction, { timeoutMs = 10 * 60 * 1000 } = {}
 // mensagens do autor — apagar mataria o link do anexo (requisito "provas nunca somem"). A janela
 // fecha por inatividade (idleMs sem novo anexo) OU pelo teto total (timeoutMs). Retorna
 // { arquivos: [{ url, nomeArquivo }], autorId, dataEnvio } ou null se nada foi enviado.
-async function aguardarAnexos(interaction, { timeoutMs = 90 * 1000, idleMs = 25 * 1000 } = {}) {
+async function aguardarAnexos(interaction, { timeoutMs = 90 * 1000, idleMs = 25 * 1000, mensagem = null, silenciarVazio = false } = {}) {
   const seg = Math.round(timeoutMs / 1000);
   const segIdle = Math.round(idleMs / 1000);
 
   // ACK dentro dos 3s ANTES de mexer em permissão (mesma razão do aguardarAnexoPDF acima).
   await interaction.reply({
-    content: `📎 Envie o(s) arquivo(s) como anexo nas próximas mensagens deste canal — pode mandar vários do mesmo fato. A janela fecha após ${segIdle}s sem novo envio (ou ${seg}s no total).`,
+    content: mensagem || `📎 Envie o(s) arquivo(s) como anexo nas próximas mensagens deste canal — pode mandar vários do mesmo fato. A janela fecha após ${segIdle}s sem novo envio (ou ${seg}s no total).`,
     ephemeral: true,
   });
 
@@ -109,7 +109,9 @@ async function aguardarAnexos(interaction, { timeoutMs = 90 * 1000, idleMs = 25 
 
   await relockar();
   if (arquivos.length === 0) {
-    await interaction.followUp({ content: '⏱️ Tempo esgotado. Nenhum arquivo recebido.', ephemeral: true }).catch(() => {});
+    // silenciarVazio: pra fluxos onde o anexo é OPCIONAL (ex.: manifestação do MP só-texto) — não
+    // avisa "tempo esgotado", quem chamou trata o retorno null como "sem documento".
+    if (!silenciarVazio) await interaction.followUp({ content: '⏱️ Tempo esgotado. Nenhum arquivo recebido.', ephemeral: true }).catch(() => {});
     return null;
   }
   return { arquivos, autorId: interaction.user.id, dataEnvio: new Date() };

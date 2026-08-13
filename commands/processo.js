@@ -495,6 +495,13 @@ const CATALOGO_ACOES = [
     quando: (p) => !!alvoVoltarFase(p),
     botao: (numero) => botaoVoltarFase(numero),
   },
+  // Manifestação do MP (prompt_manifestacao_mp) — ponto único do MP no processo penal, qualquer
+  // fase. Gate real (ehMembroDoMp) no clique. Roteia pros fluxos existentes + manifestação livre.
+  {
+    id: 'manifestacao_mp', grupo: 1, cargo: ['Promotor'],
+    quando: (p) => p.tipo === 'Penal',
+    botao: (numero) => botaoManifestacaoMp(numero),
+  },
 ];
 
 // Fonte única do customId: pega o botão de uma ação pelo id do catálogo. É o que deixa
@@ -2336,6 +2343,142 @@ async function voltarFase(interaction, numero) {
   return interaction.editReply({ content: `Fase revertida para **${alvo.para}**.` });
 }
 
+// ---- Manifestação do Ministério Público (prompt_manifestacao_mp) ----
+// Ponto ÚNICO de atuação do MP dentro do processo penal. NÃO duplica os fluxos: roteia pros
+// handlers que já existem (oferecer/arquivar via modalParecerMp; medida cautelar via
+// medida.abrirSolicitarMedidaDireta) e acrescenta a "Manifestação/Requerimento livre" (documento
+// pela janela de upload da F5): manifestação junta direto aos autos; requerimento vira pendência
+// na fila do Juiz. Gate de entrada: membro do MP; cada handler roteado MANTÉM sua trava de "dono
+// do caso" (promotor do processo). Ciente de contexto: o botão vive no painel e carrega o número.
+
+function ehMembroDoMp(interaction) {
+  return isAdmin(interaction) || isSuperStaff(interaction) || temCargo(interaction, 'Promotor') || temCargo(interaction, 'Procurador');
+}
+
+function botaoManifestacaoMp(numero) {
+  return new ButtonBuilder().setCustomId(`painel:acao:processo:manifestacaomp:${numero}`).setLabel('🏛️ Manifestação do MP').setStyle(ButtonStyle.Primary);
+}
+
+async function abrirManifestacaoMp(interaction, numero) {
+  if (!ehMembroDoMp(interaction)) return interaction.reply({ content: 'Só Promotor/Procurador podem manifestar-se pelo Ministério Público.', ephemeral: true });
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (processo.tipo !== 'Penal') return interaction.reply({ content: 'A manifestação do MP é para processos penais.', ephemeral: true });
+
+  const opcoes = [];
+  if (!processo.juiz) {
+    opcoes.push({ label: 'Oferecer denúncia', value: 'oferecer', emoji: '⚖️' });
+    opcoes.push({ label: 'Promover arquivamento', value: 'arquivar', emoji: '📦' });
+  } else {
+    opcoes.push({ label: 'Requerer medida cautelar', value: 'medida', emoji: '🔒' });
+  }
+  opcoes.push({ label: 'Manifestação / Requerimento livre (c/ documento)', value: 'livre', emoji: '📝' });
+
+  const select = new StringSelectMenuBuilder().setCustomId(`painel:select:processo:manifestacaomp:${numero}`).setPlaceholder('Ato do MP nesta fase').addOptions(opcoes);
+  return interaction.reply({ content: '🏛️ **Manifestação do Ministério Público** — escolha o ato desta fase:', components: [new ActionRowBuilder().addComponents(select)], ephemeral: true });
+}
+
+async function tratarManifestacaoMp(interaction, numero) {
+  if (!ehMembroDoMp(interaction)) return interaction.reply({ content: 'Sem permissão.', ephemeral: true });
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  const escolha = interaction.values[0];
+
+  if (escolha === 'oferecer' || escolha === 'arquivar') {
+    // Reusa o modal/parecer existente (modalParecerMp → confirmarParecerMp → executarParecerMp),
+    // mantendo a trava de dono do caso (promotor do processo) — a decisão real segue no fluxo antigo.
+    if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
+      return interaction.reply({ content: `Só o Promotor responsável por este processo pode oferecer/arquivar — no caso, <@${processo.promotor}>.`, ephemeral: true });
+    }
+    return interaction.showModal(modalParecerMp(numero, escolha));
+  }
+  if (escolha === 'medida') return medidaCmd.abrirSolicitarMedidaDireta(interaction, numero);
+  if (escolha === 'livre') return interaction.showModal(modalManifestacaoLivre(numero));
+  return interaction.reply({ content: 'Opção inválida.', ephemeral: true });
+}
+
+function modalManifestacaoLivre(numero) {
+  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:manifestacaomplivre:${numero}`).setTitle('Manifestação / Requerimento do MP');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('descricao').setLabel('Teor do ato').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('tipo').setLabel('"manifestacao" ou "requerimento"').setPlaceholder('manifestacao = junta direto | requerimento = decide o Juiz').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(20)),
+  );
+  return modal;
+}
+
+function botoesDeferirIndeferirReqMp(numero, reqId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`painel:acao:processo:deferirreqmp:${numero}#${reqId}`).setLabel('Deferir').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`painel:acao:processo:indeferirreqmp:${numero}#${reqId}`).setLabel('Indeferir').setStyle(ButtonStyle.Danger),
+  );
+}
+
+async function salvarManifestacaoLivre(interaction, numero) {
+  if (!ehMembroDoMp(interaction)) return interaction.reply({ content: 'Sem permissão.', ephemeral: true });
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  const descricao = (interaction.fields.getTextInputValue('descricao') || '').trim();
+  const ehRequerimento = (interaction.fields.getTextInputValue('tipo') || '').trim().toLowerCase().startsWith('req');
+  if (!descricao) return interaction.reply({ content: 'O teor do ato é obrigatório.', ephemeral: true });
+
+  // Documento é OPCIONAL: abre a janela de upload (F5); se nada vier, o ato é só-texto.
+  const resultado = await aguardarAnexos(interaction, {
+    timeoutMs: 60 * 1000, idleMs: 15 * 1000, silenciarVazio: true,
+    mensagem: '📎 Se este ato tiver documento, envie-o agora como anexo (~60s). Se for só texto, é só aguardar a janela fechar.',
+  });
+  const arquivos = resultado ? resultado.arquivos : [];
+  const lista = arquivos.map((a, i) => `[${a.nomeArquivo || `doc ${i + 1}`}](${a.url})`).join(', ') || '—';
+  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+
+  for (const a of arquivos) {
+    anexos.criarDocumento({ tipo: ehRequerimento ? 'requerimento_mp' : 'manifestacao_mp', url: a.url, nomeArquivo: a.nomeArquivo, autorId: interaction.user.id, atoOrigemId: `${numero}#mp`, protocoloVinculado: numero });
+  }
+
+  if (ehRequerimento) {
+    // Requerimento → pendência na fila do Juiz (mesmo padrão pedido→decisão de habilitação/petição).
+    const reqs = processo.requerimentosMp || [];
+    const novoId = reqs.reduce((m, r) => Math.max(m, r.id || 0), 0) + 1;
+    const req = { id: novoId, promotorId: interaction.user.id, descricao, arquivos: arquivos.map(a => a.url), status: 'Pendente', criadoEm: new Date().toISOString() };
+    db.atualizar('processos', numero, { requerimentosMp: [...reqs, req] });
+    if (canal && processo.juiz) {
+      const embed = new EmbedBuilder().setTitle('📝 Requerimento do MP — decisão do Juiz').setColor(0x2980b9)
+        .addFields({ name: 'Promotor', value: `<@${interaction.user.id}>`, inline: true }, { name: 'Requerimento', value: truncar(descricao) }, { name: 'Documento(s)', value: truncar(lista) });
+      await canal.send({ content: `<@${processo.juiz}> — requerimento do MP para apreciação.`, embeds: [embed], components: [botoesDeferirIndeferirReqMp(numero, novoId)] }).catch(() => {});
+    }
+    await andamentos.registrar(interaction.guild, numero, { tipo: 'requerimento_mp', titulo: '📝 Requerimento do MP protocolado', detalhe: `Requerimento do MP por <@${interaction.user.id}>: "${descricao}" — aguardando decisão do Juiz.`, executorId: interaction.user.id, anexoUrl: arquivos[0]?.url || null, metadata: { requerimentoId: novoId } });
+    await repostarPainel(interaction.guild, numero);
+    return interaction.followUp({ content: '📝 Requerimento protocolado e enviado ao Juiz.', ephemeral: true });
+  }
+
+  // Manifestação → juntada direta aos autos, sem decisão.
+  if (canal) {
+    const embed = new EmbedBuilder().setTitle('📝 Manifestação do Ministério Público').setColor(0x2980b9)
+      .addFields({ name: 'Promotor', value: `<@${interaction.user.id}>`, inline: true }, { name: 'Manifestação', value: truncar(descricao) }, { name: 'Documento(s)', value: truncar(lista) });
+    await canal.send({ embeds: [embed] }).catch(() => {});
+  }
+  await andamentos.registrar(interaction.guild, numero, { tipo: 'manifestacao_mp', titulo: '📝 Manifestação do MP', detalhe: `Manifestação do MP por <@${interaction.user.id}>: "${descricao}" — juntada aos autos.`, executorId: interaction.user.id, anexoUrl: arquivos[0]?.url || null, metadata: {} });
+  await repostarPainel(interaction.guild, numero);
+  return interaction.followUp({ content: '📝 Manifestação juntada aos autos.', ephemeral: true });
+}
+
+async function decidirRequerimentoMp(interaction, chave, deferir) {
+  const [numero, idTexto] = chave.split('#');
+  const reqId = Number(idTexto);
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Juiz deste processo pode decidir o requerimento — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  }
+  const reqs = processo.requerimentosMp || [];
+  const alvo = reqs.find(r => r.id === reqId);
+  if (!alvo || alvo.status !== 'Pendente') return interaction.reply({ content: 'Esse requerimento não existe mais ou já foi decidido.', ephemeral: true });
+  const novoStatus = deferir ? 'Deferido' : 'Indeferido';
+  db.atualizar('processos', numero, { requerimentosMp: reqs.map(r => r.id === reqId ? { ...r, status: novoStatus } : r) });
+  await andamentos.registrar(interaction.guild, numero, { tipo: 'requerimento_mp_decidido', titulo: `📝 Requerimento do MP ${novoStatus.toLowerCase()}`, detalhe: `Requerimento do MP foi ${novoStatus.toLowerCase()} pelo Juiz.`, executorId: interaction.user.id, metadata: { requerimentoId: reqId, resultado: novoStatus } });
+  await repostarPainel(interaction.guild, numero);
+  return interaction.update({ content: `Requerimento do MP **${novoStatus.toLowerCase()}** pelo Juiz.`, components: [] });
+}
+
 // ---- Recurso/Apelação (só quem perdeu, conforme o resultado estruturado da sentença) ----
 
 // Sem bypass de admin de propósito — recorrer é ato de parte (só quem de fato perdeu a causa),
@@ -3037,6 +3180,10 @@ module.exports = {
   abrirRemoverAdvogado,
   abrirModalVoltarFase,
   voltarFase,
+  abrirManifestacaoMp,
+  tratarManifestacaoMp,
+  salvarManifestacaoLivre,
+  decidirRequerimentoMp,
   painelAtual,
   repostarPainel,
   pedirRevisaoArquivamento,
