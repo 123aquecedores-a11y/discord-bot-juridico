@@ -10,12 +10,31 @@ function dataExtenso() {
   return new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
 }
 
+// Dispositivo POR CRIME (lote 5, Função 2) — quando a sentença penal foi proferida crime a crime
+// (processo.sentencaPorCrime), o dispositivo condena e absolve por tipificação. Senão, retorna null
+// e o textoSentenca cai no dispositivo agregado antigo.
+function dispositivoSentencaPenal(processo) {
+  const spc = processo.sentencaPorCrime;
+  if (!Array.isArray(spc) || spc.length === 0) return null;
+  const nomeCrime = (s) => `${s.nome}${s.codigo_artigo ? ` (Art. ${s.codigo_artigo})` : ''}`;
+  const cond = spc.filter(s => s.resultado === 'Condenado');
+  const abs = spc.filter(s => s.resultado === 'Absolvido');
+  const linhas = [];
+  if (cond.length) {
+    linhas.push(`Julgo **PARCIALMENTE PROCEDENTE** a pretensão punitiva para **CONDENAR** o(a) réu(ré) quanto a: ${cond.map(nomeCrime).join('; ')}${processo.pena ? `.\nPenas aplicadas: ${processo.pena}` : '.'}${processo.regime ? ` Regime inicial: ${processo.regime}.` : ''}`);
+  }
+  if (abs.length) {
+    linhas.push(`**ABSOLVO** o(a) réu(ré) quanto a: ${abs.map(nomeCrime).join('; ')}.`);
+  }
+  return linhas.join('\n');
+}
+
 function textoSentenca(processo) {
   const partes = processo.tipo === 'Penal'
     ? [`Delegado: <@${processo.delegado}>`, `Promotor: <@${processo.promotor}>`, `Réu(s): ${(processo.reus || []).map(id => `<@${id}>`).join(', ') || 'a identificar'}`]
     : [`Autor: <@${processo.autor}>`, `Réu(s): ${(processo.reus || []).map(id => `<@${id}>`).join(', ') || 'a identificar'}`];
 
-  const dispositivo = {
+  const dispositivo = (processo.tipo === 'Penal' && dispositivoSentencaPenal(processo)) || {
     Condenado: 'Julgo **PROCEDENTE** a pretensão punitiva estatal para **CONDENAR** o(a) réu(ré).',
     Absolvido: 'Julgo **IMPROCEDENTE** a pretensão punitiva estatal para **ABSOLVER** o(a) réu(ré).',
     Procedente: 'Julgo **PROCEDENTE** o pedido.',

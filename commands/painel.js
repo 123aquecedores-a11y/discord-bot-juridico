@@ -1009,6 +1009,10 @@ async function tratarSelect(interaction, modulo, campo, extra) {
     return interaction.showModal(processoCmd.modalSentenca(numero, resultado));
   }
 
+  if (modulo === 'processo' && campo === 'veredictocrimes') {
+    return processoCmd.processarVeredictoCrimes(interaction, extra);
+  }
+
   if (modulo === 'processo' && campo === 'atenuantes') {
     return processoCmd.atualizarAtenuantesSentenca(interaction, extra);
   }
@@ -1178,6 +1182,10 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'processo' && acao === 'sentenca') {
     const [numero, resultado] = extra.split('#');
     return processoCmd.salvarSentenca(interaction, numero, resultado);
+  }
+
+  if (modulo === 'processo' && acao === 'sentencapocrime') {
+    return processoCmd.salvarSentencaPorCrime(interaction, extra);
   }
 
   if (modulo === 'processo' && acao === 'recorrer') {

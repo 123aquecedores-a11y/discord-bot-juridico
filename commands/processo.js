@@ -28,6 +28,11 @@ const analiseDocumento = require('../utils/analiseDocumento');
 // a ser verdade. Se sumir (restart/expiração), é só refazer a ação.
 const rascunhoDecisao = new RascunhoTTL();
 const chaveDecisao = (uid, numero) => `${uid}:${numero}`;
+
+// Veredicto por crime (lote 5, Função 2) — guarda os IDs dos crimes CONDENADOS entre o select de
+// veredicto e a submissão do modal de sentença (passando pela tela de atenuantes). TTL igual ao
+// rascunhoDecisao: se o fluxo for abandonado, expira sozinho.
+const rascunhoVeredicto = new RascunhoTTL();
 const anexos = require('../utils/anexos');
 const mandadoCmd = require('./mandado');
 const medidaCmd = require('./medida');
@@ -132,8 +137,10 @@ function modalSentenca(numero, resultado) {
 // de atenuantes. Tudo aqui é apoio qualitativo: pena, regime e texto final continuam sendo
 // digitados manualmente no modal seguinte. O aviso de teto de 45 meses é só informativo — não
 // bloqueia o Juiz de sentenciar acima disso quando há decisão fundamentada.
-function montarPainelSentencaPenal(processo, atenuantesSelecionadas) {
-  const crimesDoProcesso = processo.crimes || [];
+function montarPainelSentencaPenal(processo, atenuantesSelecionadas, condenadosIds = null) {
+  const todosCrimes = processo.crimes || [];
+  // Função 2: quando vem a lista de condenados, a referência de pena/atenuantes é só desses crimes.
+  const crimesDoProcesso = condenadosIds ? todosCrimes.filter(c => condenadosIds.includes(c.id)) : todosCrimes;
   const foraDoTeto = c => c.sem_custodia || c.apuracao === 'corregedoria';
   const somaTeto = crimesDoProcesso.filter(c => !foraDoTeto(c)).reduce((acc, c) => acc + (c.pena_max_meses || 0), 0);
   const ultrapassaTeto = somaTeto > 45;
@@ -177,6 +184,25 @@ function montarPainelSentencaPenal(processo, atenuantesSelecionadas) {
   ));
 
   return { embeds: [embed], components };
+}
+
+// Modal de sentença POR CRIME (lote 5, Função 2) — fundamentação sempre; se houver condenação,
+// um campo de penas (pré-preenchido com uma linha por crime condenado, pena texto-livre) + regime.
+// Absolvição em tudo → só fundamentação.
+function modalSentencaPorCrime(numero, processo, condenadosIds) {
+  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:sentencapocrime:${numero}`).setTitle('Sentença por crime');
+  const condenados = (processo.crimes || []).filter(c => condenadosIds.includes(c.id));
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('texto').setLabel('Fundamentação e decisão').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1500),
+  ));
+  if (condenados.length) {
+    const template = condenados.map(c => `${crimeLabel(c)}: `).join('\n');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('penas').setLabel('Pena de cada crime condenado').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1500).setValue(template.slice(0, 1500))),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('regime').setLabel('Regime inicial (ex: semiaberto)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(60)),
+    );
+  }
+  return modal;
 }
 
 // Parecer do MP (spec-atualizacoes-bot-juridico.md, seção 1) — mesmo campo único serve pra
@@ -2484,17 +2510,30 @@ async function decidirRequerimentoMp(interaction, chave, deferir) {
 // Sem bypass de admin de propósito — recorrer é ato de parte (só quem de fato perdeu a causa),
 // não uma função de suporte administrativo. Staff que precisar agir nesse papel usa as trocas
 // de Juiz/Promotor/Desembargador (utils/supervisao.js) pra assumir o papel de verdade primeiro.
+// Quais lados "perderam" — base da regra de quem pode recorrer. Na sentença POR CRIME (Função 2),
+// o réu perde se foi condenado em ALGUM crime e a acusação perde se houve absolvição em ALGUM —
+// os dois lados podem ter interesse recursal simultâneo (antes era mutuamente exclusivo).
+function ladosQuePerderam(processo) {
+  const spc = processo.sentencaPorCrime;
+  if (processo.tipo === 'Penal' && Array.isArray(spc) && spc.length) {
+    return { perdeuReu: spc.some(s => s.resultado === 'Condenado'), perdeuAcusacao: spc.some(s => s.resultado === 'Absolvido') };
+  }
+  return {
+    perdeuReu: (processo.tipo === 'Penal' && processo.resultado === 'Condenado') || (processo.tipo === 'Civil' && processo.resultado === 'Procedente'),
+    perdeuAcusacao: (processo.tipo === 'Penal' && processo.resultado === 'Absolvido') || (processo.tipo === 'Civil' && processo.resultado === 'Improcedente'),
+  };
+}
+
 function podeRecorrer(interaction, processo) {
   if (isSuperStaff(interaction)) return true;
   const uid = interaction.user.id;
-  const perdeuReu = (processo.tipo === 'Penal' && processo.resultado === 'Condenado') || (processo.tipo === 'Civil' && processo.resultado === 'Procedente');
-  const perdeuAcusacao = (processo.tipo === 'Penal' && processo.resultado === 'Absolvido') || (processo.tipo === 'Civil' && processo.resultado === 'Improcedente');
+  const { perdeuReu, perdeuAcusacao } = ladosQuePerderam(processo);
 
-  if (perdeuReu) {
-    if ((processo.reus || []).includes(uid)) return true;
-    return (processo.habilitacoes || []).some(h => h.advogadoId === uid && h.status === 'Aprovado');
-  }
-  if (perdeuAcusacao) return processo.tipo === 'Penal' ? uid === processo.promotor : uid === processo.autor;
+  // Réu/defesa pode recorrer se o réu perdeu (condenado em ao menos um crime); acusação pode se
+  // perdeu (absolvição em ao menos um). Como agora não são exclusivos, testa o lado de quem clica.
+  const ehReuOuDefesa = (processo.reus || []).includes(uid) || (processo.habilitacoes || []).some(h => h.advogadoId === uid && h.status === 'Aprovado');
+  if (perdeuReu && ehReuOuDefesa) return true;
+  if (perdeuAcusacao && (processo.tipo === 'Penal' ? uid === processo.promotor : uid === processo.autor)) return true;
   return false;
 }
 
@@ -2520,9 +2559,13 @@ function explicarNegacaoRecurso(interaction, processo) {
   return `Você não pode recorrer: você é ${papel} neste processo, e ${resumoResultado} — ou seja, você venceu a causa. Só quem perdeu tem o recurso liberado.`;
 }
 
-function parteContrariaDoRecurso(processo) {
-  const perdeuReu = (processo.tipo === 'Penal' && processo.resultado === 'Condenado') || (processo.tipo === 'Civil' && processo.resultado === 'Procedente');
-  if (perdeuReu) return processo.tipo === 'Penal' ? processo.promotor : processo.autor;
+// A parte contrária depende de QUEM recorre — no resultado por crime os dois lados podem recorrer,
+// então não dá pra deduzir só pelo resultado. Se o recorrente é réu/defesa, a contrária é a
+// acusação; senão, é o réu.
+function parteContrariaDoRecurso(processo, recorrenteId) {
+  const recorrenteEhReuOuDefesa = (processo.reus || []).includes(recorrenteId)
+    || (processo.habilitacoes || []).some(h => h.advogadoId === recorrenteId && h.status === 'Aprovado');
+  if (recorrenteEhReuOuDefesa) return processo.tipo === 'Penal' ? processo.promotor : processo.autor;
   return (processo.reus || [])[0] || null;
 }
 
@@ -2582,7 +2625,7 @@ async function criarApelacao(interaction, numero, modo) {
   const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
   const razoes = usarRevisado && d.textoRevisado ? d.textoRevisado : d.razoes;
   const recorrenteId = interaction.user.id;
-  const parteContrariaId = parteContrariaDoRecurso(processo);
+  const parteContrariaId = parteContrariaDoRecurso(processo, recorrenteId);
 
   const desembargadorId = rh.sortearPorCargo('Desembargador');
   if (!desembargadorId) return interaction.editReply({ content: 'Não há Desembargador ativo cadastrado. As razões não foram protocoladas — tente de novo quando houver um Desembargador.' });
@@ -2843,6 +2886,41 @@ async function executarAcordao(interaction, numeroApelacao, modo) {
 
 // Publicação da sentença (após o Juiz escolher revisar ou não) — lê o rascunho, gera o PNG e
 // posta. `usarRevisado` decide entre o texto revisado pela IA e o original.
+// Submit do modal de sentença por crime (Função 2) — monta o array sentencaPorCrime[] a partir do
+// veredicto guardado (rascunhoVeredicto), deriva o resultado agregado (Condenado se houve ao menos
+// uma condenação, senão Absolvido) e segue pro mesmo pipeline de revisão-IA/publicação.
+async function salvarSentencaPorCrime(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  }
+  const condenadosIds = rascunhoVeredicto.get(chaveDecisao(interaction.user.id, numero)) || [];
+  const crimes = processo.crimes || [];
+  const temCondenacao = condenadosIds.length > 0;
+
+  const textoDigitado = interaction.fields.getTextInputValue('texto');
+  const penas = temCondenacao ? (interaction.fields.getTextInputValue('penas') || '').trim() : null;
+  const regime = temCondenacao ? (interaction.fields.getTextInputValue('regime') || '').trim() : null;
+
+  const atenuantesSelecionadas = temCondenacao ? rascunhoSentenca.obter(interaction.user.id, numero) : [];
+  const rotulos = labelsDe(atenuantesSelecionadas);
+  const texto = rotulos.length ? `${textoDigitado}\n\nAtenuada em razão de: ${rotulos.join(', ')}.` : textoDigitado;
+
+  const sentencaPorCrime = crimes.map(c => ({
+    crimeId: c.id, nome: c.nome, codigo_artigo: c.codigo_artigo,
+    resultado: condenadosIds.includes(c.id) ? 'Condenado' : 'Absolvido',
+  }));
+  const resultado = temCondenacao ? 'Condenado' : 'Absolvido';
+
+  rascunhoSentenca.limpar(interaction.user.id, numero);
+  rascunhoVeredicto.delete(chaveDecisao(interaction.user.id, numero));
+
+  rascunhoDecisao.set(chaveDecisao(interaction.user.id, numero), { texto, pena: penas, regime, resultado, sentencaPorCrime });
+  if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return executarSentenca(interaction, numero, 'auto');
+  return interaction.reply(revisaoIA.telaEscolha('sentenca', { extra: numero, titulo: 'Fundamentos da sentença', texto }));
+}
+
 async function executarSentenca(interaction, numero, modo) {
   const chave = chaveDecisao(interaction.user.id, numero);
   const d = rascunhoDecisao.get(chave);
@@ -2862,8 +2940,8 @@ async function executarSentenca(interaction, numero, modo) {
   if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.texto).catch(() => null);
   const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
   const texto = usarRevisado && d.textoRevisado ? d.textoRevisado : d.texto;
-  const { pena, regime, resultado } = d;
-  db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaEm: new Date().toISOString() });
+  const { pena, regime, resultado, sentencaPorCrime } = d;
+  db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaPorCrime: sentencaPorCrime || null, sentencaEm: new Date().toISOString() });
 
   const processo = db.buscarPorNumero('processos', numero);
   const nomeJuiz = await documentoPng.nomeExibicao(interaction.guild, processo.juiz);
@@ -2873,7 +2951,9 @@ async function executarSentenca(interaction, numero, modo) {
       : 'o(a) réu(ré)'
   );
   const nomeAutor = processo.autorNome || (processo.autor ? await documentoPng.nomeExibicao(interaction.guild, processo.autor) : 'a parte autora');
-  const crimeDescricao = (processo.crimes || []).map(c => crimeLabel(c)).join(', ') || 'crime não especificado';
+  const crimeDescricao = Array.isArray(processo.sentencaPorCrime) && processo.sentencaPorCrime.length
+    ? processo.sentencaPorCrime.map(s => `${s.nome} (Art. ${s.codigo_artigo}) — ${s.resultado}`).join('; ')
+    : ((processo.crimes || []).map(c => crimeLabel(c)).join(', ') || 'crime não especificado');
 
   const TIPO_DOCUMENTO_SENTENCA = {
     'Penal:Condenado': 'sentenca_penal_condenatoria', 'Penal:Absolvido': 'sentenca_penal_absolutoria',
@@ -3020,6 +3100,20 @@ module.exports = {
       return interaction.reply({ content: `Este processo ainda não está concluso para julgamento (status atual: "${processo.status}"). Falta citar o réu, aguardar a contestação ou decretar revelia.`, ephemeral: true });
     }
 
+    // Penal com crimes: veredicto POR CRIME (lote 5, Função 2) — multi-select onde os marcados =
+    // Condenado e os não marcados = Absolvido. Fallback pro select agregado antigo se não houver
+    // crimes ou se passar de 25 (limite de opções de um select do Discord).
+    const crimesPenais = processo.tipo === 'Penal' ? (processo.crimes || []) : [];
+    if (crimesPenais.length > 0 && crimesPenais.length <= 25) {
+      const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId(`painel:select:processo:veredictocrimes:${numero}`)
+          .setPlaceholder('Marque os crimes CONDENADOS (não marcados = absolvidos)')
+          .setMinValues(0).setMaxValues(crimesPenais.length)
+          .addOptions(crimesPenais.map(c => ({ label: crimeLabel(c).slice(0, 100), value: c.id }))),
+      );
+      return interaction.reply({ content: '⚖️ **Veredicto por crime** — marque os crimes em que o réu foi **condenado**; os que ficarem em branco serão **absolvidos**. Em seguida você preenche a pena de cada um e a fundamentação.', components: [row], ephemeral: true });
+    }
+
     const opcoes = processo.tipo === 'Penal'
       ? [{ label: 'Condenado', value: 'Condenado' }, { label: 'Absolvido', value: 'Absolvido' }]
       : [{ label: 'Procedente', value: 'Procedente' }, { label: 'Improcedente', value: 'Improcedente' }];
@@ -3036,6 +3130,10 @@ module.exports = {
     const processo = db.buscarPorNumero('processos', numero);
     if (!processo) return interaction.update({ content: 'Processo não encontrado.', embeds: [], components: [] });
     rascunhoSentenca.limpar(interaction.user.id, numero);
+    // Este caminho é o fallback agregado (select único "Condenado", usado quando há >25 crimes e o
+    // veredicto por crime não cabe num select): condena em TODOS os crimes — popula o veredicto pra
+    // o modal por crime tratar todos como condenados, mantendo o mesmo pipeline.
+    rascunhoVeredicto.set(chaveDecisao(interaction.user.id, numero), (processo.crimes || []).map(c => c.id));
     const { embeds, components } = montarPainelSentencaPenal(processo, []);
     return interaction.update({ content: null, embeds, components });
   },
@@ -3050,17 +3148,35 @@ module.exports = {
     return interaction.update({ embeds, components });
   },
 
-  // "Continuar para sentença" — mantém as atenuantes marcadas até aqui (se houver) e abre o
-  // modal final normalmente.
-  async continuarSentencaPenal(interaction, numero) {
-    return interaction.showModal(modalSentenca(numero, 'Condenado'));
+  // Select do veredicto por crime (Função 2) — guarda os condenados e segue pra tela de apoio
+  // (atenuantes, só dos condenados) ou, se absolveu em tudo, direto pro modal de fundamentação.
+  async processarVeredictoCrimes(interaction, numero) {
+    const processo = db.buscarPorNumero('processos', numero);
+    if (!processo) return interaction.update({ content: 'Processo não encontrado.', embeds: [], components: [] });
+    if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+      return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processo.juiz}>.`, ephemeral: true });
+    }
+    const condenados = interaction.values || [];
+    rascunhoVeredicto.set(chaveDecisao(interaction.user.id, numero), condenados);
+    rascunhoSentenca.limpar(interaction.user.id, numero);
+    if (condenados.length === 0) {
+      return interaction.showModal(modalSentencaPorCrime(numero, processo, []));
+    }
+    const { embeds, components } = montarPainelSentencaPenal(processo, [], condenados);
+    return interaction.update({ content: null, embeds, components });
   },
 
-  // "Pular sugestões e preencher direto" — descarta qualquer atenuante marcada e vai direto
-  // pro modal, como se a tela de apoio nunca tivesse existido.
+  // "Continuar para sentença" — mantém as atenuantes marcadas e abre o modal de sentença por crime.
+  async continuarSentencaPenal(interaction, numero) {
+    const condenados = rascunhoVeredicto.get(chaveDecisao(interaction.user.id, numero)) || [];
+    return interaction.showModal(modalSentencaPorCrime(numero, db.buscarPorNumero('processos', numero), condenados));
+  },
+
+  // "Pular sugestões e preencher direto" — descarta as atenuantes e abre o mesmo modal.
   async pularSentencaPenal(interaction, numero) {
     rascunhoSentenca.limpar(interaction.user.id, numero);
-    return interaction.showModal(modalSentenca(numero, 'Condenado'));
+    const condenados = rascunhoVeredicto.get(chaveDecisao(interaction.user.id, numero)) || [];
+    return interaction.showModal(modalSentencaPorCrime(numero, db.buscarPorNumero('processos', numero), condenados));
   },
 
   async salvarSentenca(interaction, numero, resultado) {
@@ -3184,6 +3300,7 @@ module.exports = {
   tratarManifestacaoMp,
   salvarManifestacaoLivre,
   decidirRequerimentoMp,
+  salvarSentencaPorCrime,
   painelAtual,
   repostarPainel,
   pedirRevisaoArquivamento,
