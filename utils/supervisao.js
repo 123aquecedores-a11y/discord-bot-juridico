@@ -170,6 +170,68 @@ async function trocarPromotor(interaction) {
   return interaction.reply({ content: `Promotor do processo ${numero} trocado para <@${novoPromotorId}>.`, ephemeral: true });
 }
 
+// ---- Trocar Delegado (Supervisão) ----
+// Não existe cargo de chefia policial no servidor, então a reatribuição do Delegado fica com a
+// mesma turma que já supervisiona Juiz/Promotor (podeSupervisionar = Procurador/Desembargador/
+// Staff). Mesma mecânica do trocarPromotor: troca o campo, dá acesso ao canal ao novo, remove o
+// antigo e registra na auditoria. O Delegado precisa do acesso ao canal pra anexar PDFs (indícios,
+// relatórios), por isso a troca de permissão não é cosmética.
+
+// Resolve um processo pelo número interno ("0001PN") OU pelo ID do canal do Discord (snowflake) —
+// a Supervisão às vezes tem em mãos o canal do processo, não o número.
+function acharProcessoPorRef(ref) {
+  const t = (ref || '').trim();
+  if (/^\d{15,25}$/.test(t)) {
+    const porCanal = db.buscarUm('processos', p => p.canalId === t);
+    if (porCanal) return porCanal;
+  }
+  return db.buscarPorNumero('processos', t);
+}
+
+function abrirModalTrocarDelegado(interaction) {
+  if (!podeSupervisionar(interaction)) {
+    return interaction.reply({ content: 'Só a Supervisão (Procurador/Desembargador/Staff) pode trocar o Delegado de um processo.', ephemeral: true });
+  }
+  const modal = new ModalBuilder().setCustomId('painel:modal:supervisao:trocardelegado').setTitle('Trocar Delegado do processo');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('numero').setLabel('Número do processo ou ID do canal').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('novo').setLabel('Menção @ do novo Delegado').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Motivo da troca').setStyle(TextInputStyle.Short).setRequired(true)),
+  );
+  return interaction.showModal(modal);
+}
+
+async function trocarDelegado(interaction) {
+  if (!podeSupervisionar(interaction)) {
+    return interaction.reply({ content: 'Só a Supervisão (Procurador/Desembargador/Staff) pode trocar o Delegado de um processo.', ephemeral: true });
+  }
+  const novoDelegadoId = extrairMencao(interaction.fields.getTextInputValue('novo'));
+  const motivo = interaction.fields.getTextInputValue('motivo');
+
+  const processo = acharProcessoPorRef(interaction.fields.getTextInputValue('numero'));
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado — informe o número (ex.: `0001PN`) ou o ID do canal.', ephemeral: true });
+  if (!novoDelegadoId) return interaction.reply({ content: 'Marque o novo Delegado com @menção.', ephemeral: true });
+  if (!processo.delegado) return interaction.reply({ content: 'Esse processo não tem Delegado atribuído.', ephemeral: true });
+  if (processo.delegado === novoDelegadoId) return interaction.reply({ content: 'Esse já é o Delegado atual do processo.', ephemeral: true });
+
+  const delegadoAntigo = processo.delegado;
+  db.atualizar('processos', processo.numero, { delegado: novoDelegadoId });
+
+  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+  if (canal) {
+    await canais.adicionarMembro(canal, novoDelegadoId);
+    await canal.permissionOverwrites.delete(delegadoAntigo).catch(() => {});
+    await canal.send({ content: `<@${novoDelegadoId}> passa a ser o Delegado deste processo (trocado pela Supervisão <@${interaction.user.id}>). Motivo: ${motivo}` });
+  }
+
+  await auditoria.registrar(interaction.guild, {
+    acao: 'Troca de Delegado', executorId: interaction.user.id,
+    referencia: `Processo ${processo.numero}: <@${delegadoAntigo}> → <@${novoDelegadoId}>`, motivo,
+  });
+
+  return interaction.reply({ content: `Delegado do processo ${processo.numero} trocado para <@${novoDelegadoId}>.`, ephemeral: true });
+}
+
 // ---- Trocar Desembargador de uma apelação ----
 // Sem isso, uma apelação sorteada pra um Desembargador que ficasse indisponível (licença,
 // saiu do cargo) ficava presa pra sempre — só o `desembargadorId` original podia decidir.
@@ -430,6 +492,7 @@ module.exports = {
   podeSupervisionar,
   abrirModalTrocarJuiz, trocarJuiz,
   abrirModalTrocarPromotor, trocarPromotor,
+  abrirModalTrocarDelegado, trocarDelegado,
   abrirModalTrocarDesembargador, trocarDesembargador,
   abrirModalForcarDenuncia, forcarDenuncia,
   abrirModalForcarDenunciaDireto, forcarDenunciaDireto,

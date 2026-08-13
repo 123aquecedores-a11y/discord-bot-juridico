@@ -222,6 +222,7 @@ function submenuSupervisao(interaction) {
       botaoSe(temCargo(interaction, 'Desembargador') || isAdmin(interaction), 'painel:acao:supervisao:trocarjuiz', 'Trocar Juiz', ButtonStyle.Primary),
       botaoSe(temCargo(interaction, 'Procurador') || isAdmin(interaction), 'painel:acao:supervisao:trocarpromotor', 'Trocar Promotor', ButtonStyle.Primary),
       botaoSe(temCargo(interaction, 'Desembargador') || isAdmin(interaction), 'painel:acao:supervisao:trocardesembargador', 'Trocar relator (apelação)', ButtonStyle.Primary),
+      botaoSe(temCargo(interaction, 'Procurador') || temCargo(interaction, 'Desembargador') || isAdmin(interaction), 'painel:acao:supervisao:trocardelegado', 'Trocar Delegado', ButtonStyle.Primary),
       botaoSe(temCargo(interaction, 'Procurador') || isAdmin(interaction), 'painel:acao:supervisao:forcardenuncia', 'Forçar denúncia', ButtonStyle.Danger),
     ),
     // Frente 3.3 — a Ficha do judiciário (funcional) passou a viver aqui, na Supervisão.
@@ -735,6 +736,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   if (modulo === 'supervisao') {
     if (acao === 'trocarjuiz') return supervisao.abrirModalTrocarJuiz(interaction);
     if (acao === 'trocarpromotor') return supervisao.abrirModalTrocarPromotor(interaction);
+    if (acao === 'trocardelegado') return supervisao.abrirModalTrocarDelegado(interaction);
     if (acao === 'trocardesembargador') return supervisao.abrirModalTrocarDesembargador(interaction);
     if (acao === 'forcardenuncia') return supervisao.abrirModalForcarDenuncia(interaction);
     if (acao === 'forcardenunciadireto') return supervisao.abrirModalForcarDenunciaDireto(interaction, extra);
@@ -1179,6 +1181,10 @@ async function tratarModal(interaction, modulo, acao, extra) {
 
   if (modulo === 'supervisao' && acao === 'trocarpromotor') {
     return supervisao.trocarPromotor(interaction);
+  }
+
+  if (modulo === 'supervisao' && acao === 'trocardelegado') {
+    return supervisao.trocarDelegado(interaction);
   }
 
   if (modulo === 'supervisao' && acao === 'trocardesembargador') {
