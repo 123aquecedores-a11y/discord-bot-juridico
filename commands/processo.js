@@ -184,7 +184,10 @@ function modalParecerMp(numero, acao) {
   const titulo = acao === 'oferecer' ? 'Parecer do MP — Oferecer denúncia' : 'Parecer do MP — Arquivamento';
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:parecermp:${numero}#${acao}`).setTitle(titulo.slice(0, 45));
   modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('parecer').setLabel('Parecer do Ministério Público').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+    // 4000 é o teto absoluto do Discord pra um campo de modal (Paragraph). Denúncia real tem
+    // fundamentação longa (fatos + materialidade + capitulação + requerimentos), então usamos o
+    // máximo. O texto do canal já é truncado em textoDespacho; o PNG (documento real) não tem limite.
+    new TextInputBuilder().setCustomId('parecer').setLabel('Parecer do Ministério Público').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   return modal;
 }

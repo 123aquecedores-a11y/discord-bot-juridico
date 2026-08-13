@@ -88,10 +88,10 @@ const TEMPLATE_BASE = `
     margin: 0 auto 6px auto;
   }
   .rodape {
-    position: absolute;
-    bottom: 40px;
-    left: 70px;
-    right: 70px;
+    /* Fluindo ao final do conteúdo (não mais position:absolute). Com bottom:40px, num documento
+       longo (2+ páginas) o rodapé ancorava na altura de UMA página e cruzava o texto no meio.
+       Fluindo, ele sempre fica logo após a assinatura, qualquer que seja o tamanho do documento. */
+    margin-top: 50px;
     font-size: 10px;
     color: #888;
     text-align: center;
