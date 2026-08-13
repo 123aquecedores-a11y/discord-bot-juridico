@@ -1013,6 +1013,10 @@ async function tratarSelect(interaction, modulo, campo, extra) {
     return processoCmd.processarVeredictoCrimes(interaction, extra);
   }
 
+  if (modulo === 'processo' && campo === 'voltarfase') {
+    return processoCmd.processarVoltarFaseEscolha(interaction, extra);
+  }
+
   if (modulo === 'processo' && campo === 'atenuantes') {
     return processoCmd.atualizarAtenuantesSentenca(interaction, extra);
   }

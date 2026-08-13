@@ -518,7 +518,7 @@ const CATALOGO_ACOES = [
   // Ato concluído (sentença/arquivamento de mérito) não aparece aqui: vai pelo caminho de anulação.
   {
     id: 'voltar_fase', grupo: 2, cargo: ['Juiz', 'Desembargador', 'Procurador'],
-    quando: (p) => !!alvoVoltarFase(p),
+    quando: (p) => temVoltarFase(p),
     botao: (numero) => botaoVoltarFase(numero),
   },
   // Manifestação do MP (prompt_manifestacao_mp) — ponto único do MP no processo penal, qualquer
@@ -2283,6 +2283,31 @@ function alvoVoltarFase(processo) {
   }
 }
 
+// O processo PENAL comum vai de 'Instrução' direto pra sentença (não passa por 'Concluso'), então
+// nessa fase o "Voltar fase" abre um MENU com duas opções (decisão do dono): devolver ao MP
+// (reabre a decisão de denúncia/arquivamento, tira o Juiz) ou reabrir a instrução (volta a colher
+// provas, mantém o Juiz).
+const ESCOLHAS_VOLTAR_INSTRUCAO = {
+  devolvermp: { para: 'Aguardando decisão do MP', limparJuiz: true, reabrirCanal: false },
+  reabririnstrucao: { para: 'Em instrução', limparJuiz: false, reabrirCanal: false },
+};
+
+function penalEmInstrucao(processo) {
+  return processo.tipo === 'Penal' && processo.status === 'Instrução';
+}
+
+function temVoltarFase(processo) {
+  return !!alvoVoltarFase(processo) || penalEmInstrucao(processo);
+}
+
+// Destino do "voltar": se veio uma escolha do menu (penal em Instrução), usa ela; senão, o alvo
+// único por status (alvoVoltarFase).
+function resolverAlvoVoltar(processo, escolha) {
+  if (escolha && ESCOLHAS_VOLTAR_INSTRUCAO[escolha]) return ESCOLHAS_VOLTAR_INSTRUCAO[escolha];
+  const a = alvoVoltarFase(processo);
+  return a ? { ...a, limparJuiz: false } : null;
+}
+
 function podeVoltarFase(interaction, processo) {
   if (isSuperStaff(interaction) || isAdmin(interaction)) return true;
   if (temCargo(interaction, 'Desembargador') || temCargo(interaction, 'Procurador')) return true;
@@ -2293,11 +2318,30 @@ function botaoVoltarFase(numero) {
   return new ButtonBuilder().setCustomId(`painel:acao:processo:voltarfase:${numero}`).setLabel('↩️ Voltar fase').setStyle(ButtonStyle.Secondary);
 }
 
+function modalVoltarFase(numero, escolha, paraLabel) {
+  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:voltarfase:${numero}${escolha ? `#${escolha}` : ''}`).setTitle('Voltar fase');
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('motivo').setLabel(`Motivo (volta p/ "${paraLabel}")`.slice(0, 45)).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(500),
+  ));
+  return modal;
+}
+
 async function abrirModalVoltarFase(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (!podeVoltarFase(interaction, processo)) {
     return interaction.reply({ content: 'Só o Juiz do processo (ou Desembargador/Procurador/Staff) pode voltar a fase.', ephemeral: true });
+  }
+  // Penal em Instrução → menu (devolver ao MP OU reabrir instrução).
+  if (penalEmInstrucao(processo)) {
+    const row = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder().setCustomId(`painel:select:processo:voltarfase:${numero}`).setPlaceholder('Voltar para qual fase?')
+        .addOptions(
+          { label: 'Devolver ao Ministério Público', value: 'devolvermp', description: 'O MP reavalia: denunciar de novo ou arquivar' },
+          { label: 'Reabrir instrução (novas provas)', value: 'reabririnstrucao', description: 'Volta a colher provas/diligências' },
+        ),
+    );
+    return interaction.reply({ content: '↩️ **Voltar fase** — para qual fase deseja voltar?', components: [row], ephemeral: true });
   }
   const alvo = alvoVoltarFase(processo);
   if (!alvo) {
@@ -2308,18 +2352,26 @@ async function abrirModalVoltarFase(interaction, numero) {
         : 'Não há fase anterior para voltar a partir do status atual.';
     return interaction.reply({ content: `⚠️ ${dica}`, ephemeral: true });
   }
-  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:voltarfase:${numero}`).setTitle('Voltar fase');
-  modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('motivo').setLabel(`Motivo (volta p/ "${alvo.para}")`.slice(0, 45)).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(500),
-  ));
-  return interaction.showModal(modal);
+  return interaction.showModal(modalVoltarFase(numero, '', alvo.para));
 }
 
-async function voltarFase(interaction, numero) {
+// Escolha do menu (penal em Instrução) → abre o modal de motivo com a escolha embutida.
+async function processarVoltarFaseEscolha(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (!podeVoltarFase(interaction, processo)) return interaction.reply({ content: 'Sem permissão pra voltar a fase.', ephemeral: true });
-  const alvo = alvoVoltarFase(processo);
+  const escolha = interaction.values[0];
+  const alvo = ESCOLHAS_VOLTAR_INSTRUCAO[escolha];
+  if (!alvo) return interaction.reply({ content: 'Opção inválida.', ephemeral: true });
+  return interaction.showModal(modalVoltarFase(numero, escolha, alvo.para));
+}
+
+async function voltarFase(interaction, chave) {
+  const [numero, escolha] = String(chave).split('#');
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeVoltarFase(interaction, processo)) return interaction.reply({ content: 'Sem permissão pra voltar a fase.', ephemeral: true });
+  const alvo = resolverAlvoVoltar(processo, escolha);
   if (!alvo) return interaction.reply({ content: 'Não há fase anterior para voltar a partir do status atual.', ephemeral: true });
   const motivo = (interaction.fields.getTextInputValue('motivo') || '').trim();
   if (!motivo) return interaction.reply({ content: 'O motivo é obrigatório.', ephemeral: true });
@@ -2343,7 +2395,13 @@ async function voltarFase(interaction, numero) {
   // Aplica a volta: status + reinício do relógio de julgamento (juizDesde) e rearme do aviso de
   // "sem juiz". Ao voltar pra antes da contestação (cível), zera o estado do prazo de contestação.
   const patch = { status: alvo.para };
-  if (processo.juiz) { patch.juizDesde = new Date().toISOString(); patch.avisoSemJuizEnviado = false; }
+  if (alvo.limparJuiz) {
+    // Devolver ao MP: tira o Juiz — o processo volta pra fila de decisão do MP (faseDenunciaMp),
+    // que reexibe Oferecer denúncia / Arquivar. Quando o MP redenunciar, sorteia Juiz de novo.
+    patch.juiz = null; patch.juizDesde = null; patch.avisoSemJuizEnviado = false;
+  } else if (processo.juiz) {
+    patch.juizDesde = new Date().toISOString(); patch.avisoSemJuizEnviado = false;
+  }
   if (alvo.para === 'Aguardando defesa') {
     patch.prazoContestacaoAte = null; patch.citacaoEm = null; patch.avisoPrazoContestacaoEnviado = false;
   }
@@ -3295,6 +3353,7 @@ module.exports = {
   adicionarAdvogadoSelecionado,
   abrirRemoverAdvogado,
   abrirModalVoltarFase,
+  processarVoltarFaseEscolha,
   voltarFase,
   abrirManifestacaoMp,
   tratarManifestacaoMp,
