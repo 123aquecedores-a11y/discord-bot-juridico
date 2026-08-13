@@ -5,8 +5,7 @@ const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
 const rh = require('../utils/rh');
 const canais = require('../utils/canais');
 const config = require('../config');
-const crimes = require('../data/crimes.json');
-const { penaTexto, crimeLabel } = require('../utils/crimesTexto');
+const { penaTexto, crimeLabel, resolverCrimesTexto } = require('../utils/crimesTexto');
 const { ATENUANTES, labelsDe } = require('../utils/atenuantes');
 const rascunhoSentenca = require('../utils/rascunhoSentenca');
 const { truncar } = require('../utils/texto');
@@ -42,10 +41,12 @@ function extrairMencoes(texto) {
   return [...new Set(matches.map(m => m[1]))];
 }
 
+// Delega pra fonte única em utils/crimesTexto — casa cada crime por id interno, por código de
+// artigo OU por nome (ver resolverCrimesTexto). Antes só casava por id exato, o que fazia a
+// abertura falhar quando o texto trazia os crimes por artigo/nome (ex.: encerramento de inquérito
+// vindo da Polícia Civil, /processo penal digitado à mão).
 function resolverCrimes(texto) {
-  if (!texto) return [];
-  const ids = texto.split(',').map(s => s.trim()).filter(Boolean);
-  return ids.map(id => crimes.find(c => c.id === id)).filter(Boolean);
+  return resolverCrimesTexto(texto);
 }
 
 // Identidade do réu para exibição, unificada entre o painel do caso e a capa pública. Três casos:
@@ -2267,7 +2268,7 @@ module.exports = {
     .setName('processo')
     .setDescription('Gerencia processos penais e civis')
     .addSubcommand(sub => sub.setName('penal').setDescription('Abre um processo penal (inquérito) — Delegado')
-      .addStringOption(o => o.setName('crimes').setDescription('IDs dos crimes separados por vírgula (use /crime buscar)').setRequired(true))
+      .addStringOption(o => o.setName('crimes').setDescription('Crimes separados por vírgula: ID, artigo ou nome (ver /crime buscar)').setRequired(true))
       .addStringOption(o => o.setName('motivo').setDescription('Descrição objetiva dos fatos').setRequired(true))
       .addUserOption(o => o.setName('promotor').setDescription('Promotor responsável'))
       .addStringOption(o => o.setName('reus').setDescription('Menções @ dos réus, se já identificados'))

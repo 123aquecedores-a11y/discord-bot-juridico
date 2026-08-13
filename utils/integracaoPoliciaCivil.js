@@ -13,30 +13,105 @@ const ficha = require('./ficha');
 const dossie = require('./dossie');
 const anexos = require('./anexos');
 const { extrairMencao } = require('./texto');
+const { resolverCrimesTexto, extrairCrimesDeRelatorio } = require('./crimesTexto');
 
 function campoDoEmbed(embed, nomeCampo) {
   const campo = (embed.fields || []).find(f => f.name.trim().toLowerCase() === nomeCampo.toLowerCase());
   return campo ? campo.value.trim() : null;
 }
 
+// Reconhece um encerramento de inquérito (relatório final do Delegado) entre as mensagens que a
+// Polícia Civil manda no mesmo canal. Dois sinais, qualquer um serve:
+//   1) campo "Evento" explícito (contrato ideal da spec de integração, seção 5.3); ou
+//   2) presença de um "Relatório Final"/"Relatório" — assinatura que só o encerramento tem (o
+//      pedido_medida traz Tipo/Alvo, a abertura_inquerito não tem relatório), então dá pra rotear
+//      mesmo quando o payload real vem rotulado "Requerimento de Andamento Processual", sem o
+//      campo "Evento". É parsing de embed (frágil por natureza — ver integracao-tribunal-policia-
+//      civil.md seção 4), mas é o formato que chega hoje; o caminho manual via /painel continua.
+function ehEncerramentoInquerito(embed) {
+  // 1) Sinal EXPLÍCITO de tipo de evento — o mais confiável (contrato ideal da spec de integração,
+  //    integracao-tribunal-policia-civil.md seção 5). O ideal é a Polícia Civil sempre mandar um
+  //    "Evento"/"tipo_evento": encerrar inquérito ABRE PROCESSO; pedir medida abre CAUTELAR — sem
+  //    esse campo, os dois podem chegar com o mesmo título ("Requerimento de Andamento Processual").
+  const evento = (campoDoEmbed(embed, 'Evento') || campoDoEmbed(embed, 'tipo_evento') || '').toLowerCase();
+  if (evento.includes('encerramento') && evento.includes('inqu')) return true;
+  if (evento.includes('medida')) return false;
+
+  // 2) Sem o campo de tipo, decide pelo CONTEÚDO (nunca pelo título, que é genérico demais e
+  //    rotularia os dois): pedido de medida traz Alvo + RG do alvo — se tem isso, é medida, não
+  //    encerramento. Encerramento traz relatório final / tipificação (campo "Crimes") / indiciamento.
+  const pareceMedida = campoDoEmbed(embed, 'Alvo')
+    && (campoDoEmbed(embed, 'RG do alvo') || campoDoEmbed(embed, 'CPF do alvo'));
+  if (pareceMedida) return false;
+  if (campoDoEmbed(embed, 'Relatório Final') || campoDoEmbed(embed, 'Relatório') || campoDoEmbed(embed, 'Crimes')) return true;
+  // Relatório grande (>1024, o limite de um campo de embed) chega na descrição — reconhece pelo
+  // conteúdo do indiciamento ali.
+  return /incid[êe]ncia\s+penal|indiciad[oa]/i.test(embed.description || '');
+}
+
+// Junta o texto do relatório venha ele de um campo de embed (curto, ≤1024) ou da descrição
+// (relatório grande) — os dois entram na extração de crimes/indiciado e viram o motivo do processo.
+function textoDoRelatorio(embed) {
+  const campo = campoDoEmbed(embed, 'Relatório Final') || campoDoEmbed(embed, 'Motivo/Relatório')
+    || campoDoEmbed(embed, 'Relatório') || '';
+  const descricao = (embed.description || '').trim();
+  return [campo, descricao].filter(Boolean).join('\n\n').trim();
+}
+
+// Puxa o nome do indiciado da prosa do relatório ("INDICIADO: Fulano ..." / "INDICIADOS: ...")
+// quando não veio num campo estruturado. Retorna só o nome (sem RG/Discord) — vira réu "por nome",
+// vinculável ao Discord depois (spec seção 10: RG+nome é registro principal, Discord é opcional).
+// Para de capturar ao encontrar o começo da tipificação/fatos, pra não engolir o relatório inteiro.
+function extrairIndiciadoDoRelatorio(relatorio) {
+  if (!relatorio) return null;
+  const m = relatorio.match(/indiciad[oa]s?:?\s*(.+?)(?=\s+(?:incid[êe]ncia|tipifica|capitula|dos\s+fatos|art\.?\s)|[\n.]|$)/i);
+  const nome = m && m[1] ? m[1].trim() : '';
+  // Evita capturar lixo: nome plausível tem letra e não é enorme.
+  return nome && nome.length >= 3 && nome.length <= 120 && /[a-zà-ú]/i.test(nome) ? nome : null;
+}
+
 // Encerramento de inquérito (spec-atualizacoes-bot-juridico.md, seção 1) — evento diferente de
-// pedido_medida, mesmo canal, distinguido pelo campo "Evento". O Delegado abre o processo penal
-// direto do lado da Polícia Civil quando o inquérito termina; reaproveita criarProcessoPenal
-// (o MESMO usado pela abertura manual via /painel), então se essa integração falhar ou nunca
-// vier, o mesmo resultado continua alcançável na mão — dois caminhos, mesmo destino, sem
-// depender um do outro.
+// pedido_medida, mesmo canal. O Delegado encerra o inquérito com o relatório final e isso abre o
+// processo penal, reaproveitando criarProcessoPenal (o MESMO usado pela abertura manual via
+// /painel), então se essa integração falhar ou nunca vier, o mesmo resultado continua alcançável
+// na mão — dois caminhos, mesmo destino, sem depender um do outro. Reconhecimento e extração dos
+// crimes/indiciado toleram o formato real que a Polícia Civil manda (ver ehEncerramentoInquerito).
 async function processarEncerramentoInquerito(message, embed) {
-  const delegadoId = extrairMencao(campoDoEmbed(embed, 'Delegado responsável') || campoDoEmbed(embed, 'Delegado') || '');
-  const protocolo = campoDoEmbed(embed, 'Protocolo do Inquérito') || campoDoEmbed(embed, 'Protocolo');
+  const delegadoId = extrairMencao(
+    campoDoEmbed(embed, 'Delegado responsável') || campoDoEmbed(embed, 'Delegado') || campoDoEmbed(embed, 'Delegado solicitante') || '',
+  );
+  const protocolo = campoDoEmbed(embed, 'Protocolo do Inquérito') || campoDoEmbed(embed, 'Protocolo')
+    || campoDoEmbed(embed, 'Código/Protocolo') || campoDoEmbed(embed, 'Código');
   const reusTexto = campoDoEmbed(embed, 'Réu(s)') || campoDoEmbed(embed, 'Indiciados') || '';
-  const crimesTexto = campoDoEmbed(embed, 'Crimes') || '';
-  const motivo = campoDoEmbed(embed, 'Motivo/Relatório') || campoDoEmbed(embed, 'Relatório') || 'Denúncia decorrente de inquérito policial.';
+  const crimesField = campoDoEmbed(embed, 'Crimes') || '';
+  // "Relatório Final" é o texto principal do encerramento — vem de campo (curto) ou da descrição
+  // do embed (relatório grande, >1024). Aceita os rótulos antigos também.
+  const relatorio = textoDoRelatorio(embed);
+  const motivo = relatorio || 'Denúncia decorrente de inquérito policial.';
   const relatorioPdfUrl = campoDoEmbed(embed, 'Relatório (PDF)') || campoDoEmbed(embed, 'Relatório PDF');
+
+  // Crimes: se veio um campo estruturado "Crimes", usa ele (aceita ID/artigo/nome); senão, extrai
+  // da PROSA do relatório final ("INCIDÊNCIA PENAL: Art. X (Nome); ..."), que é como a Polícia
+  // Civil manda hoje. O que não for reconhecido é avisado pra inclusão manual, não some calado.
+  let crimesResolvidos = [];
+  let crimesNaoReconhecidos = [];
+  if (crimesField) {
+    crimesResolvidos = resolverCrimesTexto(crimesField);
+  } else if (relatorio) {
+    const ex = extrairCrimesDeRelatorio(relatorio);
+    crimesResolvidos = ex.crimes;
+    crimesNaoReconhecidos = ex.naoReconhecidos;
+  }
+
+  // Indiciado por nome, quando não veio campo estruturado de réu(s).
+  const reuNomeProsa = reusTexto ? null : extrairIndiciadoDoRelatorio(relatorio);
 
   const erros = [];
   if (!delegadoId) erros.push('campo "Delegado responsável" precisa ser uma @menção válida do Discord (não nome em texto)');
-  if (!protocolo) erros.push('campo "Protocolo do Inquérito" ausente');
-  if (!crimesTexto) erros.push('campo "Crimes" ausente (IDs de `/crime buscar`, separados por vírgula)');
+  if (!protocolo) erros.push('campo "Protocolo do Inquérito"/"Código/Protocolo" ausente');
+  if (crimesResolvidos.length === 0) {
+    erros.push('nenhum crime reconhecido — informe a tipificação por nome/artigo no relatório (ex.: "Art. 121 (Homicídio)") ou num campo "Crimes"');
+  }
 
   if (erros.length > 0) {
     await message.reply({
@@ -47,7 +122,10 @@ async function processarEncerramentoInquerito(message, embed) {
 
   const resultado = await processoCmd.criarProcessoPenal({
     guild: message.guild, delegadoId, promotorId: null,
-    crimesTexto, motivo, reusTexto, medidaNumero: null, atoMpNumero: null,
+    // Re-serializa só os IDs já reconhecidos — garante que entram exatamente os crimes casados.
+    crimesTexto: crimesResolvidos.map(c => c.id).join(','),
+    motivo, reusTexto, reuNome: reuNomeProsa, reuRg: null,
+    medidaNumero: null, atoMpNumero: null,
   });
 
   if (resultado.erro) {
@@ -68,7 +146,16 @@ async function processarEncerramentoInquerito(message, embed) {
     });
   }
 
-  await message.reply({ content: `✅ **Comunicação do Tribunal** — encerramento de inquérito recebido, processo ${resultado.numero} aberto e enviado à fila do Ministério Público em ${resultado.canal}.` }).catch(() => {});
+  const qtd = crimesResolvidos.length;
+  const linhaCrimes = `📌 ${qtd} crime${qtd > 1 ? 's' : ''} reconhecido${qtd > 1 ? 's' : ''} e incluído${qtd > 1 ? 's' : ''} automaticamente.`;
+  // Crimes que a base não reconheceu não travam a abertura — mas o Delegado/Promotor precisa saber
+  // pra completar à mão (via /painel > Processo), senão sumiriam sem ninguém perceber.
+  const linhaFalta = crimesNaoReconhecidos.length
+    ? `\n⚠️ Não reconheci na base (adicione manualmente se aplicável): ${crimesNaoReconhecidos.join('; ')}.`
+    : '';
+  await message.reply({
+    content: `✅ **Comunicação do Tribunal** — encerramento de inquérito recebido, processo ${resultado.numero} aberto e enviado à fila do Ministério Público em ${resultado.canal}.\n${linhaCrimes}${linhaFalta}`,
+  }).catch(() => {});
   await auditoria.registrar(message.guild, {
     acao: 'Processo penal aberto via encerramento de inquérito', executorId: delegadoId,
     referencia: `${resultado.numero} (protocolo: ${protocolo})`,
@@ -100,7 +187,7 @@ async function processarRequerimento(message) {
   // "Evento" distingue encerramento_inquerito de pedido_medida — mesmo canal, payloads
   // diferentes. Sem esse campo, cai no fluxo de sempre (pedido_medida), pra não quebrar quem já
   // manda o payload antigo sem essa marcação.
-  if ((campoDoEmbed(embed, 'Evento') || '').toLowerCase() === 'encerramento de inquérito') {
+  if (ehEncerramentoInquerito(embed)) {
     return processarEncerramentoInquerito(message, embed);
   }
 
@@ -194,4 +281,4 @@ async function processarRequerimento(message) {
   });
 }
 
-module.exports = { processarRequerimento };
+module.exports = { processarRequerimento, ehEncerramentoInquerito, extrairIndiciadoDoRelatorio };
