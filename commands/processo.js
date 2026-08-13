@@ -415,6 +415,13 @@ const CATALOGO_ACOES = [
     quando: faseComJuiz,
     botao: (numero) => new ButtonBuilder().setCustomId(`processo:julgar:${numero}`).setLabel('Julgar').setStyle(ButtonStyle.Primary),
   },
+  // Intimar réu (abre defesa) — só penal com Juiz e enquanto a intimação do réu não foi cumprida.
+  // Some do painel assim que cumprida (habilitação por código, Parte A).
+  {
+    id: 'intimar_reu', grupo: 1, cargo: ['Juiz'],
+    quando: (p) => p.tipo === 'Penal' && !!p.juiz && !p.intimacaoReuCumpridaEm,
+    botao: (numero) => botaoIntimarReu(numero),
+  },
   {
     // Citação do réu no civil (inicia o prazo de contestação) — a intimação genérica NÃO faz
     // isso; só o "Receber e intimar" dispara a transição pra "Aguardando contestação". Antes só
@@ -1074,7 +1081,9 @@ async function concluirInstrucaoNovamente(interaction, numero) {
 // Civil já nasce público, porque autor e juiz já existem desde a abertura.
 function processoPublico(p) {
   if (p.tipo === 'Civil') return true;
-  return p.status !== 'Aguardando decisão do MP';
+  // Penal (habilitação por código): o caso só aparece no canal de advogados DEPOIS que o Juiz
+  // marca a intimação do réu como cumprida — antes disso a defesa fica fechada.
+  return p.status !== 'Aguardando decisão do MP' && !!p.intimacaoReuCumpridaEm;
 }
 
 function temAcessoTotal(interaction, processo) {
@@ -1084,12 +1093,21 @@ function temAcessoTotal(interaction, processo) {
   return (processo.habilitacoes || []).some(h => h.advogadoId === uid && h.status === 'Aprovado');
 }
 
-// "Capa pública": os mesmos dados que aparecem no canal "Advogar - Pegar Casos" — não o teor completo.
+// "Capa pública": o que aparece no canal "Advogar - Pegar Casos". No PENAL a capa é CEGA
+// (habilitação por código): mostra só o número, nada de réu/autor/crimes — o advogado só descobre
+// o caso ao se habilitar com o código que o réu recebeu na intimação. No cível segue detalhada.
 function embedCapaPublica(p) {
+  if (p.tipo === 'Penal') {
+    return new EmbedBuilder()
+      .setTitle(`📁 Processo ${p.numero}`)
+      .setColor(0xe67e22)
+      .setDescription('Caso disponível para **habilitação da defesa**. Clique em **Solicitar habilitação** e informe o nome do cliente, o RG e o **código de 4 dígitos** que consta na intimação do réu.')
+      .setFooter({ text: 'Réu, autor e teor são sigilosos — habilite-se para acessar os autos.' });
+  }
   const reusTxt = descreverReu(p);
   const embed = new EmbedBuilder()
     .setTitle(`📁 Processo ${p.numero} (${p.tipo})`)
-    .setColor(p.tipo === 'Penal' ? 0xe67e22 : 0x3498db)
+    .setColor(0x3498db)
     .addFields(
       { name: 'Status', value: p.status, inline: true },
       { name: 'Réu(s)', value: truncar(reusTxt) },
@@ -1134,6 +1152,80 @@ async function postarOuAtualizarDiario(guild, numero) {
   } catch (err) {
     console.error(`Falha ao publicar/atualizar o canal "Advogar - Pegar Casos" do processo ${numero}: ${err.message}`);
   }
+}
+
+// ---- Intimação do réu com código de habilitação (habilitação por código, Parte A) ----
+// Fluxo PENAL: o Juiz emite a intimação do réu (a via que vai pro jogo) com um código de 4 dígitos
+// impresso SÓ nela; depois marca "cumprida" quando o réu recebe no jogo — só então o caso aparece
+// CEGO no canal de advogados e começa o prazo de 48h para constituir advogado (Parte B).
+
+function botaoIntimarReu(numero) {
+  return new ButtonBuilder().setCustomId(`painel:acao:processo:intimarreu:${numero}`).setLabel('📃 Intimar réu (abre defesa)').setStyle(ButtonStyle.Primary);
+}
+function botaoMarcarIntimacaoCumprida(numero) {
+  return new ButtonBuilder().setCustomId(`painel:acao:processo:intimarreucumprida:${numero}`).setLabel('✅ Marcar intimação cumprida').setStyle(ButtonStyle.Success);
+}
+function gerarCodigoHabilitacao() {
+  return String(Math.floor(1000 + Math.random() * 9000)); // 4 dígitos
+}
+
+async function intimarReu(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (processo.tipo !== 'Penal') return interaction.reply({ content: 'A intimação do réu com código de habilitação é do fluxo penal.', ephemeral: true });
+  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Juiz deste processo pode intimar o réu — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: true });
+
+  const codigo = processo.codigoHabilitacao || gerarCodigoHabilitacao();
+  if (!processo.codigoHabilitacao) db.atualizar('processos', numero, { codigoHabilitacao: codigo });
+
+  const teor = 'Fica o(a) réu(ré) INTIMADO(a) a constituir advogado para sua defesa nos autos deste processo, no prazo legal. Apresente esta via ao advogado que escolher — o código abaixo é necessário para a habilitação da defesa. Não havendo advogado constituído no prazo, o Juízo nomeará defensor dativo e o processo seguirá com defesa (ampla defesa assegurada).';
+  const corpoComCodigo = `${teor}\n\n=========================\nVIA DO RÉU — CÓDIGO DE HABILITAÇÃO DA DEFESA: ${codigo}\nEntregue este código ao seu advogado. Informar dados falsos ou tentar adivinhar o código é infração sujeita a sanção administrativa.`;
+
+  const nomeJuiz = await documentoPng.nomeExibicao(interaction.guild, processo.juiz);
+  const png = await documentoPng.gerarDocumentoPNG({
+    tipoDocumento: 'intimacao', orgaoEmissor: 'judiciario',
+    subunidade: 'Comarca de São Paulo — Vara Criminal',
+    tituloDocumento: 'INTIMAÇÃO DO RÉU', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),
+    destinatario: processo.reuNome || 'Réu(s)', corpoTexto: corpoComCodigo, nomeAssinante: nomeJuiz, cargoAssinante: 'Juiz de Direito',
+  }).catch(err => { console.error('Falha ao gerar PNG da intimação do réu:', err.message); return null; });
+
+  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+  if (canal) {
+    await canal.send({
+      content: '📃 **Intimação do réu emitida** — a via do réu (com o código de habilitação) está no anexo e é a que vai pro jogo. Marque **"intimação cumprida"** quando o réu receber; só então o caso abre para a defesa se habilitar.',
+      files: png ? [{ attachment: png, name: `Intimacao-Reu-${numero}.png` }] : [],
+      components: [new ActionRowBuilder().addComponents(botaoMarcarIntimacaoCumprida(numero))],
+    }).catch(() => {});
+  }
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'intimacao_reu_emitida', titulo: '📃 Intimação do réu emitida',
+    detalhe: 'Intimação do réu emitida com código de habilitação impresso na via do réu.', executorId: interaction.user.id,
+  });
+  return interaction.editReply({ content: `📃 Intimação do réu emitida. **Código de habilitação (via do réu): \`${codigo}\`** — já impresso na via do réu (anexo). Repasse ao réu no jogo. Quando ele receber, clique em **Marcar intimação cumprida**.` });
+}
+
+async function marcarIntimacaoReuCumprida(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Juiz deste processo pode marcar a intimação como cumprida — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  }
+  if (processo.intimacaoReuCumpridaEm) {
+    return interaction.reply({ content: 'A intimação do réu já estava marcada como cumprida.', ephemeral: true });
+  }
+  db.atualizar('processos', numero, { intimacaoReuCumpridaEm: new Date().toISOString(), avisoPrazoHabilitacaoEnviado: false });
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'intimacao_reu_cumprida', titulo: '✅ Intimação do réu cumprida',
+    detalhe: 'O Juiz marcou a intimação do réu como cumprida. Abre a habilitação da defesa — 48h para constituir advogado, senão o Juízo nomeia defensor dativo.',
+    executorId: interaction.user.id,
+  });
+  await auditoria.registrar(interaction.guild, { acao: 'Intimação do réu cumprida', executorId: interaction.user.id, referencia: `Processo ${numero}` });
+  await postarOuAtualizarDiario(interaction.guild, numero); // revela a capa cega no canal de advogados
+  await repostarPainel(interaction.guild, numero);
+  return interaction.update({ content: '✅ Intimação do réu cumprida — habilitação da defesa aberta. O caso aparece (cego) no canal de advogados e o prazo de 48h para constituir advogado começou.', components: [] });
 }
 
 async function verProcesso(interaction, numero) {
@@ -3360,6 +3452,8 @@ module.exports = {
   salvarManifestacaoLivre,
   decidirRequerimentoMp,
   salvarSentencaPorCrime,
+  intimarReu,
+  marcarIntimacaoReuCumprida,
   painelAtual,
   repostarPainel,
   pedirRevisaoArquivamento,

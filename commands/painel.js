@@ -704,6 +704,8 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'anexarprova') return processoCmd.abrirModalAnexarProva(interaction, extra);
     if (acao === 'rolprovas') return processoCmd.verRolProvas(interaction, extra);
     if (acao === 'gerenciar') return processoCmd.abrirGerenciar(interaction, extra);
+    if (acao === 'intimarreu') return processoCmd.intimarReu(interaction, extra);
+    if (acao === 'intimarreucumprida') return processoCmd.marcarIntimacaoReuCumprida(interaction, extra);
     if (acao === 'voltarfase') return processoCmd.abrirModalVoltarFase(interaction, extra);
     if (acao === 'manifestacaomp') return processoCmd.abrirManifestacaoMp(interaction, extra);
     if (acao === 'deferirreqmp') return processoCmd.decidirRequerimentoMp(interaction, extra, true);
