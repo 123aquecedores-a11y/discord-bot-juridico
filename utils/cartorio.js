@@ -27,6 +27,17 @@ const MAX_TOKENS_ANALISE_PDF = 8192;  // JSON estruturado de um PDF inteiro + th
 // mais é seguro. 90s cobre PDFs reais com folga sem pendurar a interação indefinidamente.
 const TIMEOUT_ANALISE_PDF_MS = 90000;
 
+// Retry da análise de PDF. A causa nº1 de "resumo indisponível" observada em produção foi um HTTP
+// 503 UNAVAILABLE ("This model is currently experiencing high demand") — o modelo gratuito/compartilhado
+// do Google fica sobrecarregado por picos de demanda, o que é TEMPORÁRIO. Repetir a chamada resolve na
+// grande maioria das vezes. Só repetimos em erros TRANSITÓRIOS (503/500/502/504 do servidor, 429 de
+// limite por minuto, e resposta vazia/truncada); 4xx de cliente (400/403/404) são definitivos e retornam
+// na hora. A interação já foi deferida antes (token vale 15 min), então esperar entre tentativas é seguro.
+const STATUS_TRANSITORIOS = new Set([429, 500, 502, 503, 504]);
+const MAX_TENTATIVAS_ANALISE = 3;
+const ESPERA_RETRY_MS = [2000, 5000]; // backoff antes da 2ª e da 3ª tentativa
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // fetch + leitura do corpo sob UM único deadline. Sem timeout, um HANG na rede (não é erro HTTP,
 // o try/catch normal não pega) deixaria o `await` pendurado pra sempre — e como em vários fluxos a
 // confirmação ao usuário só é enviada DEPOIS desse await, a interação travaria (token expira em
@@ -169,46 +180,73 @@ async function analisarPdfEstruturado(pdfUrl, { systemPrompt, schemaTexto, rotul
   if (!apiKey) return { ok: false, motivo: 'a análise automática por IA não está configurada neste servidor' };
   if (!pdfUrl || !systemPrompt || !schemaTexto) return { ok: false, motivo: 'faltaram dados internos para montar a análise' };
   const model = config.geminiModel || 'gemini-flash-latest';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  // 1) Baixa o PDF UMA vez (rebaixar a cada tentativa seria desperdício — quem falha é a IA, não o download).
+  let buf;
   try {
-    const buf = await fetchComTimeout(pdfUrl, {}, async (resp) => (resp.ok ? Buffer.from(await resp.arrayBuffer()) : null));
-    if (!buf) return { ok: false, motivo: 'não foi possível baixar o documento anexado' };
-    if (buf.length > 14 * 1024 * 1024) return { ok: false, motivo: 'o documento é grande demais para a análise automática (acima de 14 MB)' };
-    const instrucaoUsuario = [
-      rotuloTipo ? `Tipo de documento a analisar: ${rotuloTipo}.` : null,
-      'Analise o DOCUMENTO EM PDF anexado e devolva EXCLUSIVAMENTE um JSON válido, exatamente com estas chaves e esta estrutura:',
-      schemaTexto,
-      'Se alguma informação não constar no documento, use "Não consta no relatório" (ou lista vazia, conforme o campo). Nunca invente.',
-    ].filter(Boolean).join('\n\n');
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    return await fetchComTimeout(url, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ parts: [{ text: instrucaoUsuario }, { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } }] }],
-        generationConfig: { temperature: 0.1, maxOutputTokens: MAX_TOKENS_ANALISE_PDF, responseMimeType: 'application/json' },
-      }),
-    }, async (resp) => {
-      if (!resp.ok) {
-        console.error('[cartorio] analisarPdf respondeu', resp.status, (await resp.text().catch(() => '')).slice(0, 200));
-        const motivo = resp.status === 429
-          ? 'o limite de uso gratuito da IA foi atingido — tente novamente em alguns minutos'
-          : `a IA respondeu com erro (código ${resp.status})`;
-        return { ok: false, motivo };
-      }
-      const data = await resp.json();
-      const t = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text).join('').trim();
-      const dados = parseJsonSeguro(t);
-      return dados
-        ? { ok: true, dados }
-        : { ok: false, motivo: 'a IA não retornou um resumo legível (resposta vazia ou truncada)' };
-    }, TIMEOUT_ANALISE_PDF_MS);
+    buf = await fetchComTimeout(pdfUrl, {}, async (resp) => (resp.ok ? Buffer.from(await resp.arrayBuffer()) : null));
   } catch (e) {
-    console.error('[cartorio] analisarPdf falha:', e.message);
-    const motivo = /abort/i.test(e.message || '')
-      ? 'a análise ultrapassou o tempo limite'
-      : 'houve uma falha de conexão ao analisar o documento';
-    return { ok: false, motivo };
+    console.error('[cartorio] analisarPdf: falha ao baixar PDF:', e.message);
+    return { ok: false, motivo: /abort/i.test(e.message || '') ? 'a análise ultrapassou o tempo limite ao baixar o documento' : 'não foi possível baixar o documento anexado' };
   }
+  if (!buf) return { ok: false, motivo: 'não foi possível baixar o documento anexado' };
+  if (buf.length > 14 * 1024 * 1024) return { ok: false, motivo: 'o documento é grande demais para a análise automática (acima de 14 MB)' };
+
+  const instrucaoUsuario = [
+    rotuloTipo ? `Tipo de documento a analisar: ${rotuloTipo}.` : null,
+    'Analise o DOCUMENTO EM PDF anexado e devolva EXCLUSIVAMENTE um JSON válido, exatamente com estas chaves e esta estrutura:',
+    schemaTexto,
+    'Se alguma informação não constar no documento, use "Não consta no relatório" (ou lista vazia, conforme o campo). Nunca invente.',
+  ].filter(Boolean).join('\n\n');
+  const corpo = {
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ parts: [{ text: instrucaoUsuario }, { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } }] }],
+    generationConfig: { temperature: 0.1, maxOutputTokens: MAX_TOKENS_ANALISE_PDF, responseMimeType: 'application/json' },
+  };
+
+  // 2) Chama o Gemini repetindo em falhas TRANSITÓRIAS (o 503 de sobrecarga que causou o "resumo
+  //    indisponível" em produção), com backoff. Erro definitivo ou timeout: para na hora, sem empilhar espera.
+  let ultimo = { ok: false, motivo: 'não foi possível analisar o documento' };
+  for (let tentativa = 1; tentativa <= MAX_TENTATIVAS_ANALISE; tentativa++) {
+    if (tentativa > 1) {
+      const espera = ESPERA_RETRY_MS[tentativa - 2] || 5000;
+      console.warn(`[cartorio] analisarPdf: tentativa ${tentativa}/${MAX_TENTATIVAS_ANALISE} em ${espera}ms (falha transitória anterior: ${ultimo.motivo})`);
+      await esperar(espera);
+    }
+    try {
+      const r = await fetchComTimeout(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(corpo),
+      }, async (resp) => {
+        if (!resp.ok) {
+          console.error('[cartorio] analisarPdf respondeu', resp.status, (await resp.text().catch(() => '')).slice(0, 200));
+          const motivo = resp.status === 429
+            ? 'o limite de uso gratuito da IA foi atingido — tente novamente em alguns minutos'
+            : resp.status === 503
+              ? 'o serviço de IA do Google está sobrecarregado no momento — tente novamente em instantes'
+              : `a IA respondeu com erro (código ${resp.status})`;
+          return { ok: false, motivo, transitorio: STATUS_TRANSITORIOS.has(resp.status) };
+        }
+        const data = await resp.json();
+        const t = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text).join('').trim();
+        const dados = parseJsonSeguro(t);
+        return dados
+          ? { ok: true, dados }
+          : { ok: false, motivo: 'a IA não retornou um resumo legível (resposta vazia ou truncada)', transitorio: true };
+      }, TIMEOUT_ANALISE_PDF_MS);
+
+      if (r.ok) return r;            // sucesso
+      ultimo = r;
+      if (!r.transitorio) return r;  // erro definitivo (4xx de cliente): repetir não muda nada
+    } catch (e) {
+      const abortou = /abort/i.test(e.message || '');
+      console.error(`[cartorio] analisarPdf tentativa ${tentativa} falhou:`, e.message);
+      ultimo = { ok: false, motivo: abortou ? 'a análise ultrapassou o tempo limite' : 'houve uma falha de conexão ao analisar o documento' };
+      if (abortou) return ultimo;    // timeout de 90s: repetir só empilharia mais 90s de espera
+    }
+  }
+  return ultimo; // esgotou as tentativas — devolve a última falha transitória com o motivo real
 }
 
 // A IA está ligada? (tem chave). Usado pelos fluxos pra decidir se mostram aviso de "resumo
