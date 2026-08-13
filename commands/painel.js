@@ -703,6 +703,9 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'peticionar') return processoCmd.peticionar(interaction, extra);
     if (acao === 'anexarprova') return processoCmd.abrirModalAnexarProva(interaction, extra);
     if (acao === 'rolprovas') return processoCmd.verRolProvas(interaction, extra);
+    if (acao === 'gerenciar') return processoCmd.abrirGerenciar(interaction, extra);
+    if (acao === 'addadvogado') return processoCmd.abrirAdicionarAdvogado(interaction, extra);
+    if (acao === 'removeradvogado') return processoCmd.abrirRemoverAdvogado(interaction, extra);
     if (acao === 'deferirpeticao') return processoCmd.decidirPeticao(interaction, extra, true);
     if (acao === 'indeferirpeticao') return processoCmd.decidirPeticao(interaction, extra, false);
     if (acao === 'listar') return processoCmd.listarProcessos(interaction, null);
@@ -912,6 +915,14 @@ async function tratarSelect(interaction, modulo, campo, extra) {
     return processoCmd.processarSelecaoTestemunha(interaction, extra);
   }
 
+  if (modulo === 'processo' && campo === 'gerenciar') {
+    return processoCmd.tratarGerenciar(interaction, extra);
+  }
+
+  if (modulo === 'processo' && campo === 'gerenciarremovecrime') {
+    return processoCmd.removerCrime(interaction, extra);
+  }
+
   if (modulo === 'processo' && campo === 'destinatariointimacao') {
     return processoCmd.processarSelecaoDestinatarioIntimacao(interaction, extra);
   }
@@ -1051,6 +1062,11 @@ async function tratarUserSelect(interaction, modulo, campo) {
     return peticaoCmd.vincularClienteDiscord(interaction, numero);
   }
 
+  if (modulo === 'processo' && campo.startsWith('addadvogado#')) {
+    const numero = campo.split('#')[1];
+    return processoCmd.adicionarAdvogadoSelecionado(interaction, numero);
+  }
+
   if (modulo === 'ficha' && campo === 'consultarpessoa') {
     return fichaCmd.consultarPorPessoaSelecionada(interaction);
   }
@@ -1072,6 +1088,9 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'medida' && acao === 'solicitardireta') return medidaCmd.criarSolicitacaoMedidaDireta(interaction, extra);
   if (modulo === 'processo' && acao === 'depoimento') return processoCmd.registrarDepoimentoHandler(interaction, extra);
   if (modulo === 'processo' && acao === 'anexarprova') return processoCmd.salvarProva(interaction, extra);
+  if (modulo === 'processo' && acao === 'gerenciarrg') return processoCmd.salvarGerenciarCampo(interaction, extra, 'rg');
+  if (modulo === 'processo' && acao === 'gerenciarnome') return processoCmd.salvarGerenciarCampo(interaction, extra, 'nome');
+  if (modulo === 'processo' && acao === 'gerenciaraddcrime') return processoCmd.salvarAddCrime(interaction, extra);
 
   if (modulo === 'processo' && acao === 'penal') {
     rascunhoCrimes.iniciar(interaction.user.id, {

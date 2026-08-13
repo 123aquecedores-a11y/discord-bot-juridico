@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, UserSelectMenuBuilder } = require('discord.js');
 const db = require('../database/db');
 const { proximoNumero } = require('../utils/numeracao');
 const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
@@ -480,6 +480,13 @@ const CATALOGO_ACOES = [
     id: 'rol_provas', grupo: 2, cargo: ['qualquer'],
     quando: (p) => (p.provas || []).length > 0,
     botao: (numero) => botaoRolProvas(numero),
+  },
+  // Gerenciar dados (lote 5, Função 1) — RG/nome/crime. Gate real por fase no clique
+  // (podeGerenciarProcesso: inquérito=Delegado, com juiz=Juiz/Promotor, Staff sempre).
+  {
+    id: 'gerenciar', grupo: 2, cargo: ['Delegado', 'Juiz', 'Promotor'],
+    quando: () => true,
+    botao: (numero) => botaoGerenciar(numero),
   },
 ];
 
@@ -1387,7 +1394,10 @@ async function decidirHabilitacao(interaction, chave, aprovar) {
   return interaction.update({ embeds: [embed], components: [] });
 }
 
-// ---- Remoção de advogado habilitado (só o Juiz, via select menu) ----
+// ---- Gerenciar defesa: adicionar (habilitação direta pelo Juiz/Staff) e remover advogado ----
+// "Adicionar advogado" (lote 5, Função 1) é override do fluxo normal (pedido do advogado →
+// aprovação): o Juiz/Staff habilita direto por user-select, criando uma habilitação já Aprovada e
+// dando acesso ao canal — mesmo efeito da aprovação comum (canais.adicionarMembro).
 
 async function abrirGerenciarDefesa(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
@@ -1395,14 +1405,82 @@ async function abrirGerenciarDefesa(interaction, numero) {
   if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
     return interaction.reply({ content: `Só o Juiz deste processo pode gerenciar a defesa — no caso, <@${processo.juiz}>.`, ephemeral: true });
   }
+  const temAprovadas = (processo.habilitacoes || []).some(h => h.status === 'Aprovado');
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`painel:acao:processo:addadvogado:${numero}`).setLabel('➕ Adicionar advogado').setStyle(ButtonStyle.Success),
+  );
+  if (temAprovadas) {
+    row.addComponents(new ButtonBuilder().setCustomId(`painel:acao:processo:removeradvogado:${numero}`).setLabel('➖ Remover advogado').setStyle(ButtonStyle.Danger));
+  }
+  return interaction.reply({ content: '🛡️ **Gerenciar defesa** — o que deseja fazer?', components: [row], ephemeral: true });
+}
+
+// Botão "Adicionar advogado" → user-select do advogado.
+async function abrirAdicionarAdvogado(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Juiz deste processo pode habilitar advogados — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  }
+  const row = new ActionRowBuilder().addComponents(
+    new UserSelectMenuBuilder().setCustomId(`painel:userselect:processo:addadvogado#${numero}`).setPlaceholder('Escolha o advogado a habilitar').setMaxValues(1),
+  );
+  return interaction.update({ content: 'Selecione o advogado a habilitar na defesa:', components: [row] });
+}
+
+// User-select do advogado → cria habilitação já Aprovada e concede acesso ao canal.
+async function adicionarAdvogadoSelecionado(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.update({ content: 'Processo não encontrado.', components: [] });
+  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    return interaction.update({ content: `Só o Juiz deste processo pode habilitar advogados — no caso, <@${processo.juiz}>.`, components: [] });
+  }
+  const advId = interaction.values[0];
+  if (!advId) return interaction.update({ content: 'Nenhum advogado selecionado.', components: [] });
+  const habilitacoes = processo.habilitacoes || [];
+  if (habilitacoes.some(h => h.status === 'Aprovado' && h.advogadoId === advId)) {
+    return interaction.update({ content: 'Esse advogado já está habilitado neste processo.', components: [] });
+  }
+  // Vincula ao réu do processo: 1 réu com Discord → esse; senão, réu por nome/RG (reuId nulo).
+  const reuId = (processo.reus || []).length === 1 ? processo.reus[0] : null;
+  const novoId = habilitacoes.reduce((max, h) => Math.max(max, h.id || 0), 0) + 1;
+  const hab = {
+    id: novoId, reuId, reuNome: processo.reuNome || null, advogadoId: advId,
+    nomeCliente: processo.reuNome || null, rgCliente: processo.reuRg || null,
+    status: 'Aprovado', criadoEm: new Date().toISOString(), adicionadoPor: interaction.user.id,
+  };
+  db.atualizar('processos', numero, { habilitacoes: [...habilitacoes, hab] });
+
+  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+  if (canal) {
+    await canais.adicionarMembro(canal, advId);
+    await canal.send({ content: `<@${advId}> foi habilitado na defesa deste processo por <@${interaction.user.id}>.` }).catch(() => {});
+  }
+  await auditoria.registrar(interaction.guild, { acao: 'Advogado habilitado (Gerenciar defesa)', executorId: interaction.user.id, referencia: `Processo ${numero}: <@${advId}>` });
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'habilitacao_decidida', titulo: '🖋️ Advogado habilitado',
+    detalhe: `<@${advId}> habilitado na defesa por <@${interaction.user.id}> (via Gerenciar defesa).`,
+    executorId: interaction.user.id, metadata: { habilitacaoId: novoId, resultado: 'Aprovado', advogadoId: advId },
+  });
+  await repostarPainel(interaction.guild, numero);
+  return interaction.update({ content: `✅ <@${advId}> habilitado na defesa.`, components: [] });
+}
+
+// Botão "Remover advogado" → select das habilitações aprovadas.
+async function abrirRemoverAdvogado(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Juiz deste processo pode remover advogados — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  }
   const aprovadas = (processo.habilitacoes || []).filter(h => h.status === 'Aprovado');
-  if (aprovadas.length === 0) return interaction.reply({ content: 'Nenhum advogado habilitado neste processo ainda.', ephemeral: true });
+  if (aprovadas.length === 0) return interaction.update({ content: 'Nenhum advogado habilitado neste processo ainda.', components: [] });
 
   const opcoes = await Promise.all(aprovadas.map(async h => {
     const adv = await interaction.guild.members.fetch(h.advogadoId).catch(() => null);
-    const reu = await interaction.guild.members.fetch(h.reuId).catch(() => null);
+    const reu = h.reuId ? await interaction.guild.members.fetch(h.reuId).catch(() => null) : null;
     return {
-      label: `${adv?.displayName || 'Advogado'} — defende ${reu?.displayName || 'réu'}`.slice(0, 100),
+      label: `${adv?.displayName || 'Advogado'} — defende ${reu?.displayName || h.reuNome || 'réu'}`.slice(0, 100),
       value: String(h.id),
     };
   }));
@@ -1410,7 +1488,7 @@ async function abrirGerenciarDefesa(interaction, numero) {
   const row = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder().setCustomId(`painel:select:habilitacao:remover:${numero}`).setPlaceholder('Selecione quem remover').addOptions(opcoes),
   );
-  return interaction.reply({ content: 'Quem remover da defesa?', components: [row], ephemeral: true });
+  return interaction.update({ content: 'Quem remover da defesa?', components: [row] });
 }
 
 async function removerHabilitacao(interaction, numero, habIdTexto) {
@@ -1970,6 +2048,180 @@ async function verRolProvas(interaction, numero) {
   }).join('\n\n');
   const embed = new EmbedBuilder().setTitle(`🗂️ Rol de provas — Processo ${numero}`).setColor(0x8e44ad).setDescription(truncar(linhas, 4000));
   return interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+// ---- Gerenciar dados do processo (lote 5, Função 1) ----
+// Editar RG/nome do réu e adicionar/remover crime, tudo por modal/select (sem digitar solto no
+// canal). Permissão POR FASE: no inquérito (Penal sem juiz) quem edita é o Delegado dono do caso;
+// após a denúncia (com juiz) é o Juiz ou o Promotor do processo; Staff/dono sempre. Toda edição
+// loga em auditoria (valor antigo → novo) E gera andamento nos autos — nada de edição silenciosa.
+// Acrescentar crime DEPOIS de a defesa já ter sido apresentada dispara intimação à defesa
+// (devido processo, reaproveitando postarIntimacaoNoCanal).
+
+function podeGerenciarProcesso(interaction, processo) {
+  if (isSuperStaff(interaction) || isAdmin(interaction)) return true;
+  const uid = interaction.user.id;
+  if (!processo.juiz) return processo.delegado === uid;          // fase de inquérito → Delegado dono
+  return processo.juiz === uid || processo.promotor === uid;      // após a denúncia → Juiz ou Promotor
+}
+
+const RECUSA_GERENCIAR = 'Você não pode gerenciar este processo nesta fase (inquérito: Delegado do caso; após a denúncia: Juiz ou Promotor do processo; Staff sempre).';
+
+function botaoGerenciar(numero) {
+  return new ButtonBuilder().setCustomId(`painel:acao:processo:gerenciar:${numero}`).setLabel('⚙️ Gerenciar').setStyle(ButtonStyle.Secondary);
+}
+
+async function abrirGerenciar(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeGerenciarProcesso(interaction, processo)) return interaction.reply({ content: RECUSA_GERENCIAR, ephemeral: true });
+  const select = new StringSelectMenuBuilder().setCustomId(`painel:select:processo:gerenciar:${numero}`).setPlaceholder('O que deseja editar?')
+    .addOptions(
+      { label: 'Alterar/adicionar RG do réu', value: 'rg', emoji: '🪪' },
+      { label: 'Mudar nome do réu', value: 'nome', emoji: '✏️' },
+      { label: 'Adicionar crime', value: 'addcrime', emoji: '➕' },
+      { label: 'Remover crime', value: 'removecrime', emoji: '➖' },
+    );
+  return interaction.reply({ content: '⚙️ **Gerenciar processo** — escolha o que editar:', components: [new ActionRowBuilder().addComponents(select)], ephemeral: true });
+}
+
+function modalGerenciarCampo(numero, campo, label, valorAtual) {
+  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:gerenciar${campo}:${numero}`).setTitle(`Editar ${label}`.slice(0, 45));
+  const input = new TextInputBuilder().setCustomId('valor').setLabel(label).setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100);
+  if (valorAtual) input.setValue(String(valorAtual).slice(0, 100));
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
+function modalAddCrime(numero) {
+  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:gerenciaraddcrime:${numero}`).setTitle('Adicionar crime');
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('crime').setLabel('Crime — nome, artigo ou ID (vírgula p/ vários)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200),
+  ));
+  return modal;
+}
+
+// Submit do select do menu Gerenciar → abre o modal/select certo.
+async function tratarGerenciar(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeGerenciarProcesso(interaction, processo)) return interaction.reply({ content: RECUSA_GERENCIAR, ephemeral: true });
+  const escolha = interaction.values[0];
+  if (escolha === 'rg') return interaction.showModal(modalGerenciarCampo(numero, 'rg', 'RG do réu', processo.reuRg));
+  if (escolha === 'nome') return interaction.showModal(modalGerenciarCampo(numero, 'nome', 'Nome do réu', processo.reuNome));
+  if (escolha === 'addcrime') return interaction.showModal(modalAddCrime(numero));
+  if (escolha === 'removecrime') return abrirSelectRemoverCrime(interaction, numero, processo);
+  return interaction.reply({ content: 'Opção inválida.', ephemeral: true });
+}
+
+// Salva RG ou nome do réu (campo = 'rg' | 'nome').
+async function salvarGerenciarCampo(interaction, numero, campo) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeGerenciarProcesso(interaction, processo)) return interaction.reply({ content: RECUSA_GERENCIAR, ephemeral: true });
+  const valor = (interaction.fields.getTextInputValue('valor') || '').trim();
+  if (!valor) return interaction.reply({ content: 'Valor vazio.', ephemeral: true });
+
+  const dbCampo = campo === 'rg' ? 'reuRg' : 'reuNome';
+  const rotulo = campo === 'rg' ? 'RG do réu' : 'Nome do réu';
+  const antigo = processo[dbCampo] || '—';
+  if (antigo === valor) return interaction.reply({ content: `O ${rotulo} já é "${valor}".`, ephemeral: true });
+  db.atualizar('processos', numero, { [dbCampo]: valor });
+
+  await auditoria.registrar(interaction.guild, { acao: `Edição — ${rotulo}`, executorId: interaction.user.id, referencia: `Processo ${numero}: "${antigo}" → "${valor}"` });
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'dados_editados', titulo: `✏️ ${rotulo} editado`,
+    detalhe: `${rotulo} alterado de "${antigo}" para "${valor}" por <@${interaction.user.id}>.`,
+    executorId: interaction.user.id, metadata: { campo: dbCampo, antigo, novo: valor },
+  });
+  await repostarPainel(interaction.guild, numero);
+  return interaction.reply({ content: `${rotulo} atualizado para **${valor}**.`, ephemeral: true });
+}
+
+// Submit do modal "Adicionar crime".
+async function salvarAddCrime(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeGerenciarProcesso(interaction, processo)) return interaction.reply({ content: RECUSA_GERENCIAR, ephemeral: true });
+  if (processo.tipo !== 'Penal') return interaction.reply({ content: 'Só processos penais têm crimes.', ephemeral: true });
+
+  const resolvidos = resolverCrimesTexto(interaction.fields.getTextInputValue('crime'));
+  if (resolvidos.length === 0) return interaction.reply({ content: 'Nenhum crime reconhecido. Use nome, artigo (ex.: Art. 121) ou ID de `/crime buscar`.', ephemeral: true });
+
+  const atuais = processo.crimes || [];
+  const jaTem = new Set(atuais.map(c => c.id));
+  const novos = resolvidos.filter(c => !jaTem.has(c.id));
+  if (novos.length === 0) return interaction.reply({ content: 'Esse(s) crime(s) já constam no processo.', ephemeral: true });
+
+  db.atualizar('processos', numero, { crimes: [...atuais, ...novos] });
+  const nomes = novos.map(c => crimeLabel(c)).join('; ');
+  await auditoria.registrar(interaction.guild, { acao: 'Crime acrescentado', executorId: interaction.user.id, referencia: `Processo ${numero}: + ${nomes}` });
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'crime_adicionado', titulo: '➕ Crime acrescentado',
+    detalhe: `Crime(s) acrescentado(s) por <@${interaction.user.id}>: ${nomes}.`,
+    executorId: interaction.user.id, metadata: { crimes: novos.map(c => c.id) },
+  });
+
+  // Devido processo: se a defesa já foi apresentada (há advogado habilitado), o crime novo não
+  // entra em silêncio — intima a defesa pra se manifestar antes de qualquer julgamento por ele.
+  const defesaApresentada = (processo.habilitacoes || []).some(h => h.status === 'Aprovado');
+  let aviso = '';
+  if (defesaApresentada) {
+    await intimarDefesaSobreCrimeNovo(interaction.guild, db.buscarPorNumero('processos', numero), novos, interaction.user.id);
+    aviso = ' ⚖️ A defesa foi **intimada** a se manifestar sobre o(s) crime(s) novo(s).';
+  }
+  await repostarPainel(interaction.guild, numero);
+  return interaction.reply({ content: `Crime(s) adicionado(s): ${nomes}.${aviso}`, ephemeral: true });
+}
+
+// Dispara intimação a cada advogado habilitado sobre o(s) crime(s) acrescentado(s) tarde.
+async function intimarDefesaSobreCrimeNovo(guild, processo, crimesNovos, executorId) {
+  const numero = processo.numero;
+  const nomes = crimesNovos.map(c => crimeLabel(c)).join('; ');
+  const teor = `Fica a defesa INTIMADA a se manifestar, no prazo legal, sobre o(s) crime(s) acrescentado(s) à imputação: ${nomes}. Assegura-se o contraditório quanto a esta(s) imputação(ões) antes de qualquer julgamento a seu respeito.`;
+  const habilitados = (processo.habilitacoes || []).filter(h => h.status === 'Aprovado');
+  for (const h of habilitados) {
+    await postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId: h.advogadoId, destinatarioNome: null, teor });
+  }
+  await andamentos.registrar(guild, numero, {
+    tipo: 'intimacao_emitida', titulo: '✉️ Defesa intimada (crime acrescentado)',
+    detalhe: `Defesa intimada a se manifestar sobre crime(s) acrescentado(s): ${nomes}.`,
+    executorId, metadata: { motivo: 'crime_tardio', crimes: crimesNovos.map(c => c.id) },
+  });
+}
+
+async function abrirSelectRemoverCrime(interaction, numero, processo) {
+  const crimes = processo.crimes || [];
+  if (crimes.length === 0) return interaction.reply({ content: 'Este processo não tem crimes cadastrados.', ephemeral: true });
+  const select = new StringSelectMenuBuilder().setCustomId(`painel:select:processo:gerenciarremovecrime:${numero}`).setPlaceholder('Qual crime remover?')
+    .setMinValues(1).setMaxValues(crimes.length)
+    .addOptions(crimes.map(c => ({ label: crimeLabel(c).slice(0, 100), value: c.id })));
+  return interaction.reply({ content: 'Selecione o(s) crime(s) a remover:', components: [new ActionRowBuilder().addComponents(select)], ephemeral: true });
+}
+
+async function removerCrime(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeGerenciarProcesso(interaction, processo)) return interaction.reply({ content: RECUSA_GERENCIAR, ephemeral: true });
+  const remover = new Set(interaction.values);
+  const atuais = processo.crimes || [];
+  const removidos = atuais.filter(c => remover.has(c.id));
+  const restantes = atuais.filter(c => !remover.has(c.id));
+  if (removidos.length === 0) return interaction.update({ content: 'Nada foi removido.', components: [] });
+  // Processo penal não pode ficar sem nenhum crime.
+  if (processo.tipo === 'Penal' && restantes.length === 0) {
+    return interaction.update({ content: '⚠️ Não dá pra remover todos os crimes de um processo penal — ele precisa de ao menos um. Adicione outro antes, ou arquive o processo.', components: [] });
+  }
+  db.atualizar('processos', numero, { crimes: restantes });
+  const nomes = removidos.map(c => crimeLabel(c)).join('; ');
+  await auditoria.registrar(interaction.guild, { acao: 'Crime removido', executorId: interaction.user.id, referencia: `Processo ${numero}: − ${nomes}` });
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'crime_removido', titulo: '➖ Crime removido',
+    detalhe: `Crime(s) removido(s) por <@${interaction.user.id}>: ${nomes}.`,
+    executorId: interaction.user.id, metadata: { crimes: removidos.map(c => c.id) },
+  });
+  await repostarPainel(interaction.guild, numero);
+  return interaction.update({ content: `Crime(s) removido(s): ${nomes}.`, components: [] });
 }
 
 // ---- Recurso/Apelação (só quem perdeu, conforme o resultado estruturado da sentença) ----
@@ -2663,6 +2915,14 @@ module.exports = {
   abrirModalAnexarProva,
   salvarProva,
   verRolProvas,
+  abrirGerenciar,
+  tratarGerenciar,
+  salvarGerenciarCampo,
+  salvarAddCrime,
+  removerCrime,
+  abrirAdicionarAdvogado,
+  adicionarAdvogadoSelecionado,
+  abrirRemoverAdvogado,
   painelAtual,
   repostarPainel,
   pedirRevisaoArquivamento,
