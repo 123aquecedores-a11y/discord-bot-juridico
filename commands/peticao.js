@@ -555,7 +555,8 @@ async function processarModalAlvaraEvento(interaction) {
     nomeEvento: interaction.fields.getTextInputValue('evento'),
     localEvento: local, numeroPessoas,
   });
-  ficha.adicionarEndereco(rg, local, numero);
+  // NÃO grava o local do evento como endereço pessoal na ficha do organizador — é onde o evento
+  // acontece, não onde a pessoa mora. O local fica só no registro da própria petição (campo Local).
   await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
   return enviarFollowUpsCadastro(interaction, numero, rg, canal);
 }
@@ -632,16 +633,20 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
   // Nome civil só passa a valer de fato quando o Juiz defere — vinculado ao RG do cliente,
   // não ao ID de quem protocolou (o Advogado), já que é o cliente quem muda de nome.
   let apelidoAlterado = null;
+  let trocaNomeSemVinculo = false;
   if (status === 'Deferido' && peticao.tipo === 'TrocaNome' && peticao.rgCliente) {
     ficha.registrarTrocaNome(peticao.rgCliente, peticao.nomeNovo);
 
-    // Vínculo do Discord do cliente é obrigatório antes de deferir (ver `decidir`), então
-    // sempre tem um ID aqui pra aplicar o apelido de verdade no servidor.
+    // O vínculo do Discord do cliente é OPCIONAL (Frente 7) — `decidir` não o exige mais. Sem ele
+    // o nome civil é retificado no registro, mas não há conta pra aplicar o apelido no servidor:
+    // avisa explicitamente em vez de pular em silêncio.
     if (peticao.discordIdCliente) {
       const membro = await guild.members.fetch(peticao.discordIdCliente).catch(() => null);
       if (membro) {
         apelidoAlterado = await membro.setNickname(peticao.nomeNovo.slice(0, 32)).then(() => true).catch(() => false);
       }
+    } else {
+      trocaNomeSemVinculo = true;
     }
   }
 
@@ -715,6 +720,7 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
       if (peticao.validadeAte) extrasLinhas.push(`Validade da autorização: até <t:${Math.floor(new Date(peticao.validadeAte).getTime() / 1000)}:D>`);
       if (apelidoAlterado === true) extrasLinhas.push(`✅ Nome civil retificado nos registros do sistema, em cumprimento à sentença supra.`);
       if (apelidoAlterado === false) extrasLinhas.push(`⚠️ Retificação de registro pendente — o sistema não conseguiu atualizar o nome civil automaticamente. Regularização manual necessária junto à Secretaria.`);
+      if (trocaNomeSemVinculo) extrasLinhas.push(`ℹ️ Nome civil retificado nos registros, mas o cliente **não tem conta de Discord vinculada** a esta petição — o apelido no servidor **não será alterado** automaticamente. Vincule o Discord do cliente (ou ajuste o apelido à mão) se for o caso.`);
       if (extrasLinhas.length) {
         await canal.send({
           embeds: [new EmbedBuilder()
@@ -923,7 +929,8 @@ module.exports = {
         nomeEvento: interaction.options.getString('evento'),
         localEvento: local, numeroPessoas: interaction.options.getInteger('pessoas'),
       });
-      ficha.adicionarEndereco(rg, local, numero);
+      // NÃO grava o local do evento como endereço pessoal na ficha do organizador (ver
+      // processarModalAlvaraEvento) — o local fica só no registro da própria petição.
       await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
       return enviarFollowUpsCadastro(interaction, numero, rg, canal);
     }

@@ -18,7 +18,7 @@ const { proximoNumero } = require('../utils/numeracao');
 const { isAdmin, temCargo } = require('../utils/permissoes');
 const { truncar, extrairMencaoOuId } = require('../utils/texto');
 
-const TIPO_LABEL = { PorteArma: 'Porte de Arma', TrocaNome: 'Troca de Nome', LimpezaFicha: 'Limpeza de Ficha' };
+const TIPO_LABEL = { PorteArma: 'Porte de Arma', TrocaNome: 'Troca de Nome', LimpezaFicha: 'Limpeza de Ficha', AlvaraEvento: 'Alvará de Evento' };
 
 function podeConsultar(interaction) {
   return isAdmin(interaction)

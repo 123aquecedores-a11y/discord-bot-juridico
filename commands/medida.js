@@ -709,8 +709,11 @@ module.exports = {
     db.atualizar('medidas', numero, { status: 'Deferida', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString() });
 
     const numeroMandado = proximoNumero(db, 'mandados', 'MO');
+    // Schema unificado com o mandado direto (mandado.js): grava também processoVinculado (quando a
+    // medida já está atrelada a um processo), senão temAcessoMandado/embed não enxergam o processo.
     db.inserir('mandados', {
-      numero: numeroMandado, medidaNumero: numero, tipo: medida.tipo, alvo: medida.alvo,
+      numero: numeroMandado, medidaNumero: numero, processoVinculado: medida.processoVinculado || null,
+      tipo: medida.tipo, alvo: medida.alvo,
       status: 'Emitido', emitidoPor: medida.juiz, cumpridoPor: null,
     });
     // Dossiê do inquérito: registra o mandado sob o mesmo protocolo da medida que o originou,
@@ -742,7 +745,7 @@ module.exports = {
 
     const canal = await interaction.guild.channels.fetch(medida.canalId).catch(() => null);
     if (canal) {
-      await canal.send({
+      const msgMandado = await canal.send({
         content: `<@${medida.delegado}>\n\n${documentos.textoMandado({
           numero: numeroMandado, medida: medidaAtualizada,
           fundamentacaoPromotor: medida.fundamentacaoPromotor, fundamentacaoJuiz,
@@ -751,6 +754,16 @@ module.exports = {
         components: [botaoCumprir(numeroMandado)],
         ...(pngMandado ? { files: [{ attachment: pngMandado, name: `Mandado-${numeroMandado}.png` }] } : {}),
       });
+      // Registra o PNG do referendo em documentosAnexados — o mandado direto (mandado.js) já fazia
+      // isso; sem isto a rastreabilidade do mandado ficava só no direto. Protocolo = processo
+      // vinculado quando existe, senão a própria medida.
+      const anexoUrlMandado = msgMandado?.attachments?.first()?.url;
+      if (anexoUrlMandado) {
+        anexos.criarDocumento({
+          tipo: 'mandado', url: anexoUrlMandado, nomeArquivo: `Mandado-${numeroMandado}.png`,
+          autorId: medida.juiz, atoOrigemId: numeroMandado, protocoloVinculado: medida.processoVinculado || numero,
+        });
+      }
       await canal.send({ content: `<@${medida.promotor}> quando quiser, pode transformar esta medida em processo penal formal, herdando os dados automaticamente.`, components: [botaoAbrirProcesso(numero)] });
     }
     // Só vira andamento se já existe processo pra pendurar o evento — nem toda medida referendada

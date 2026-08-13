@@ -16,6 +16,11 @@ const TITULO = {
   Advogado: 'Advogado', Desembargador: 'Des.', Procurador: 'Procurador',
 };
 
+// Cargos que NÃO podem ser pedidos por autoatendimento (só a Staff atribui, via /rh contratar):
+// decisão de mérito (Juiz) e supervisão (Desembargador/Procurador). Sem isso, qualquer um pedia
+// Juiz/Desembargador/Procurador livremente, ficando só na barreira da aprovação manual da staff.
+const CARGOS_RESTRITOS = ['Juiz', 'Desembargador', 'Procurador'];
+
 function roleIdPorCargo(cargo) {
   return {
     Delegado: config.roleDelegadoId,
@@ -37,10 +42,20 @@ async function aplicarApelido(membro, cargo, nomePersonagem) {
 }
 
 async function contratarComRole(guild, usuarioId, cargo, executorId = null, nomePersonagem = null) {
+  // Captura o cargo ATIVO anterior antes de contratar (rh.contratar desativa o registro antigo).
+  const anterior = rh.getCargo(usuarioId);
   rh.contratar(usuarioId, cargo, nomePersonagem);
   const membro = await guild.members.fetch(usuarioId).catch(() => null);
   const roleId = roleIdPorCargo(cargo);
-  if (roleId && membro) await membro.roles.add(roleId).catch(() => {});
+  if (membro) {
+    // Troca de cargo: remove a role do cargo anterior — senão promover (ex.) Delegado→Juiz deixava
+    // a role de Delegado pendurada no Discord (o temCargo segue o registro do rh, mas a role não).
+    if (anterior && anterior.cargo !== cargo) {
+      const roleAnterior = roleIdPorCargo(anterior.cargo);
+      if (roleAnterior) await membro.roles.remove(roleAnterior).catch(() => {});
+    }
+    if (roleId) await membro.roles.add(roleId).catch(() => {});
+  }
   const apelidoOk = nomePersonagem ? await aplicarApelido(membro, cargo, nomePersonagem) : null;
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: contratação', executorId, referencia: `<@${usuarioId}> → ${cargo}${nomePersonagem ? ` ("${nomePersonagem}")` : ''}` });
@@ -73,7 +88,7 @@ function selectCargoDesejado() {
     new StringSelectMenuBuilder()
       .setCustomId('painel:select:cargo:desejado')
       .setPlaceholder('Qual cargo você quer solicitar?')
-      .addOptions(rh.CARGOS.map(c => ({ label: c, value: c }))),
+      .addOptions(rh.CARGOS.filter(c => !CARGOS_RESTRITOS.includes(c)).map(c => ({ label: c, value: c }))),
   );
 }
 
@@ -91,6 +106,9 @@ function modalSolicitacao(cargo) {
 async function solicitarCargo(interaction, cargo) {
   if (!rh.CARGOS.includes(cargo)) {
     return interaction.reply({ content: 'Cargo inválido.', ephemeral: true });
+  }
+  if (CARGOS_RESTRITOS.includes(cargo)) {
+    return interaction.reply({ content: `O cargo **${cargo}** não pode ser solicitado por autoatendimento — é atribuído diretamente pela Staff (\`/rh contratar\`). Fale com a Staff.`, ephemeral: true });
   }
   const nome = interaction.fields.getTextInputValue('nome').trim();
   if (!nome) return interaction.reply({ content: 'Informe o nome do personagem.', ephemeral: true });
@@ -123,11 +141,18 @@ async function solicitarCargo(interaction, cargo) {
 
   const canalId = config.canalContratacoesId || config.canalAuditoriaId;
   const canalStaff = canalId ? await interaction.guild.channels.fetch(canalId).catch(() => null) : null;
-  const destino = canalStaff && canalStaff.isTextBased?.() ? canalStaff : interaction.channel;
-  await destino.send({ embeds: [embed], components: [botoes] }).catch(() => {});
-
+  // O card traz botões de aprovar/negar — só pode ir pra canal de staff (contratações ou auditoria).
+  // NÃO cai mais pro canal onde a pessoa clicou (o /painel abre em qualquer lugar, inclusive público),
+  // o que vazava o card num canal aberto. Sem canal de staff, a solicitação fica salva pra revisão.
+  if (canalStaff && canalStaff.isTextBased?.()) {
+    await canalStaff.send({ embeds: [embed], components: [botoes] }).catch(() => {});
+    return interaction.reply({
+      content: `✅ Solicitação enviada! A staff vai analisar seu pedido de **${cargo}** (personagem: **${nome}**). Você é avisado por DM quando for decidido.`,
+      ephemeral: true,
+    });
+  }
   return interaction.reply({
-    content: `✅ Solicitação enviada! A staff vai analisar seu pedido de **${cargo}** (personagem: **${nome}**). Você é avisado por DM quando for decidido.`,
+    content: `✅ Solicitação de **${cargo}** (personagem: **${nome}**) registrada. ⚠️ O canal de contratações ainda não está configurado — a Staff precisa revisar as solicitações pendentes manualmente (o card com os botões não foi postado pra não vazar num canal público).`,
     ephemeral: true,
   });
 }

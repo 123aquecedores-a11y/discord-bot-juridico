@@ -1428,6 +1428,17 @@ function dadosBatemComReu(processo, nome, rg) {
   }
   return alvos.some(a => a.nome && a.rg && normalizarDado(a.nome) === nomeIn && normalizarDado(a.rg) === rgIn);
 }
+// Réu "identificado" = existe algum alvo (reuNome/reuRg do processo, ou parte com papel réu) com
+// nome E RG preenchidos. Sem isso não há contra o que conferir os dados informados, e o inquérito
+// pode ser intimado (gerando código) antes de o réu ter RG nos autos — então cobrar dadosBatemComReu
+// nesse estado travaria toda habilitação mesmo com o código certo.
+function reuIdentificado(processo) {
+  const alvos = [{ nome: processo.reuNome, rg: processo.reuRg }];
+  for (const p of (processo.partes || [])) {
+    if (/r[ée]u/i.test(p.papel || '')) alvos.push({ nome: p.nome, rg: p.rg });
+  }
+  return alvos.some(a => a.nome && a.rg);
+}
 function habilitacaoBloqueada(processo, uid) {
   const t = (processo.tentativasHabilitacao || []).find(x => x.advogadoId === uid);
   return !!(t && t.erros >= 3);
@@ -1491,7 +1502,11 @@ async function criarHabilitacaoPenal(interaction, processo, numero) {
   const codigoInformado = (interaction.fields.getTextInputValue('codigo') || '').trim();
 
   const codigoOk = !!processo.codigoHabilitacao && codigoInformado === processo.codigoHabilitacao;
-  const dadosOk = dadosBatemComReu(processo, nomeCliente, rgCliente);
+  // Se o réu ainda não foi identificado nos autos (sem nome+RG), não há como conferir os dados
+  // informados — a habilitação se apoia só no código (entregue de forma privada na intimação).
+  // Assim o código continua funcionando e o advogado não é bloqueado por um dado que ninguém tem.
+  const reuJaIdentificado = reuIdentificado(processo);
+  const dadosOk = !reuJaIdentificado || dadosBatemComReu(processo, nomeCliente, rgCliente);
 
   if (!codigoOk || !dadosOk) {
     const tentativas = processo.tentativasHabilitacao || [];
@@ -1713,6 +1728,10 @@ async function removerHabilitacao(interaction, numero, habIdTexto) {
   const alvo = habilitacoes.find(h => h.id === Number(habIdTexto));
   if (!alvo) return interaction.reply({ content: 'Habilitação não encontrada.', ephemeral: true });
 
+  // Réu pode ser só nome/RG (sem Discord): reuId null geraria `<@null>`. Mesma referência que
+  // decidirHabilitacao usa — menção se tem Discord, senão o nome.
+  const reuRef = alvo.reuId ? `<@${alvo.reuId}>` : `**${alvo.reuNome || 'o réu'}**`;
+
   const atualizadas = habilitacoes.map(h => h.id === alvo.id ? { ...h, status: 'Removido' } : h);
   db.atualizar('processos', numero, { habilitacoes: atualizadas });
 
@@ -1720,15 +1739,15 @@ async function removerHabilitacao(interaction, numero, habIdTexto) {
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) {
     if (!aindaTemAcesso) await canal.permissionOverwrites.delete(alvo.advogadoId).catch(() => {});
-    await canal.send({ content: `<@${alvo.advogadoId}> foi removido da defesa de <@${alvo.reuId}> pelo Juiz. O réu mantém acesso ao canal.` });
+    await canal.send({ content: `<@${alvo.advogadoId}> foi removido da defesa de ${reuRef} pelo Juiz. O réu mantém acesso ao canal.` });
   }
 
   await auditoria.registrar(interaction.guild, {
     acao: 'Advogado removido da defesa', executorId: interaction.user.id,
-    referencia: `Processo ${numero}: <@${alvo.advogadoId}> (defendia <@${alvo.reuId}>)`,
+    referencia: `Processo ${numero}: <@${alvo.advogadoId}> (defendia ${reuRef})`,
   });
 
-  return interaction.update({ content: `Removido. <@${alvo.advogadoId}> não representa mais <@${alvo.reuId}> neste processo.`, components: [] });
+  return interaction.update({ content: `Removido. <@${alvo.advogadoId}> não representa mais ${reuRef} neste processo.`, components: [] });
 }
 
 // ---- Intimação (Juiz) ----
@@ -3018,7 +3037,9 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
     // mantém o comportamento anterior (Instrução) — não tem pra quem mandar o dossiê ainda.
     db.atualizar('processos', processoOriginal.numero, {
       status: novoJuizId ? 'Concluso para julgamento' : 'Instrução',
-      juiz: novoJuizId, juizDesde: new Date().toISOString(), sentenca: null, resultado: null, apelacaoNumero: null,
+      // sentencaPorCrime[] acompanha sentenca/resultado (penal por-crime); anular sem limpá-lo deixa
+      // o veredicto por crime antigo órfão até o re-julgamento (lido em displays e no PNG).
+      juiz: novoJuizId, juizDesde: new Date().toISOString(), sentenca: null, resultado: null, sentencaPorCrime: null, apelacaoNumero: null,
     });
     const canalOriginalParaJuiz = await interaction.guild.channels.fetch(processoOriginal.canalId).catch(() => null);
     if (canalOriginalParaJuiz) {
@@ -3243,12 +3264,14 @@ module.exports = {
       .addUserOption(o => o.setName('promotor').setDescription('Promotor responsável'))
       .addStringOption(o => o.setName('reus').setDescription('Menções @ dos réus, se já identificados'))
       .addStringOption(o => o.setName('medida').setDescription('Número da medida cautelar vinculada, se houver')))
+    // Opções obrigatórias precisam vir ANTES das opcionais (regra do Discord), por isso os dois
+    // nomes + réu_nome (obrigatórios) ficam agrupados antes dos @ do Discord (opcionais).
     .addSubcommand(sub => sub.setName('civil').setDescription('Abre um processo civil — Advogado (anexe a petição inicial depois, no canal)')
       .addStringOption(o => o.setName('nome_acao').setDescription('Nome da ação (ex: Ação indenizatória de perdas e danos por acidente de trânsito)').setRequired(true))
       .addStringOption(o => o.setName('autor_nome').setDescription('Nome completo do autor').setRequired(true))
-      .addUserOption(o => o.setName('autor_discord').setDescription('Usuário Discord do autor').setRequired(true))
       .addStringOption(o => o.setName('reu_nome').setDescription('Nome completo do réu').setRequired(true))
-      .addUserOption(o => o.setName('reu_discord').setDescription('Usuário Discord do réu').setRequired(true)))
+      .addUserOption(o => o.setName('autor_discord').setDescription('Usuário Discord do autor (opcional — deixe vazio se não estiver no Discord)'))
+      .addUserOption(o => o.setName('reu_discord').setDescription('Usuário Discord do réu (opcional — deixe vazio se não estiver no Discord)')))
     .addSubcommand(sub => sub.setName('listar').setDescription('Lista processos')
       .addStringOption(o => o.setName('status').setDescription('Filtrar por status')))
     .addSubcommand(sub => sub.setName('ver').setDescription('Ver detalhes de um processo')
@@ -3290,9 +3313,9 @@ module.exports = {
         advogadoId: interaction.user.id,
         nomeAcao: interaction.options.getString('nome_acao'),
         autorNome: interaction.options.getString('autor_nome'),
-        autorDiscordId: interaction.options.getUser('autor_discord').id,
+        autorDiscordId: interaction.options.getUser('autor_discord')?.id || null,
         reuNome: interaction.options.getString('reu_nome'),
-        reuDiscordId: interaction.options.getUser('reu_discord').id,
+        reuDiscordId: interaction.options.getUser('reu_discord')?.id || null,
       });
 
       return interaction.editReply({ content: `Processo civil ${resultado.numero} aberto em ${resultado.canal}.` });
