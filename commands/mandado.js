@@ -6,7 +6,7 @@ const { isSuperStaff, isAdmin } = require('../utils/permissoes');
 const documentos = require('../utils/documentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const anexos = require('../utils/anexos');
-const { selectTipoMedidaCoercitiva, rotuloTipo } = require('../utils/tiposMedidaCoercitiva');
+const { selectTipoMedidaCoercitiva, rotuloTipo, modalTipoDestinatario } = require('../utils/tiposMedidaCoercitiva');
 const partesProcesso = require('../utils/partesProcesso');
 const andamentos = require('../utils/andamentos');
 
@@ -104,20 +104,7 @@ async function processarSelecaoTipo(interaction, numero) {
 // ou o literal "fora") — assim o handler final sabe exatamente quais campos ler do modal sem
 // precisar adivinhar, e nunca chama getTextInputValue num campo que não foi criado.
 function modalTeorMandado(chave, tipoValue, destinatarioRef) {
-  const modal = new ModalBuilder().setCustomId(`painel:modal:mandado:emitir:${chave}`).setTitle(`Mandado — ${rotuloTipo(tipoValue)}`.slice(0, 45));
-  const linhas = [];
-  if (tipoValue === 'outro') {
-    linhas.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('tipoLivre').setLabel('Descreva o tipo').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)));
-  }
-  if (destinatarioRef === 'fora') {
-    linhas.push(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nomeCompleto').setLabel('Nome completo').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('idTexto').setLabel('RG ou Discord ID').setStyle(TextInputStyle.Short).setRequired(true)),
-    );
-  }
-  linhas.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('teor').setLabel('Motivo / fundamentação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)));
-  modal.addComponents(...linhas);
-  return modal;
+  return modalTipoDestinatario({ customId: `painel:modal:mandado:emitir:${chave}`, titulo: `Mandado — ${rotuloTipo(tipoValue)}`, tipoValue, destinatarioRef, campoTeor: 'teor', labelTeor: 'Motivo / fundamentação' });
 }
 
 async function processarSelecaoDestinatario(interaction, chaveTipo) {

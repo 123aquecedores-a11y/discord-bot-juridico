@@ -22,7 +22,7 @@ const documentoPng = require('../services/gerarDocumentoPNG');
 const { aguardarAnexoPDF } = require('../utils/anexoPdf');
 const anexos = require('../utils/anexos');
 const dossie = require('../utils/dossie');
-const { selectTipoMedidaCoercitiva, rotuloTipo } = require('../utils/tiposMedidaCoercitiva');
+const { selectTipoMedidaCoercitiva, rotuloTipo, modalTipoDestinatario } = require('../utils/tiposMedidaCoercitiva');
 const partesProcesso = require('../utils/partesProcesso');
 const mandadoCmd = require('./mandado');
 const andamentos = require('../utils/andamentos');
@@ -173,20 +173,7 @@ function modalFundamentacao(customId, titulo, label) {
 }
 
 function modalJustificativaMedidaDireta(chave, tipoValue, destinatarioRef) {
-  const modal = new ModalBuilder().setCustomId(`painel:modal:medida:solicitardireta:${chave}`).setTitle(`Solicitar — ${rotuloTipo(tipoValue)}`.slice(0, 45));
-  const linhas = [];
-  if (tipoValue === 'outro') {
-    linhas.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('tipoLivre').setLabel('Descreva o tipo').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)));
-  }
-  if (destinatarioRef === 'fora') {
-    linhas.push(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('nomeCompleto').setLabel('Nome completo').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('idTexto').setLabel('RG ou Discord ID').setStyle(TextInputStyle.Short).setRequired(true)),
-    );
-  }
-  linhas.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('justificativa').setLabel('Justificativa do pedido').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)));
-  modal.addComponents(...linhas);
-  return modal;
+  return modalTipoDestinatario({ customId: `painel:modal:medida:solicitardireta:${chave}`, titulo: `Solicitar — ${rotuloTipo(tipoValue)}`, tipoValue, destinatarioRef, campoTeor: 'justificativa', labelTeor: 'Justificativa do pedido' });
 }
 
 async function processarSelecaoDestinatarioDireta(interaction, chaveTipo) {
