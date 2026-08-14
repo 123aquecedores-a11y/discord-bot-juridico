@@ -97,7 +97,9 @@ function modalAbrirEdital() {
     row(new TextInputBuilder().setCustomId('vagas_juiz').setLabel('Vagas de Juiz (número)').setPlaceholder('Ex: 2').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3)),
     row(new TextInputBuilder().setCustomId('vagas_promotor').setLabel('Vagas de Promotor (número)').setPlaceholder('Ex: 3').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3)),
     row(new TextInputBuilder().setCustomId('requisitos').setLabel('Requisitos').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)),
-    row(new TextInputBuilder().setCustomId('periodo').setLabel('Período de inscrição (dd/mm/aaaa a dd/mm/aaaa)').setPlaceholder('01/09/2026 a 15/09/2026').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40)),
+    // Label ENCURTADO: o texto antigo tinha 46 chars e estourava o limite de 45 do Discord
+    // ("Invalid string length" — o modal nem abria). O formato foi pro placeholder (limite 100).
+    row(new TextInputBuilder().setCustomId('periodo').setLabel('Período de inscrição').setPlaceholder('Início e fim — ex: 01/09/2026 a 15/09/2026').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40)),
   );
   return modal;
 }
@@ -319,15 +321,21 @@ async function router(interaction) {
   }
 }
 
+// Abre o modal de criação (gate de staff no handler). Reutilizado pelo slash /abrir-edital
+// (fallback) E pelo botão "📢 Abrir edital" do hub de staff (painel:acao:edital:abrir).
+async function abrirModalEdital(interaction) {
+  if (!podeStaff(interaction)) return interaction.reply({ content: 'Só Staff/Administração pode abrir editais.', ephemeral: true });
+  return interaction.showModal(modalAbrirEdital());
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('abrir-edital')
     .setDescription('(Staff) Abre um edital de processo seletivo para Juiz e Promotor'),
 
-  async execute(interaction) {
-    if (!podeStaff(interaction)) return interaction.reply({ content: 'Só Staff/Administração pode abrir editais.', ephemeral: true });
-    return interaction.showModal(modalAbrirEdital());
-  },
+  // Slash mantido como FALLBACK — o fluxo principal é o botão do painel.
+  execute(interaction) { return abrirModalEdital(interaction); },
 
   router,
+  abrirModalEdital,
 };

@@ -11,6 +11,7 @@ const {
 } = require('./utils/prazos');
 const ficha = require('./utils/ficha');
 const integracaoPoliciaCivil = require('./utils/integracaoPoliciaCivil');
+const { garantirCanais } = require('./utils/garantirCanais');
 
 // Rede de segurança: no Node moderno, uma promessa rejeitada sem .catch DERRUBA o processo
 // inteiro (unhandledRejection → exit). Num handler solto (ex: um canal.send que falha, uma
@@ -53,6 +54,10 @@ client.once('ready', async () => {
     console.error('Não foi possível carregar o servidor configurado (GUILD_ID) — job diário de prazos não vai rodar.');
     return;
   }
+
+  // Auto-cria os canais de publicação (📜│diário-oficial e 📢│editais) se faltarem — idempotente,
+  // não duplica, e não derruba o boot se faltar permissão (ver utils/garantirCanais.js).
+  await garantirCanais(guild);
 
   // Simulador de alto fluxo (só quando SIMULAR=1) — cria tickets ao vivo pra teste. Ver
   // scripts/simulador.js. Roda em paralelo, sem travar o bot (que segue respondendo normalmente).

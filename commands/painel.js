@@ -15,6 +15,7 @@ const medidaCmd = require('./medida');
 const mandadoCmd = require('./mandado');
 const oficioCmd = require('./oficio');
 const rhCmd = require('./rh');
+const editalCmd = require('./edital');
 const crimeCmd = require('./crime');
 const rascunhoCrimes = require('../utils/rascunhoCrimes');
 const crimePicker = require('../utils/crimePicker');
@@ -100,6 +101,7 @@ function botoesMenuPrincipal(interaction) {
       botaoSe(true, 'painel:acao:cargo:solicitar', '🪪 Solicitar cargo', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:menu:rh', '👥 RH', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:acao:dados:gerenciar', '🪪 Gerenciar dados', ButtonStyle.Secondary),
+      botaoSe(staff, 'painel:acao:edital:abrir', '📢 Abrir edital', ButtonStyle.Secondary),
     ),
     // Preferência pessoal: quando LIGADA, a IA já revisa e publica a fundamentação sozinha (sem a
     // tela de "Revisar/Publicar"). Rótulo reflete o estado atual de quem abriu o painel.
@@ -643,6 +645,11 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   // Update 3 — Gerenciar dados (global): botão → user-select → modal (nome/RG/OAB).
   if (modulo === 'dados') {
     if (acao === 'gerenciar') return rhCmd.abrirGerenciarDados(interaction);
+  }
+
+  // Edital: botão "📢 Abrir edital" do hub de staff → modal (mesma função do slash /abrir-edital).
+  if (modulo === 'edital') {
+    if (acao === 'abrir') return editalCmd.abrirModalEdital(interaction);
   }
 
   if (modulo === 'sentenca') {

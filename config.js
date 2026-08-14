@@ -42,6 +42,10 @@ module.exports = {
   // aprovar/negar. Se não configurado, cai no canal de auditoria (ver commands/rh.js).
   canalContratacoesId: process.env.CANAL_CONTRATACOES_ID || null,
 
+  // Categoria (opcional) onde os canais auto-criados de publicação (Diário Oficial, Editais) são
+  // colocados. Sem ela, os canais são criados na raiz do servidor. Ver utils/garantirCanais.js.
+  categoriaPublicacoesId: process.env.CATEGORIA_PUBLICACOES_ID || process.env.CATEGORIA_ID || null,
+
   // Categoria pra onde processos/medidas/apelações/petições concluídos são movidos ao arquivar
   categoriaArquivadosId: process.env.CATEGORIA_ARQUIVADOS_ID || null,
 
