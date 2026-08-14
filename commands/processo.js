@@ -235,14 +235,31 @@ async function confirmarParecerMp(interaction, chave) {
 }
 
 // Gera a revisão por IA e mostra antes→depois; o Promotor escolhe qual enviar.
-async function revisarParecerTexto(interaction, numero) {
-  const d = rascunhoDecisao.get(chaveParecer(interaction.user.id, numero));
-  if (!d) return interaction.update({ content: 'A prévia do parecer expirou. Refaça a ação.', components: [] }).catch(() => {});
+// R1 — esqueleto ÚNICO da revisão-IA in-flow (parecer/razões/acórdão/sentença): pega o rascunho,
+// guarda contra expiração, revisa o texto pela IA e mostra a tela antes→depois (ou o fallback).
+// Cada fluxo é um wrapper fino que só informa a chave, o campo do texto no rascunho, a tela e a
+// mensagem de expiração — comportamento idêntico ao que era copiado 4×.
+async function revisarRascunho(interaction, { chave, campo, telaId, extra, msgExpirou }) {
+  const d = rascunhoDecisao.get(chave);
+  if (!d) return interaction.update({ content: msgExpirou, components: [] }).catch(() => {});
   await interaction.deferUpdate();
-  const revisado = await cartorio.revisarTexto(d.texto).catch(() => null);
-  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('parecermp', numero));
+  const revisado = await cartorio.revisarTexto(d[campo]).catch(() => null);
+  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA(telaId, extra));
   d.textoRevisado = revisado;
-  return interaction.editReply(revisaoIA.telaAntesDepois('parecermp', { extra: numero, textoOriginal: d.texto, textoRevisado: revisado }));
+  return interaction.editReply(revisaoIA.telaAntesDepois(telaId, { extra, textoOriginal: d[campo], textoRevisado: revisado }));
+}
+
+// R1 — escolhe o texto a publicar (original ou o revisado pela IA) e, no modo 'auto', gera a
+// revisão sob demanda (fallback pro original se a IA não responder). `campo` é a chave do texto no
+// rascunho (texto/razoes/fundamentacao). Substitui o trio usarRevisado repetido em cada executar*.
+async function resolverTextoFinal(d, modo, campo) {
+  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d[campo]).catch(() => null);
+  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
+  return usarRevisado && d.textoRevisado ? d.textoRevisado : d[campo];
+}
+
+async function revisarParecerTexto(interaction, numero) {
+  return revisarRascunho(interaction, { chave: chaveParecer(interaction.user.id, numero), campo: 'texto', telaId: 'parecermp', extra: numero, msgExpirou: 'A prévia do parecer expirou. Refaça a ação.' });
 }
 
 // Commit do parecer (gera PNG, posta nos autos, sorteia juiz/arquiva). `usarRevisado` decide
@@ -262,9 +279,7 @@ async function executarParecerMp(interaction, numero, modo) {
   await interaction.deferReply({ ephemeral: true });
   rascunhoDecisao.delete(chaveP);
   const acao = d.acao;
-  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.texto).catch(() => null);
-  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
-  const parecer = usarRevisado && d.textoRevisado ? d.textoRevisado : d.texto;
+  const parecer = await resolverTextoFinal(d, modo, 'texto');
   const nomeReu = processo.reuNome || (
     (processo.reus || []).length
       ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(interaction.guild, id)))).join(' e ')
@@ -2832,13 +2847,7 @@ async function confirmarRazoes(interaction, numero) {
 }
 
 async function revisarRazoesTexto(interaction, numero) {
-  const d = rascunhoDecisao.get(chaveRazoes(interaction.user.id, numero));
-  if (!d) return interaction.update({ content: 'A prévia do recurso expirou. Refaça a ação.', components: [] }).catch(() => {});
-  await interaction.deferUpdate();
-  const revisado = await cartorio.revisarTexto(d.razoes).catch(() => null);
-  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('razoes', numero));
-  d.textoRevisado = revisado;
-  return interaction.editReply(revisaoIA.telaAntesDepois('razoes', { extra: numero, textoOriginal: d.razoes, textoRevisado: revisado }));
+  return revisarRascunho(interaction, { chave: chaveRazoes(interaction.user.id, numero), campo: 'razoes', telaId: 'razoes', extra: numero, msgExpirou: 'A prévia do recurso expirou. Refaça a ação.' });
 }
 
 async function criarApelacao(interaction, numero, modo) {
@@ -2853,9 +2862,7 @@ async function criarApelacao(interaction, numero, modo) {
   // Defer antes de criar canal (operação lenta) — evita o estouro da janela de 3s do Discord.
   await interaction.deferReply({ ephemeral: true });
   rascunhoDecisao.delete(chaveR);
-  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.razoes).catch(() => null);
-  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
-  const razoes = usarRevisado && d.textoRevisado ? d.textoRevisado : d.razoes;
+  const razoes = await resolverTextoFinal(d, modo, 'razoes');
   const recorrenteId = interaction.user.id;
   const parteContrariaId = parteContrariaDoRecurso(processo, recorrenteId);
 
@@ -3093,13 +3100,7 @@ async function confirmarAcordao(interaction, numeroApelacao, decisao, extras = {
 }
 
 async function revisarAcordaoTexto(interaction, numeroApelacao) {
-  const d = rascunhoDecisao.get(chaveAcordao(interaction.user.id, numeroApelacao));
-  if (!d) return interaction.update({ content: 'A prévia do acórdão expirou. Refaça a decisão.', components: [] }).catch(() => {});
-  await interaction.deferUpdate();
-  const revisado = await cartorio.revisarTexto(d.fundamentacao).catch(() => null);
-  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('acordao', numeroApelacao));
-  d.textoRevisado = revisado;
-  return interaction.editReply(revisaoIA.telaAntesDepois('acordao', { extra: numeroApelacao, textoOriginal: d.fundamentacao, textoRevisado: revisado }));
+  return revisarRascunho(interaction, { chave: chaveAcordao(interaction.user.id, numeroApelacao), campo: 'fundamentacao', telaId: 'acordao', extra: numeroApelacao, msgExpirou: 'A prévia do acórdão expirou. Refaça a decisão.' });
 }
 
 async function executarAcordao(interaction, numeroApelacao, modo) {
@@ -3109,12 +3110,8 @@ async function executarAcordao(interaction, numeroApelacao, modo) {
   rascunhoDecisao.delete(chaveA);
   // Modo automático: acusa o recebimento (defer) e revisa aqui, já que finalizarApelacao usa o
   // texto logo em seguida. Fallback pro original se a IA não responder.
-  if (modo === 'auto') {
-    await interaction.deferReply({ ephemeral: true });
-    if (!d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.fundamentacao).catch(() => null);
-  }
-  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
-  const fundamentacao = usarRevisado && d.textoRevisado ? d.textoRevisado : d.fundamentacao;
+  if (modo === 'auto') await interaction.deferReply({ ephemeral: true });
+  const fundamentacao = await resolverTextoFinal(d, modo, 'fundamentacao');
   return finalizarApelacao(interaction, numeroApelacao, d.decisao, { fundamentacao, novoResultado: d.novoResultado });
 }
 
@@ -3171,9 +3168,7 @@ async function executarSentenca(interaction, numero, modo) {
   // Defer público ANTES do PNG (Puppeteer) — a sentença é pública no canal. No modo "revisão
   // automática" a revisão pela IA acontece depois do defer (é lenta), com fallback pro original.
   await interaction.deferReply();
-  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.texto).catch(() => null);
-  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
-  const texto = usarRevisado && d.textoRevisado ? d.textoRevisado : d.texto;
+  const texto = await resolverTextoFinal(d, modo, 'texto');
   const { pena, regime, resultado, sentencaPorCrime } = d;
   db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaPorCrime: sentencaPorCrime || null, sentencaEm: new Date().toISOString() });
 
@@ -3441,13 +3436,7 @@ module.exports = {
 
   // Gera a revisão por IA e mostra antes→depois; o Juiz escolhe qual publicar.
   async revisarSentencaTexto(interaction, numero) {
-    const d = rascunhoDecisao.get(chaveDecisao(interaction.user.id, numero));
-    if (!d) return interaction.update({ content: 'A prévia da sentença expirou. Refaça pelo botão "Julgar".', components: [] }).catch(() => {});
-    await interaction.deferUpdate();
-    const revisado = await cartorio.revisarTexto(d.texto).catch(() => null);
-    if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('sentenca', numero));
-    d.textoRevisado = revisado;
-    return interaction.editReply(revisaoIA.telaAntesDepois('sentenca', { extra: numero, textoOriginal: d.texto, textoRevisado: revisado }));
+    return revisarRascunho(interaction, { chave: chaveDecisao(interaction.user.id, numero), campo: 'texto', telaId: 'sentenca', extra: numero, msgExpirou: 'A prévia da sentença expirou. Refaça pelo botão "Julgar".' });
   },
 
   async publicarSentenca(interaction, numero) { return executarSentenca(interaction, numero, false); },
