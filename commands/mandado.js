@@ -5,6 +5,7 @@ const { proximoNumero } = require('../utils/numeracao');
 const { isSuperStaff, isAdmin } = require('../utils/permissoes');
 const documentos = require('../utils/documentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
+const diario = require('../utils/diarioOficial');
 const anexos = require('../utils/anexos');
 const { selectTipoMedidaCoercitiva, rotuloTipo, modalTipoDestinatario } = require('../utils/tiposMedidaCoercitiva');
 const partesProcesso = require('../utils/partesProcesso');
@@ -200,6 +201,13 @@ async function emitirMandadoNoProcesso({ guild, processo, tipoRotulo, teor, emit
   // Lazy require pra evitar ciclo (processo.js já requer mandado.js no outro sentido) — só
   // resolve de verdade quando essa função roda, bem depois do boot inicial já ter terminado.
   await require('./processo').repostarPainel(guild, processo.numero);
+
+  // Publica o mandado no Diário Oficial (try/catch — falha aqui não pode quebrar a emissão).
+  try {
+    await diario.publicarNoDiario(guild, 'mandado', {
+      numero: numeroMandado, tipoMandado: tipoRotulo, alvo: alvoTexto, processoNumero: processo.numero, porQuemId: emitidoPorId,
+    });
+  } catch (e) { console.error('[mandado] publicação no Diário falhou (ignorado):', e.message); }
 
   return { numero: numeroMandado };
 }

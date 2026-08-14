@@ -143,6 +143,13 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
+    // Edital (processo seletivo): botões/modais com prefixo "edital:" → router do /abrir-edital.
+    if (interaction.customId && interaction.customId.startsWith('edital:')) {
+      const edital = client.commands.get('abrir-edital');
+      if (edital?.router) await edital.router(interaction);
+      return;
+    }
+
     // Botões: customId no formato "modulo:acao:numero"
     if (interaction.isButton()) {
       const [modulo, acao, numero] = interaction.customId.split(':');

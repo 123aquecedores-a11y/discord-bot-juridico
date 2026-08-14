@@ -19,6 +19,7 @@ function resolverGuild(interaction) {
 }
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const documentoPng = require('../services/gerarDocumentoPNG');
+const diario = require('../utils/diarioOficial');
 const { aguardarAnexoPDF, coletarAnexoPdf } = require('../utils/anexoPdf');
 const anexos = require('../utils/anexos');
 const dossie = require('../utils/dossie');
@@ -745,6 +746,12 @@ module.exports = {
     await devolutivaPoliciaCivil.enviarDevolutivaMandado(medidaAtualizada, {
       decisao: 'Deferido', fundamentacao: fundamentacaoJuiz, juizId: medida.juiz, numeroMandado, pngBuffer: pngMandado,
     });
+    // Publica o mandado no Diário Oficial (try/catch — falha aqui não pode quebrar o referendo).
+    try {
+      await diario.publicarNoDiario(interaction.guild, 'mandado', {
+        numero: numeroMandado, tipoMandado: medida.tipo, alvo: medida.alvo, processoNumero: medida.processoVinculado || null, porQuemId: interaction.user.id,
+      });
+    } catch (e) { console.error('[medida] publicação de mandado no Diário falhou (ignorado):', e.message); }
     return interaction.editReply({ content: `Medida ${numero} referendada. Mandado ${numeroMandado} emitido.` });
   },
 

@@ -453,4 +453,40 @@ async function gerarCarteirinhaPNG({ nome, rg, oab, data }) {
   return buffer;
 }
 
-module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, nomeExibicao, getBrowser };
+// ---- Edital (processo seletivo) ----
+// Mesmo pipeline/browser dos documentos. Renderiza o template compartilhado edital_template.html
+// como página A4 e captura fullPage (padrão dos outros documentos).
+const EDITAL_TEMPLATE_PATH = path.join(__dirname, '..', 'assets', 'edital_template.html');
+let editalTemplateCache = null;
+
+function getEditalTemplate() {
+  if (editalTemplateCache === null) {
+    editalTemplateCache = fs.readFileSync(EDITAL_TEMPLATE_PATH, 'utf-8');
+  }
+  return editalTemplateCache;
+}
+
+/**
+ * Gera o PNG do edital a partir do template compartilhado.
+ * @param {{numero:string, vagasJuiz:(number|string), vagasPromotor:(number|string), requisitos:string, inicio:string, fim:string}} dados
+ * @returns {Promise<Buffer>}
+ */
+async function gerarEditalPNG({ numero, vagasJuiz, vagasPromotor, requisitos, inicio, fim }) {
+  const html = getEditalTemplate()
+    .replace(/\{\{NUMERO\}\}/g, () => escapeHtml(numero))
+    .replace(/\{\{VAGAS_JUIZ\}\}/g, () => escapeHtml(String(vagasJuiz)))
+    .replace(/\{\{VAGAS_PROMOTOR\}\}/g, () => escapeHtml(String(vagasPromotor)))
+    .replace(/\{\{REQUISITOS\}\}/g, () => escapeHtml(requisitos))
+    .replace(/\{\{INICIO\}\}/g, () => escapeHtml(inicio))
+    .replace(/\{\{FIM\}\}/g, () => escapeHtml(fim));
+
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  await page.setViewport({ width: 794, height: 1123 });
+  await page.setContent(html, { waitUntil: 'networkidle0' });
+  const buffer = await page.screenshot({ type: 'png', fullPage: true });
+  await page.close();
+  return buffer;
+}
+
+module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarEditalPNG, nomeExibicao, getBrowser };

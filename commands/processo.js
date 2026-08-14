@@ -13,6 +13,7 @@ const auditoria = require('../utils/auditoria');
 const documentos = require('../utils/documentos');
 const { historicoDoProcesso } = require('../utils/historico');
 const documentoPng = require('../services/gerarDocumentoPNG');
+const diario = require('../utils/diarioOficial');
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const dossie = require('../utils/dossie');
 const { aguardarAnexoPDF, aguardarAnexos, coletarAnexoPdf } = require('../utils/anexoPdf');
@@ -3111,6 +3112,15 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
   await auditoria.registrar(interaction.guild, {
     acao: `Apelação decidida: ${statusFinal}`, executorId: interaction.user.id, referencia: `${numeroApelacao} (processo ${apelacao.processoOriginalNumero})`,
   });
+  // Publica o acórdão no Diário Oficial (try/catch — falha aqui não pode quebrar a decisão).
+  try {
+    await diario.publicarNoDiario(interaction.guild, 'acordao', {
+      numero: apelacao.processoOriginalNumero,
+      resultado: `${statusFinal}${extras.novoResultado ? ` — ${extras.novoResultado}` : ''}`,
+      relator: nomeDes,
+      files: pngAcordao ? [{ attachment: pngAcordao, name: `Acordao-${numeroApelacao}.png` }] : undefined,
+    });
+  } catch (e) { console.error('[processo] publicação de acórdão no Diário falhou (ignorado):', e.message); }
 
   const embedResultado = new EmbedBuilder().setColor(0x8e44ad).setDescription(`Apelação ${numeroApelacao}: sentença **${statusFinal}**. Acórdão publicado no canal.`);
   return interaction.editReply({ embeds: [embedResultado], components: [] });
@@ -3250,6 +3260,13 @@ async function executarSentenca(interaction, numero, modo) {
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) await canais.arquivarCanal(canal);
   await auditoria.registrar(interaction.guild, { acao: `Sentença: ${resultado}`, executorId: interaction.user.id, referencia: `Processo ${numero}` });
+  // Publica a sentença no Diário Oficial (try/catch — falha aqui não pode quebrar o julgamento).
+  try {
+    await diario.publicarNoDiario(interaction.guild, 'sentenca', {
+      numero, tipoProcesso: processo.tipo, resultado, parte: nomeReu, magistrado: nomeAssinante,
+      files: pngSentenca ? [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] : undefined,
+    });
+  } catch (e) { console.error('[processo] publicação de sentença no Diário falhou (ignorado):', e.message); }
   await postarOuAtualizarCapaPublica(interaction.guild, numero);
 }
 

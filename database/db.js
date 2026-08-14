@@ -5,7 +5,7 @@ const path = require('path');
 // pro volume persistente montado (ex: /data/dados.json), senão o banco inteiro some a cada
 // redeploy/restart. Sem essa variável definida, continua usando o arquivo local de sempre.
 const DB_PATH = process.env.DADOS_JSON_PATH || path.join(__dirname, '..', 'dados.json');
-const TABELAS = ['processos', 'medidas', 'mandados', 'oficios', 'rh', 'apelacoes', 'peticoes', 'fichas', 'consultas', 'estado', 'certidoes', 'atosMp', 'documentosAnexados', 'dossiesInquerito', 'instituicoes', 'andamentos', 'solicitacoesCargo', 'preferencias'];
+const TABELAS = ['processos', 'medidas', 'mandados', 'oficios', 'rh', 'apelacoes', 'peticoes', 'fichas', 'consultas', 'estado', 'certidoes', 'atosMp', 'documentosAnexados', 'dossiesInquerito', 'instituicoes', 'andamentos', 'solicitacoesCargo', 'preferencias', 'editais', 'inscricoesEdital'];
 
 // Semente inicial do cadastro de instituições (spec-atualizacoes-bot-juridico.md, seção 6) —
 // só entra na PRIMEIRA vez que a tabela aparece (banco novo, ou banco antigo ganhando a tabela

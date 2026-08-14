@@ -9,6 +9,7 @@ const auditoria = require('../utils/auditoria');
 const db = require('../database/db');
 const { truncar } = require('../utils/texto');
 const carteirinha = require('../utils/carteirinha');
+const diario = require('../utils/diarioOficial');
 
 // Título que vai na frente do apelido quando o cargo é aprovado (ex: "Juiz Fulano").
 // Desembargador abrevia pra caber no limite de 32 caracteres do apelido do Discord.
@@ -68,6 +69,12 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: contratação', executorId, referencia: `<@${usuarioId}> → ${cargo}${nomePersonagem ? ` ("${nomePersonagem}")` : ''}` });
   }
+  // Publica a nomeação no Diário Oficial (try/catch — falha aqui não pode quebrar a contratação).
+  // Cobre TODOS os caminhos que contratam: /rh contratar, aprovação de solicitação e aprovação de
+  // inscrição de edital (resultado de seletivo).
+  try {
+    await diario.publicarNoDiario(guild, 'nomeacao', { userId: usuarioId, cargo, nome: nomePersonagem, porQuemId: executorId });
+  } catch (e) { console.error('[rh] publicação de nomeação no Diário falhou (ignorado):', e.message); }
   return { apelidoOk, carteira };
 }
 
