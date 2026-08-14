@@ -1,4 +1,5 @@
 const canais = require('./canais');
+const anexos = require('./anexos');
 
 // Padrão universal pra anexar PDF via botão — o ModalBuilder do discord.js só aceita
 // TextInputComponent, não existe upload de arquivo dentro de modal (limitação da própria API
@@ -117,4 +118,18 @@ async function aguardarAnexos(interaction, { timeoutMs = 90 * 1000, idleMs = 25 
   return { arquivos, autorId: interaction.user.id, dataEnvio: new Date() };
 }
 
-module.exports = { aguardarAnexoPDF, aguardarAnexos };
+// R2/R4 — núcleo compartilhado do "anexar PDF": espera o PDF e o registra como documento dos
+// autos (atoOrigemId = numero em todos os chamadores). Retorna { anexo, documento } ou null quando
+// nada válido veio (aguardarAnexoPDF já avisou). O gate, a remoção de botão, o followUp e a análise
+// ficam em CADA chamador — divergem de verdade entre os fluxos, por isso não entram aqui.
+async function coletarAnexoPdf(interaction, { numero, tipo, protocolo }) {
+  const anexo = await aguardarAnexoPDF(interaction);
+  if (!anexo) return null;
+  const documento = anexos.criarDocumento({
+    tipo, url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
+    atoOrigemId: numero, protocoloVinculado: protocolo,
+  });
+  return { anexo, documento };
+}
+
+module.exports = { aguardarAnexoPDF, aguardarAnexos, coletarAnexoPdf };

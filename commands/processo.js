@@ -15,7 +15,7 @@ const { historicoDoProcesso } = require('../utils/historico');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const dossie = require('../utils/dossie');
-const { aguardarAnexoPDF, aguardarAnexos } = require('../utils/anexoPdf');
+const { aguardarAnexoPDF, aguardarAnexos, coletarAnexoPdf } = require('../utils/anexoPdf');
 const cartorio = require('../utils/cartorio');
 const preferencias = require('../utils/preferencias');
 const { RascunhoTTL } = require('../utils/rascunhoTtl');
@@ -862,13 +862,9 @@ async function anexarPeticaoInicial(interaction, numero) {
     return interaction.reply({ content: 'A petição inicial já foi anexada a este processo.', ephemeral: true });
   }
 
-  const anexo = await aguardarAnexoPDF(interaction);
-  if (!anexo) return; // aguardarAnexoPDF já avisou o motivo (tempo esgotado ou não é PDF)
-
-  anexos.criarDocumento({
-    tipo: 'peticao_inicial', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
-    atoOrigemId: numero, protocoloVinculado: numero,
-  });
+  const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'peticao_inicial', protocolo: numero });
+  if (!coletado) return; // coletarAnexoPdf já avisou o motivo (tempo esgotado ou não é PDF)
+  const { anexo } = coletado;
 
   const componentesRestantes = (interaction.message?.components || []).filter(row =>
     !(row.components || []).some(c => c.customId === `painel:acao:processo:anexarpeticaoinicial:${numero}`),
@@ -903,13 +899,9 @@ async function anexarRelatorioInquerito(interaction, numero) {
     return interaction.reply({ content: 'O relatório de inquérito já foi anexado a este processo.', ephemeral: true });
   }
 
-  const anexo = await aguardarAnexoPDF(interaction);
-  if (!anexo) return;
-
-  anexos.criarDocumento({
-    tipo: 'relatorio_inquerito', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
-    atoOrigemId: numero, protocoloVinculado: numero,
-  });
+  const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'relatorio_inquerito', protocolo: numero });
+  if (!coletado) return;
+  const { anexo } = coletado;
 
   const linhasAtualizadas = (interaction.message?.components || []).map(row => {
     const mantidos = (row.components || []).filter(c => c.customId !== `painel:acao:processo:anexarrelatorio:${numero}`);
@@ -951,13 +943,9 @@ async function anexarContestacao(interaction, chave) {
     return interaction.reply({ content: `Este processo não está aguardando contestação no momento (status atual: "${processo.status}").`, ephemeral: true });
   }
 
-  const anexo = await aguardarAnexoPDF(interaction);
-  if (!anexo) return;
-
-  anexos.criarDocumento({
-    tipo: 'contestacao', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
-    atoOrigemId: numero, protocoloVinculado: numero,
-  });
+  const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'contestacao', protocolo: numero });
+  if (!coletado) return;
+  const { anexo } = coletado;
   db.atualizar('processos', numero, { status: 'Concluso para julgamento', contestacaoEm: new Date().toISOString() });
 
   if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
