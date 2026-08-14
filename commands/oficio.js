@@ -9,8 +9,7 @@ const documentos = require('../utils/documentos');
 const canais = require('../utils/canais');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
-const { aguardarAnexoPDF } = require('../utils/anexoPdf');
-const anexos = require('../utils/anexos');
+const { aguardarAnexoPDF, coletarAnexoPdf } = require('../utils/anexoPdf');
 const andamentos = require('../utils/andamentos');
 const processoCmd = require('./processo');
 const analiseDocumento = require('../utils/analiseDocumento');
@@ -62,13 +61,9 @@ async function cumprirOficio(interaction, numero) {
     return interaction.reply({ content: 'Este ofício já foi marcado como cumprido.', ephemeral: true });
   }
 
-  const anexo = await aguardarAnexoPDF(interaction);
-  if (!anexo) return;
-
-  anexos.criarDocumento({
-    tipo: 'cumprimento_oficio', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
-    atoOrigemId: numero, protocoloVinculado: oficio.processoNumero || numero,
-  });
+  const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'cumprimento_oficio', protocolo: oficio.processoNumero || numero });
+  if (!coletado) return;
+  const { anexo } = coletado;
 
   db.atualizar('oficios', numero, { status: 'Cumprido', cumpridoPor: interaction.user.id, cumpridoEm: new Date().toISOString() });
   // IA "cartório" faz a análise estruturada da resposta do ofício (best-effort).

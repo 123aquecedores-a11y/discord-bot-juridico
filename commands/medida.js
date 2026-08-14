@@ -19,7 +19,7 @@ function resolverGuild(interaction) {
 }
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const documentoPng = require('../services/gerarDocumentoPNG');
-const { aguardarAnexoPDF } = require('../utils/anexoPdf');
+const { aguardarAnexoPDF, coletarAnexoPdf } = require('../utils/anexoPdf');
 const anexos = require('../utils/anexos');
 const dossie = require('../utils/dossie');
 const { selectTipoMedidaCoercitiva, rotuloTipo, modalTipoDestinatario } = require('../utils/tiposMedidaCoercitiva');
@@ -886,13 +886,12 @@ module.exports = {
     // aguardarAnexoPDF já consome a resposta inicial da interação (reply pedindo o PDF) — não
     // dá pra também chamar interaction.update() na mesma interação depois; o botão se apaga
     // editando a mensagem original diretamente.
-    const anexo = await aguardarAnexoPDF(interaction);
-    if (!anexo) return; // aguardarAnexoPDF já avisou o motivo (tempo esgotado ou não é PDF)
-
-    const documentoCumprimento = anexos.criarDocumento({
-      tipo: 'cumprimento_mandado', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
-      atoOrigemId: numero, protocoloVinculado: medida?.codigoExterno || mandado.medidaNumero || mandado.processoVinculado,
+    const coletado = await coletarAnexoPdf(interaction, {
+      numero, tipo: 'cumprimento_mandado',
+      protocolo: medida?.codigoExterno || mandado.medidaNumero || mandado.processoVinculado,
     });
+    if (!coletado) return; // coletarAnexoPdf já avisou o motivo (tempo esgotado ou não é PDF)
+    const { anexo, documento: documentoCumprimento } = coletado;
     if (medida?.codigoExterno) dossie.registrarDocumento(medida.codigoExterno, documentoCumprimento.id);
 
     db.atualizar('mandados', numero, { status: 'Cumprido', cumpridoPor: interaction.user.id });
