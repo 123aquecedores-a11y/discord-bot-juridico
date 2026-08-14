@@ -162,6 +162,16 @@ async function processarSelecaoTipoDireta(interaction, numero) {
   });
 }
 
+// R6 — modal de fundamentação de campo único (aprovar MP / referendar / negar juiz): só mudam
+// customId, título e rótulo; o campo `fundamentacao` (Paragraph, obrigatório, 1000) é idêntico.
+function modalFundamentacao(customId, titulo, label) {
+  const modal = new ModalBuilder().setCustomId(customId).setTitle(titulo);
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('fundamentacao').setLabel(label).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+  ));
+  return modal;
+}
+
 function modalJustificativaMedidaDireta(chave, tipoValue, destinatarioRef) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:medida:solicitardireta:${chave}`).setTitle(`Solicitar — ${rotuloTipo(tipoValue)}`.slice(0, 45));
   const linhas = [];
@@ -413,11 +423,7 @@ module.exports = {
     if (interaction.user.id !== medida.promotor && !isSuperStaff(interaction)) {
       return interaction.reply({ content: `Só o Promotor responsável por esta medida pode decidir — no caso, <@${medida.promotor}>.`, ephemeral: true });
     }
-    const modal = new ModalBuilder().setCustomId(`painel:modal:medida:aprovarmp:${numero}`).setTitle('Aprovar pedido — fundamentação');
-    modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação do MP').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
-    ));
-    return interaction.showModal(modal);
+    return interaction.showModal(modalFundamentacao(`painel:modal:medida:aprovarmp:${numero}`, 'Aprovar pedido — fundamentação', 'Fundamentação do MP'));
   },
 
   async processarAprovacaoMP(interaction, numero) {
@@ -686,11 +692,7 @@ module.exports = {
     if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode referendá-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
-    const modal = new ModalBuilder().setCustomId(`painel:modal:medida:referendar:${numero}`).setTitle('Referendar — fundamentação');
-    modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação do Juízo').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
-    ));
-    return interaction.showModal(modal);
+    return interaction.showModal(modalFundamentacao(`painel:modal:medida:referendar:${numero}`, 'Referendar — fundamentação', 'Fundamentação do Juízo'));
   },
 
   // fundamentacaoOverride vem do fluxo revisão-in-flow (texto já escolhido pelo Juiz, revisado
@@ -793,11 +795,7 @@ module.exports = {
     if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode decidi-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
-    const modal = new ModalBuilder().setCustomId(`painel:modal:medida:negarjuiz:${numero}`).setTitle('Negar provimento — fundamentação');
-    modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação do Juízo').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
-    ));
-    return interaction.showModal(modal);
+    return interaction.showModal(modalFundamentacao(`painel:modal:medida:negarjuiz:${numero}`, 'Negar provimento — fundamentação', 'Fundamentação do Juízo'));
   },
 
   async negarJuiz(interaction, numero, fundamentacaoOverride) {
