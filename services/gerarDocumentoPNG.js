@@ -82,6 +82,16 @@ const TEMPLATE_BASE = `
     margin-top: 60px;
     text-align: center;
   }
+  /* Nome de quem gerou o documento, renderizado como assinatura manuscrita acima da linha.
+     A assinatura é o próprio nome em fonte cursiva — não há upload de imagem. */
+  .assinatura .assinatura-nome {
+    font-family: 'Segoe Script', 'Brush Script MT', cursive;
+    font-style: italic;
+    font-size: 34px;
+    color: #14245a;
+    line-height: 1;
+    margin-bottom: 2px;
+  }
   .assinatura .linha {
     border-top: 1px solid #1a1a1a;
     width: 320px;
@@ -121,6 +131,7 @@ const TEMPLATE_BASE = `
   {{BLOCO_SECOES}}
 
   <div class="assinatura">
+    <div class="assinatura-nome">{{NOME_ASSINANTE}}</div>
     <div class="linha"></div>
     {{NOME_ASSINANTE}}<br>
     {{CARGO_ASSINANTE}}
@@ -372,7 +383,7 @@ async function gerarDocumentoPNG(dados) {
     .replace('{{TITULO_DOCUMENTO}}', () => tituloDocumento)
     .replace('{{DESTINATARIO}}', () => destinatario)
     .replace('{{BLOCO_SECOES}}', () => blocoSecoes)
-    .replace('{{NOME_ASSINANTE}}', () => nomeAssinante)
+    .replace(/\{\{NOME_ASSINANTE\}\}/g, () => nomeAssinante)
     .replace('{{CARGO_ASSINANTE}}', () => cargoAssinante)
     .replace(/\{\{NUMERO_PROCESSO\}\}/g, () => numeroProcesso)
     .replace(/\{\{DATA_EMISSAO\}\}/g, () => dataEmissao);
@@ -400,4 +411,46 @@ async function nomeExibicao(guild, discordId) {
   return membro ? membro.displayName : `Usuário ${discordId}`;
 }
 
-module.exports = { gerarDocumentoPNG, nomeExibicao, getBrowser };
+// ---- Carteirinha (identidade de advogado / OAB) ----
+// Reusa o MESMO browser Puppeteer do pipeline de documentos (getBrowser) — não sobe outro.
+// Renderiza o template compartilhado carteirinha_template.html e captura só o elemento .card
+// (1013×639) em deviceScaleFactor 2 → PNG final 2026×1278.
+const CARTEIRINHA_TEMPLATE_PATH = path.join(__dirname, '..', 'assets', 'carteirinha_template.html');
+let carteirinhaTemplateCache = null;
+
+function getCarteirinhaTemplate() {
+  if (carteirinhaTemplateCache === null) {
+    carteirinhaTemplateCache = fs.readFileSync(CARTEIRINHA_TEMPLATE_PATH, 'utf-8');
+  }
+  return carteirinhaTemplateCache;
+}
+
+/**
+ * Gera a carteirinha da OAB em PNG.
+ * @param {Object} dados
+ * @param {string} dados.nome - nome do advogado (vai em NOME e na assinatura do cartão)
+ * @param {string} dados.rg
+ * @param {string} dados.oab - número já formatado (ex: "000.001")
+ * @param {string} dados.data - data de inscrição dd/mm/aaaa
+ * @returns {Promise<Buffer>} PNG buffer
+ */
+async function gerarCarteirinhaPNG({ nome, rg, oab, data }) {
+  // escapeHtml em todos os campos: são texto livre do usuário e entrariam crus no HTML.
+  const html = getCarteirinhaTemplate()
+    .replace(/\{\{NOME\}\}/g, () => escapeHtml(nome))
+    .replace(/\{\{RG\}\}/g, () => escapeHtml(rg))
+    .replace(/\{\{OAB\}\}/g, () => escapeHtml(oab))
+    .replace(/\{\{DATA\}\}/g, () => escapeHtml(data));
+
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  // deviceScaleFactor 2 = dobro da densidade → cartão nítido (2026×1278 no PNG final).
+  await page.setViewport({ width: 1013, height: 639, deviceScaleFactor: 2 });
+  await page.setContent(html, { waitUntil: 'networkidle0' });
+  const card = await page.$('.card');
+  const buffer = await card.screenshot({ type: 'png' });
+  await page.close();
+  return buffer;
+}
+
+module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, nomeExibicao, getBrowser };

@@ -1,6 +1,6 @@
 const {
   SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
+  StringSelectMenuBuilder, UserSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const rh = require('../utils/rh');
 const { isAdmin, isSuperStaff } = require('../utils/permissoes');
@@ -8,6 +8,7 @@ const config = require('../config');
 const auditoria = require('../utils/auditoria');
 const db = require('../database/db');
 const { truncar } = require('../utils/texto');
+const carteirinha = require('../utils/carteirinha');
 
 // Título que vai na frente do apelido quando o cargo é aprovado (ex: "Juiz Fulano").
 // Desembargador abrevia pra caber no limite de 32 caracteres do apelido do Discord.
@@ -41,10 +42,10 @@ async function aplicarApelido(membro, cargo, nomePersonagem) {
   return membro.setNickname(apelido).then(() => true).catch(() => false);
 }
 
-async function contratarComRole(guild, usuarioId, cargo, executorId = null, nomePersonagem = null) {
+async function contratarComRole(guild, usuarioId, cargo, executorId = null, nomePersonagem = null, rg = null) {
   // Captura o cargo ATIVO anterior antes de contratar (rh.contratar desativa o registro antigo).
   const anterior = rh.getCargo(usuarioId);
-  rh.contratar(usuarioId, cargo, nomePersonagem);
+  rh.contratar(usuarioId, cargo, nomePersonagem, rg);
   const membro = await guild.members.fetch(usuarioId).catch(() => null);
   const roleId = roleIdPorCargo(cargo);
   if (membro) {
@@ -57,10 +58,17 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
     if (roleId) await membro.roles.add(roleId).catch(() => {});
   }
   const apelidoOk = nomePersonagem ? await aplicarApelido(membro, cargo, nomePersonagem) : null;
+  // Advogado: gera a OAB (se ainda não tiver) e emite a carteirinha na DM. Falha de render/DM é
+  // logada dentro de emitirCarteirinha e não interrompe a contratação.
+  let carteira = null;
+  if (cargo === 'Advogado') {
+    carteira = await carteirinha.emitirCarteirinha(guild, usuarioId)
+      .catch(err => { console.error('[rh] falha ao emitir carteirinha:', err.message); return null; });
+  }
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: contratação', executorId, referencia: `<@${usuarioId}> → ${cargo}${nomePersonagem ? ` ("${nomePersonagem}")` : ''}` });
   }
-  return { apelidoOk };
+  return { apelidoOk, carteira };
 }
 
 async function demitirComRole(guild, usuarioId, executorId = null) {
@@ -96,10 +104,17 @@ function modalSolicitacao(cargo) {
   const modal = new ModalBuilder()
     .setCustomId(`painel:modal:cargo:solicitar:${cargo}`)
     .setTitle(`Solicitar cargo — ${cargo}`.slice(0, 45));
-  modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('nome').setLabel('Nome do seu personagem')
-      .setPlaceholder('Ex: Ricardo Fernandes').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30),
-  ));
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('nome').setLabel('Nome do seu personagem')
+        .setPlaceholder('Ex: Ricardo Fernandes').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30),
+    ),
+    // RG obrigatório pra TODOS os cargos pedidos por este formulário (Update 2).
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('rg').setLabel('RG do personagem')
+        .setPlaceholder('Ex: 12.345.678-9').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(20),
+    ),
+  );
   return modal;
 }
 
@@ -111,7 +126,9 @@ async function solicitarCargo(interaction, cargo) {
     return interaction.reply({ content: `O cargo **${cargo}** não pode ser solicitado por autoatendimento — é atribuído diretamente pela Staff (\`/rh contratar\`). Fale com a Staff.`, ephemeral: true });
   }
   const nome = interaction.fields.getTextInputValue('nome').trim();
+  const rg = interaction.fields.getTextInputValue('rg').trim();
   if (!nome) return interaction.reply({ content: 'Informe o nome do personagem.', ephemeral: true });
+  if (!rg) return interaction.reply({ content: 'Informe o RG do personagem.', ephemeral: true });
 
   // Uma solicitação pendente por vez, pra não encher a staff de pedidos repetidos.
   const pendente = db.buscarUm('solicitacoesCargo', s => s.discordId === interaction.user.id && s.status === 'Pendente');
@@ -120,7 +137,7 @@ async function solicitarCargo(interaction, cargo) {
   }
 
   const sol = db.inserir('solicitacoesCargo', {
-    discordId: interaction.user.id, cargo, nomePersonagem: nome,
+    discordId: interaction.user.id, cargo, nomePersonagem: nome, rg,
     status: 'Pendente', criadoEm: new Date().toISOString(),
   });
 
@@ -131,6 +148,7 @@ async function solicitarCargo(interaction, cargo) {
       { name: 'Solicitante', value: `<@${interaction.user.id}>`, inline: true },
       { name: 'Cargo pedido', value: cargo, inline: true },
       { name: 'Nome do personagem', value: nome },
+      { name: 'RG', value: rg, inline: true },
     )
     .setFooter({ text: `Solicitação #${sol.id}` });
 
@@ -174,9 +192,9 @@ async function decidirSolicitacao(interaction, id, aprovar) {
     status: aprovar ? 'Aprovada' : 'Negada', decididoPor: interaction.user.id, decididoEm: new Date().toISOString(),
   });
 
-  let apelidoOk = null;
+  let apelidoOk = null, carteira = null;
   if (aprovar) {
-    ({ apelidoOk } = await contratarComRole(interaction.guild, sol.discordId, sol.cargo, interaction.user.id, sol.nomePersonagem));
+    ({ apelidoOk, carteira } = await contratarComRole(interaction.guild, sol.discordId, sol.cargo, interaction.user.id, sol.nomePersonagem, sol.rg));
   }
 
   const membro = await interaction.guild.members.fetch(sol.discordId).catch(() => null);
@@ -199,8 +217,12 @@ async function decidirSolicitacao(interaction, id, aprovar) {
     const aviso = apelidoOk === false
       ? '\n⚠️ O cargo foi dado, mas **não consegui trocar o apelido** — verifique se o cargo do bot está **acima** do cargo dado na hierarquia e se ele tem a permissão "Gerenciar Apelidos". Ajuste o apelido na mão.'
       : '';
+    // Advogado: informa a OAB emitida e se a carteirinha chegou na DM.
+    const notaCarteira = (carteira && carteira.ok)
+      ? `\n🪪 OAB **${carteira.oab}** emitida${carteira.dmOk ? ' — carteirinha enviada na DM.' : ' — **DM fechada**, não consegui enviar a carteirinha (use `/gerar-carteirinhas` depois).'}`
+      : '';
     return interaction.followUp({
-      content: `✅ <@${sol.discordId}> agora é **${sol.cargo}** — apelido: \`${TITULO[sol.cargo] || sol.cargo} ${sol.nomePersonagem}\`.${aviso}`,
+      content: `✅ <@${sol.discordId}> agora é **${sol.cargo}** — apelido: \`${TITULO[sol.cargo] || sol.cargo} ${sol.nomePersonagem}\`.${aviso}${notaCarteira}`,
       ephemeral: true,
     });
   }
@@ -289,6 +311,89 @@ async function mostrarFichaFuncional(interaction) {
   return interaction.reply({ embeds: [fichaFuncional()], ephemeral: true });
 }
 
+// ---- Gerenciar dados (global, Staff/Admin) — Update 3 ----
+// Edita, por usuário, o cadastro jurídico (nome do personagem, RG e OAB). Ao mudar nome/RG/OAB de
+// um Advogado, regenera e reenvia a carteirinha na DM. Log via auditoria. Não mexe em cargos nem
+// no apelido/roles do membro — só nos DADOS do cadastro. Fluxo botão→user-select→modal.
+function podeGerenciarDados(interaction) {
+  return isAdmin(interaction) || isSuperStaff(interaction);
+}
+
+async function abrirGerenciarDados(interaction) {
+  if (!podeGerenciarDados(interaction)) {
+    return interaction.reply({ content: 'Só Staff/Administração pode gerenciar dados.', ephemeral: true });
+  }
+  const row = new ActionRowBuilder().addComponents(
+    new UserSelectMenuBuilder().setCustomId('painel:userselect:dados:usuario').setPlaceholder('Selecione a pessoa'),
+  );
+  return interaction.reply({ content: '⚙️ **Gerenciar dados** — escolha de quem editar nome / RG / OAB:', components: [row], ephemeral: true });
+}
+
+async function abrirModalGerenciarDados(interaction, usuarioId) {
+  if (!podeGerenciarDados(interaction)) {
+    return interaction.reply({ content: 'Só Staff/Administração pode gerenciar dados.', ephemeral: true });
+  }
+  const reg = rh.getCargo(usuarioId);
+  if (!reg) {
+    return interaction.reply({ content: `<@${usuarioId}> não tem cadastro jurídico ativo — não há nome/RG/OAB pra editar.`, ephemeral: true });
+  }
+  const modal = new ModalBuilder().setCustomId(`painel:modal:dados:editar:${usuarioId}`).setTitle('Editar dados');
+  const campoNome = new TextInputBuilder().setCustomId('nome').setLabel('Nome do personagem').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30);
+  if (reg.nomePersonagem) campoNome.setValue(reg.nomePersonagem);
+  const campoRg = new TextInputBuilder().setCustomId('rg').setLabel('RG').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(20);
+  if (reg.rg) campoRg.setValue(reg.rg);
+  const campoOab = new TextInputBuilder().setCustomId('oab').setLabel('OAB (só advogado) — formato 000.000').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(10);
+  if (reg.oab) campoOab.setValue(reg.oab);
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(campoNome),
+    new ActionRowBuilder().addComponents(campoRg),
+    new ActionRowBuilder().addComponents(campoOab),
+  );
+  return interaction.showModal(modal);
+}
+
+async function salvarGerenciarDados(interaction, usuarioId) {
+  if (!podeGerenciarDados(interaction)) {
+    return interaction.reply({ content: 'Só Staff/Administração pode gerenciar dados.', ephemeral: true });
+  }
+  const reg = rh.getCargo(usuarioId);
+  if (!reg) return interaction.reply({ content: `<@${usuarioId}> não tem cadastro jurídico ativo.`, ephemeral: true });
+
+  const nome = (interaction.fields.getTextInputValue('nome') || '').trim();
+  const rg = (interaction.fields.getTextInputValue('rg') || '').trim();
+  const oab = (interaction.fields.getTextInputValue('oab') || '').trim();
+  if (!nome) return interaction.reply({ content: 'O nome não pode ficar vazio.', ephemeral: true });
+  if (!rg) return interaction.reply({ content: 'O RG não pode ficar vazio.', ephemeral: true });
+
+  const antes = { nome: reg.nomePersonagem || '—', rg: reg.rg || '—', oab: reg.oab || '—' };
+  const patch = {};
+  if (nome !== (reg.nomePersonagem || '')) patch.nomePersonagem = nome;
+  if (rg !== (reg.rg || '')) patch.rg = rg;
+  if (oab !== (reg.oab || '')) patch.oab = oab || null;
+  if (!Object.keys(patch).length) {
+    return interaction.reply({ content: 'Nada mudou — os valores são iguais aos atuais.', ephemeral: true });
+  }
+  rh.atualizarDados(usuarioId, patch);
+
+  await auditoria.registrar(interaction.guild, {
+    acao: 'Edição de dados (global)', executorId: interaction.user.id,
+    referencia: `<@${usuarioId}>: ` + [
+      patch.nomePersonagem !== undefined ? `nome "${antes.nome}" → "${nome}"` : null,
+      patch.rg !== undefined ? `RG "${antes.rg}" → "${rg}"` : null,
+      patch.oab !== undefined ? `OAB "${antes.oab}" → "${oab || '—'}"` : null,
+    ].filter(Boolean).join(' · '),
+  });
+
+  // Advogado com mudança que aparece na carteirinha (nome/RG/OAB) → regenera e reenvia na DM.
+  let notaCarteira = '';
+  if (reg.cargo === 'Advogado') {
+    const r = await carteirinha.emitirCarteirinha(interaction.guild, usuarioId).catch(() => null);
+    if (r && r.ok) notaCarteira = `\n🪪 Carteirinha regenerada (OAB ${r.oab})${r.dmOk ? ' e reenviada na DM.' : ' — DM fechada, não consegui enviar.'}`;
+  }
+
+  return interaction.reply({ content: `✅ Dados de <@${usuarioId}> atualizados.${notaCarteira}`, ephemeral: true });
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('rh')
@@ -359,4 +464,7 @@ module.exports = {
   aprovarSolicitacao,
   negarSolicitacao,
   mostrarFichaFuncional,
+  abrirGerenciarDados,
+  abrirModalGerenciarDados,
+  salvarGerenciarDados,
 };

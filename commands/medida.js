@@ -684,7 +684,8 @@ module.exports = {
     if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
     const medidaAtualizada = db.buscarPorNumero('medidas', numero);
 
-    const nomeJuiz = await documentoPng.nomeExibicao(interaction.guild, medida.juiz);
+    // Assinatura = quem clicou (o Juiz que referenda a medida, ou superstaff no lugar dele).
+    const nomeAssinante = await documentoPng.nomeExibicao(interaction.guild, interaction.user.id);
     const pngMandado = await documentoPng.gerarDocumentoPNG({
       tipoDocumento: 'mandado_generico',
       orgaoEmissor: 'judiciario',
@@ -699,7 +700,7 @@ module.exports = {
         `Fundamentação do Juízo:\n${fundamentacaoJuiz}`,
         ...(medida.codigoExterno ? ['', `Pedido advindo do Inquérito Policial nº ${medida.codigoExterno}.`] : []),
       ].join('\n'),
-      nomeAssinante: nomeJuiz,
+      nomeAssinante,
       cargoAssinante: 'Juiz de Direito',
     }).catch(err => { console.error('Falha ao gerar PNG do mandado:', err.message); return null; });
 

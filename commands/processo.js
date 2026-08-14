@@ -1213,12 +1213,13 @@ async function intimarReu(interaction, numero) {
 
   const corpoComCodigo = documentos.corpoIntimacaoReu(codigo);
 
-  const nomeJuiz = await documentoPng.nomeExibicao(interaction.guild, processo.juiz);
+  // Assinatura = quem clicou (o Juiz do processo, ou superstaff no lugar dele).
+  const nomeAssinante = await documentoPng.nomeExibicao(interaction.guild, interaction.user.id);
   const png = await documentoPng.gerarDocumentoPNG({
     tipoDocumento: 'intimacao', orgaoEmissor: 'judiciario',
     subunidade: 'Comarca de São Paulo — Vara Criminal',
     tituloDocumento: 'INTIMAÇÃO DO RÉU', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),
-    destinatario: processo.reuNome || 'Réu(s)', corpoTexto: corpoComCodigo, nomeAssinante: nomeJuiz, cargoAssinante: 'Juiz de Direito',
+    destinatario: processo.reuNome || 'Réu(s)', corpoTexto: corpoComCodigo, nomeAssinante, cargoAssinante: 'Juiz de Direito',
   }).catch(err => { console.error('Falha ao gerar PNG da intimação do réu:', err.message); return null; });
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
@@ -1809,19 +1810,20 @@ function selectTeorIntimacao(customId) {
 
 // Reaproveitada tanto pelo fluxo genérico (abaixo) quanto por emitirIntimacao (citação/intimação
 // clássica) — mesmo PNG, mesmo texto formal, só muda de onde vêm destinatário e teor.
-async function postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId, destinatarioNome, teor }) {
+async function postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId, destinatarioNome, teor, assinanteId = null }) {
   const canal = await guild.channels.fetch(processo.canalId).catch(() => null);
   if (!canal) return null;
 
-  const [nomeDestinatario, nomeJuiz] = await Promise.all([
+  // Assinatura = quem clicou/emitiu (assinanteId); em fluxo automático (sem clique) cai no Juiz do processo.
+  const [nomeDestinatario, nomeAssinante] = await Promise.all([
     destinatarioId ? documentoPng.nomeExibicao(guild, destinatarioId) : Promise.resolve(destinatarioNome || 'Destinatário'),
-    documentoPng.nomeExibicao(guild, processo.juiz),
+    documentoPng.nomeExibicao(guild, assinanteId || processo.juiz),
   ]);
   const pngIntimacao = await documentoPng.gerarDocumentoPNG({
     tipoDocumento: 'intimacao', orgaoEmissor: 'judiciario',
     subunidade: processo.tipo === 'Penal' ? 'Comarca de São Paulo — Vara Criminal' : 'Comarca de São Paulo — Vara Cível',
     tituloDocumento: 'INTIMAÇÃO', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),
-    destinatario: nomeDestinatario, corpoTexto: teor, nomeAssinante: nomeJuiz, cargoAssinante: 'Juiz de Direito',
+    destinatario: nomeDestinatario, corpoTexto: teor, nomeAssinante, cargoAssinante: 'Juiz de Direito',
   }).catch(err => { console.error('Falha ao gerar PNG da intimação:', err.message); return null; });
 
   await canal.send({
@@ -1899,7 +1901,7 @@ async function confirmarIntimacaoGenerica(interaction, chave) {
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com a intimação sendo emitida com sucesso.
   await interaction.deferReply({ ephemeral: true });
-  await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: parte?.discordId || null, destinatarioNome: parte?.nome || null, teor });
+  await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: parte?.discordId || null, destinatarioNome: parte?.nome || null, teor, assinanteId: interaction.user.id });
 
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'intimacao_emitida', titulo: '✉️ Intimação emitida',
@@ -1948,7 +1950,7 @@ async function emitirIntimacao(interaction, numero) {
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com a intimação/citação sendo emitida com sucesso.
   await interaction.deferReply({ ephemeral: true });
-  const canal = await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: destId, destinatarioNome, teor });
+  const canal = await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: destId, destinatarioNome, teor, assinanteId: interaction.user.id });
 
   let prazoContestacaoAte = null;
   if (ehCitacaoCivil) {
@@ -2437,7 +2439,7 @@ async function intimarDefesaSobreCrimeNovo(guild, processo, crimesNovos, executo
   const teor = documentos.teorIntimacaoCrimeTardio(nomes);
   const habilitados = (processo.habilitacoes || []).filter(h => h.status === 'Aprovado');
   for (const h of habilitados) {
-    await postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId: h.advogadoId, destinatarioNome: null, teor });
+    await postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId: h.advogadoId, destinatarioNome: null, teor, assinanteId: executorId });
   }
   await andamentos.registrar(guild, numero, {
     tipo: 'intimacao_emitida', titulo: '✉️ Defesa intimada (crime acrescentado)',
@@ -3205,7 +3207,8 @@ async function executarSentenca(interaction, numero, modo) {
   db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaPorCrime: sentencaPorCrime || null, sentencaEm: new Date().toISOString() });
 
   const processo = db.buscarPorNumero('processos', numero);
-  const nomeJuiz = await documentoPng.nomeExibicao(interaction.guild, processo.juiz);
+  // Assinatura = quem clicou (o Juiz do processo, ou superstaff no lugar dele).
+  const nomeAssinante = await documentoPng.nomeExibicao(interaction.guild, interaction.user.id);
   const nomeReu = processo.reuNome || (
     (processo.reus || []).length
       ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(interaction.guild, id)))).join(' e ')
@@ -3227,7 +3230,7 @@ async function executarSentenca(interaction, numero, modo) {
     subunidade: processo.tipo === 'Penal' ? 'Comarca de São Paulo — Vara Criminal' : 'Comarca de São Paulo — Vara Cível',
     tituloDocumento: 'SENTENÇA', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),
     destinatario: processo.tipo === 'Penal' ? 'Réu(s)' : 'Autor e Réu(s)', corpoTexto: texto,
-    nomeReu, nomeAutor, crimeDescricao, pena, regime, nomeAssinante: nomeJuiz, cargoAssinante: 'Juiz de Direito',
+    nomeReu, nomeAutor, crimeDescricao, pena, regime, nomeAssinante, cargoAssinante: 'Juiz de Direito',
   }).catch(err => { console.error('Falha ao gerar PNG da sentença:', err.message); return null; });
 
   const msgSentenca = await interaction.editReply({

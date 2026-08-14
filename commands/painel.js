@@ -99,6 +99,7 @@ function botoesMenuPrincipal(interaction) {
       botaoSe(true, 'painel:acao:pessoal:pendencias', '📌 Minhas pendências', ButtonStyle.Secondary),
       botaoSe(true, 'painel:acao:cargo:solicitar', '🪪 Solicitar cargo', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:menu:rh', '👥 RH', ButtonStyle.Secondary),
+      botaoSe(staff, 'painel:acao:dados:gerenciar', '🪪 Gerenciar dados', ButtonStyle.Secondary),
     ),
     // Preferência pessoal: quando LIGADA, a IA já revisa e publica a fundamentação sozinha (sem a
     // tela de "Revisar/Publicar"). Rótulo reflete o estado atual de quem abriu o painel.
@@ -639,6 +640,11 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'ficha') return rhCmd.mostrarFichaFuncional(interaction);
   }
 
+  // Update 3 — Gerenciar dados (global): botão → user-select → modal (nome/RG/OAB).
+  if (modulo === 'dados') {
+    if (acao === 'gerenciar') return rhCmd.abrirGerenciarDados(interaction);
+  }
+
   if (modulo === 'sentenca') {
     if (acao === 'revisar') return processoCmd.revisarSentencaTexto(interaction, extra);
     if (acao === 'publicar') return processoCmd.publicarSentenca(interaction, extra);
@@ -1101,6 +1107,11 @@ async function tratarUserSelect(interaction, modulo, campo) {
     const embed = new EmbedBuilder().setDescription(`O que fazer com <@${usuarioId}>?`);
     return interaction.update({ embeds: [embed], components: [row, botaoVoltar()] });
   }
+
+  // Update 3 — escolheu de quem editar os dados → abre o modal (nome/RG/OAB).
+  if (modulo === 'dados' && campo === 'usuario') {
+    return rhCmd.abrirModalGerenciarDados(interaction, usuarioId);
+  }
 }
 
 // ---- Envio dos modais ----
@@ -1163,6 +1174,11 @@ async function tratarModal(interaction, modulo, acao, extra) {
   // pendente e manda pro canal da staff. `acao` aqui é 'solicitar', `extra` é o cargo escolhido.
   if (modulo === 'cargo' && acao === 'solicitar') {
     return rhCmd.solicitarCargo(interaction, extra);
+  }
+
+  // Update 3 — submit do modal de edição global de dados (nome/RG/OAB). `extra` = usuarioId.
+  if (modulo === 'dados' && acao === 'editar') {
+    return rhCmd.salvarGerenciarDados(interaction, extra);
   }
 
   if (modulo === 'processo' && acao === 'partetardia') {

@@ -12,13 +12,27 @@ function temCargo(discordId, cargo) {
   return !!r && r.cargo === cargo;
 }
 
-function contratar(discordId, cargo, nomePersonagem = null) {
+function contratar(discordId, cargo, nomePersonagem = null, rg = null) {
   // desativa cadastro anterior (se houver) e cria um novo
   const dados = db.buscarUm('rh', r => r.discordId === discordId && r.ativo);
   if (dados) db.atualizarPorFiltro('rh', r => r.discordId === discordId && r.ativo, { ativo: false });
   // nomePersonagem: guardado aqui pra alimentar a ficha funcional do judiciário (Parte 6) e
   // pra montar o apelido "Cargo Nome" no auto-atendimento de contratação (commands/rh.js).
-  return db.inserir('rh', { discordId, cargo, ativo: true, licenca: false, nomePersonagem: nomePersonagem || (dados && dados.nomePersonagem) || null });
+  // rg/oab/oabDesde acompanham a pessoa entre trocas de cargo (ex.: promover Advogado→Juiz não
+  // apaga a OAB dele), sempre preservando o que já existia quando o novo valor não é informado.
+  return db.inserir('rh', {
+    discordId, cargo, ativo: true, licenca: false,
+    nomePersonagem: nomePersonagem || (dados && dados.nomePersonagem) || null,
+    rg: rg || (dados && dados.rg) || null,
+    oab: (dados && dados.oab) || null,
+    oabDesde: (dados && dados.oabDesde) || null,
+  });
+}
+
+// Atualiza campos do cadastro ATIVO da pessoa (nome/rg/oab/oabDesde). Usado pela emissão de
+// carteirinha (grava a OAB gerada) e pela edição administrativa global (Gerenciar dados).
+function atualizarDados(discordId, campos) {
+  return db.atualizarPorFiltro('rh', r => r.discordId === discordId && r.ativo, campos);
 }
 
 function demitir(discordId) {
@@ -62,4 +76,4 @@ function sortearPorCargo(cargo, { excluirIds = [] } = {}) {
   return ativos[Math.floor(Math.random() * ativos.length)].discordId;
 }
 
-module.exports = { CARGOS, getCargo, temCargo, contratar, demitir, setLicenca, listarPorCargo, sortearJuiz, sortearPorCargo };
+module.exports = { CARGOS, getCargo, temCargo, contratar, atualizarDados, demitir, setLicenca, listarPorCargo, sortearJuiz, sortearPorCargo };

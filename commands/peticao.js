@@ -681,9 +681,10 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
       // Diligência agora é uma intimação formal de verdade — o Juiz aponta exatamente o que
       // falta, e o texto já deixa claro o prazo e a consequência (indeferimento automático em
       // 24h, ver utils/prazos.js), em vez de um embed genérico "está incompleto".
-      const [nomeRequerente, nomeJuiz] = await Promise.all([
+      // Assinatura = quem decidiu (executorId, quem clicou); em decisão automática (sem clique) cai no Juiz da petição.
+      const [nomeRequerente, nomeAssinante] = await Promise.all([
         documentoPng.nomeExibicao(guild, peticao.requerenteId),
-        documentoPng.nomeExibicao(guild, peticao.juiz),
+        documentoPng.nomeExibicao(guild, executorId || peticao.juiz),
       ]);
       const pngIntimacao = await documentoPng.gerarDocumentoPNG({
         tipoDocumento: 'intimacao',
@@ -699,7 +700,7 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
           'Prazo: 24 (vinte e quatro) horas, contadas desta intimação.',
           'Consequência do não atendimento: indeferimento automático do pedido, por ausência de comprovação.',
         ].join('\n'),
-        nomeAssinante: nomeJuiz,
+        nomeAssinante,
         cargoAssinante: 'Juiz de Direito',
       }).catch(err => { console.error('Falha ao gerar PNG da intimação:', err.message); return null; });
 
@@ -720,7 +721,8 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
       });
     } else {
       // Deferido/Indeferido: mesma sentença formal e padrão pros três tipos de petição.
-      const nomeJuiz = await documentoPng.nomeExibicao(guild, peticao.juiz);
+      // Assinatura = quem decidiu (executorId, quem clicou); decisão automática cai no Juiz da petição.
+      const nomeAssinante = await documentoPng.nomeExibicao(guild, executorId || peticao.juiz);
       const pngSentencaPeticao = await documentoPng.gerarDocumentoPNG({
         orgaoEmissor: 'judiciario',
         subunidade: 'Comarca de São Paulo — Vara Única',
@@ -729,7 +731,7 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
         dataEmissao: documentos.dataExtenso(),
         destinatario: peticao.nomeCliente || peticao.nomeNovo || 'Requerente',
         corpoTexto: `Resultado: ${status}\n\n${extras.motivo || '—'}`,
-        nomeAssinante: nomeJuiz,
+        nomeAssinante,
         cargoAssinante: 'Juiz de Direito',
       }).catch(err => { console.error('Falha ao gerar PNG da sentença de petição:', err.message); return null; });
 

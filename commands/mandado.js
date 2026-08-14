@@ -162,13 +162,14 @@ async function emitirMandadoNoProcesso({ guild, processo, tipoRotulo, teor, emit
     tipo: tipoRotulo, alvo: alvoTexto, status: 'Emitido', emitidoPor: emitidoPorId, cumpridoPor: null,
   });
 
-  const nomeJuiz = await documentoPng.nomeExibicao(guild, processo.juiz);
+  // Assinatura = quem gerou o documento (quem clicou/emitiu), não o titular fixo do processo.
+  const nomeAssinante = await documentoPng.nomeExibicao(guild, emitidoPorId);
   const pngMandado = await documentoPng.gerarDocumentoPNG({
     tipoDocumento: 'mandado_generico', orgaoEmissor: 'judiciario',
     subunidade: 'Comarca de São Paulo — Vara Criminal',
     tituloDocumento: `MANDADO DE ${tipoRotulo.toUpperCase()}`,
     numeroProcesso: numeroMandado, dataEmissao: documentos.dataExtenso(),
-    destinatario: alvoTexto, corpoTexto: teor, nomeAssinante: nomeJuiz, cargoAssinante: 'Juiz de Direito',
+    destinatario: alvoTexto, corpoTexto: teor, nomeAssinante, cargoAssinante: 'Juiz de Direito',
   }).catch(err => { console.error('Falha ao gerar PNG do mandado:', err.message); return null; });
 
   const canal = await guild.channels.fetch(processo.canalId).catch(() => null);

@@ -1,0 +1,64 @@
+
+<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+*{margin:0;padding:0;box-sizing:border-box;}
+.card{width:1013px;height:639px;position:relative;overflow:hidden;border-radius:16px;
+  font-family:Arial,Helvetica,sans-serif;color:#111;background:#fff;border:1px solid #d8b8bc;}
+.card::before{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(45deg,rgba(179,30,45,.10) 0 1px,transparent 1px 7px),
+             repeating-linear-gradient(-45deg,rgba(179,30,45,.06) 0 1px,transparent 1px 9px);}
+.rblock{position:absolute;top:0;right:0;width:150px;height:100%;
+  background:repeating-linear-gradient(45deg,#b31e2d 0 2px,#e58a93 2px 6px);opacity:.5;
+  -webkit-mask:linear-gradient(90deg,transparent,#000 60%);mask:linear-gradient(90deg,transparent,#000 60%);}
+.wrap{position:relative;padding:22px 26px;height:100%;}
+.head{display:flex;align-items:flex-start;gap:16px;}
+.emblem{width:92px;height:92px;flex:0 0 92px;}
+.head .tt{color:#c0121f;font-size:30px;font-weight:800;letter-spacing:.5px;line-height:1;}
+.head .s1{font-size:14px;font-weight:700;color:#222;margin-top:5px;letter-spacing:.5px;}
+.head .s2{font-size:13px;font-weight:700;color:#222;letter-spacing:.5px;}
+.insc{position:absolute;left:20px;top:300px;transform:rotate(-90deg);transform-origin:left top;
+  font-size:12px;font-weight:700;letter-spacing:3px;color:#333;}
+.insc-val{position:absolute;left:48px;top:250px;width:120px;text-align:center;
+  font-size:26px;font-weight:800;color:#111;border-bottom:1.5px solid #bbb;padding-bottom:3px;}
+.fields{position:absolute;left:210px;right:60px;top:170px;}
+.f{margin-bottom:26px;}
+.f .lab{font-size:12px;letter-spacing:2px;color:#3a3a3a;font-weight:700;margin-bottom:2px;}
+.f .val{font-size:26px;font-weight:800;color:#111;}
+.seal{position:absolute;left:26px;bottom:24px;width:56px;height:56px;}
+.sign{position:absolute;right:44px;bottom:34px;text-align:center;width:320px;}
+.sign .name{font-family:'Segoe Script','Brush Script MT',cursive;font-style:italic;font-size:40px;color:#14245a;line-height:1;}
+.sign .line{border-top:1.5px solid #444;margin:3px 0 4px;}
+.sign .r{font-size:13px;font-weight:700;letter-spacing:2px;color:#222;}
+.foot{position:absolute;bottom:0;left:0;right:0;height:12px;
+  background:repeating-linear-gradient(90deg,#b31e2d 0 34px,#eabe73 34px 40px);}
+</style></head><body>
+<div class="card">
+  <div class="rblock"></div>
+  <div class="wrap">
+    <div class="head">
+      <svg class="emblem" viewBox="0 0 100 100">
+        <g stroke="#1b7a3a" stroke-width="3" fill="none"><path d="M50 8 C30 20 22 44 30 70"/><path d="M50 8 C70 20 78 44 70 70"/><path d="M34 66 q16 12 32 0"/></g>
+        <polygon points="50,20 58,42 82,42 63,56 70,80 50,65 30,80 37,56 18,42 42,42" fill="#f4d64e" stroke="#c9a227" stroke-width="1.5"/>
+        <circle cx="50" cy="50" r="15" fill="#1c4fb0" stroke="#0d2f78" stroke-width="2"/>
+        <circle cx="45" cy="47" r="1.6" fill="#fff"/><circle cx="54" cy="45" r="1.6" fill="#fff"/><circle cx="50" cy="54" r="1.6" fill="#fff"/><circle cx="57" cy="53" r="1.4" fill="#fff"/>
+        <rect x="48.5" y="60" width="3" height="18" fill="#9aa7b5"/>
+      </svg>
+      <div><div class="tt">ORDEM DOS ADVOGADOS DO BRASIL</div>
+        <div class="s1">CONSELHO SECCIONAL DE SÃO PAULO</div>
+        <div class="s2">IDENTIDADE DE ADVOGADO</div></div>
+    </div>
+
+    <div class="insc">INSCRIÇÃO</div>
+    <div class="insc-val">{{OAB}}</div>
+
+    <div class="fields">
+      <div class="f"><div class="lab">NOME</div><div class="val">{{NOME}}</div></div>
+      <div class="f"><div class="lab">RG</div><div class="val">{{RG}}</div></div>
+      <div class="f"><div class="lab">DATA DE INSCRIÇÃO</div><div class="val">{{DATA}}</div></div>
+    </div>
+
+    <svg class="seal" viewBox="0 0 60 60"><circle cx="30" cy="30" r="27" fill="none" stroke="#1b7a3a" stroke-width="3"/><path d="M30 14 a16 16 0 1 1 -14 8" fill="none" stroke="#1b7a3a" stroke-width="3"/><path d="M18 20 l-2 8 8 -1 z" fill="#1b7a3a"/></svg>
+    <div class="sign"><div class="name">{{NOME}}</div><div class="line"></div><div class="r">ASSINATURA DO TITULAR</div></div>
+    <div class="foot"></div>
+  </div>
+</div>
+</body></html>
