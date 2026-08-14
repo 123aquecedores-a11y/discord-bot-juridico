@@ -29,7 +29,7 @@ function historicoDoProcesso(numeroProcesso) {
 
   const eventos = andamentos.doProcesso(numeroProcesso).map(a => evento({ data: a.criadoEm, titulo: a.titulo, detalhe: a.detalhe }));
 
-  return { processo, medidaOrigem: null, eventos };
+  return { processo, eventos };
 }
 
 module.exports = { historicoDoProcesso };

@@ -111,23 +111,14 @@ function botoesDenuncia(numero) {
   );
 }
 
-// Modal final da sentença — extraído pra ser reaproveitado tanto pelo caminho direto
-// (Absolvido/Procedente/Improcedente, sem tela de apoio) quanto pelos botões "Continuar"/"Pular
-// sugestões" da tela de apoio à condenação (ver montarPainelSentencaPenal).
+// Modal final da sentença do caminho direto: absolvição penal e cível (procedente/improcedente),
+// sem tela de apoio. A condenação penal não passa por aqui — vai sempre pelo fluxo por-crime
+// (veredicto por crime → modalSentencaPorCrime), que é quem coleta pena e regime.
 function modalSentenca(numero, resultado) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:sentenca:${numero}#${resultado}`).setTitle('Sentença');
   modal.addComponents(new ActionRowBuilder().addComponents(
     new TextInputBuilder().setCustomId('texto').setLabel('Fundamentação e decisão').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
   ));
-  // Pena e regime só fazem sentido numa condenação — sentença absolutória e cível não têm
-  // esses dados, e o modal do Discord não tem como esconder campo depois de criado, só
-  // decide o conjunto de campos na hora de montar (resultado já é conhecido aqui).
-  if (resultado === 'Condenado') {
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pena').setLabel('Pena (ex: 6 anos de reclusão)').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('regime').setLabel('Regime inicial (ex: semiaberto)').setStyle(TextInputStyle.Short).setRequired(true)),
-    );
-  }
   return modal;
 }
 
@@ -323,11 +314,7 @@ async function executarParecerMp(interaction, numero, modo) {
       await canais.adicionarMembro(canal, juizId);
       const reusTxt = (processo.reus || []).map(id => `<@${id}>`).join(', ') || 'réu(s) a identificar';
       const msgPainel = await canal.send({
-        content: documentos.textoDespacho({
-          numero, tipo: processo.tipo, titulo: 'DESPACHO DE RECEBIMENTO DA DENÚNCIA',
-          texto: `Recebo a denúncia oferecida pelo Ministério Público em desfavor de ${reusTxt}. Distribuído por sorteio a <@${juizId}>. Cite-se o(s) réu(s) para instrução e julgamento.`,
-          autorId: interaction.user.id, cargoAutor: 'Promotor de Justiça',
-        }),
+        content: documentos.despachoRecebimentoDenuncia({ numero, tipo: processo.tipo, reusTxt, juizId, autorId: interaction.user.id }),
         components: montarPainelAcoes(db.buscarPorNumero('processos', numero)),
       });
       db.atualizar('processos', numero, { painelMsgId: msgPainel.id });
@@ -1003,11 +990,7 @@ async function decretarRevelia(interaction, numero) {
   const processoAtualizado = db.buscarPorNumero('processos', numero);
   const reusTxt = (processo.reus || []).map(id => `<@${id}>`).join(', ') || 'o(a) réu(ré)';
   await interaction.followUp({
-    content: documentos.textoDespacho({
-      numero, tipo: 'Civil', titulo: 'DECRETO DE REVELIA',
-      texto: `Decorrido o prazo de contestação sem manifestação de ${reusTxt}, decreto a revelia, nos termos do art. 344 do Código de Processo Civil. Processo concluso para julgamento.`,
-      autorId: interaction.user.id, cargoAutor: 'Juiz de Direito',
-    }),
+    content: documentos.despachoDecretoRevelia({ numero, reusTxt, autorId: interaction.user.id }),
     embeds: [embedProcesso(processoAtualizado)],
   });
 
@@ -1181,8 +1164,7 @@ async function intimarReu(interaction, numero) {
   const codigo = processo.codigoHabilitacao || gerarCodigoHabilitacao();
   if (!processo.codigoHabilitacao) db.atualizar('processos', numero, { codigoHabilitacao: codigo });
 
-  const teor = 'Fica o(a) réu(ré) INTIMADO(a) a constituir advogado para sua defesa nos autos deste processo, no prazo legal. Apresente esta via ao advogado que escolher — o código abaixo é necessário para a habilitação da defesa. Não havendo advogado constituído no prazo, o Juízo nomeará defensor dativo e o processo seguirá com defesa (ampla defesa assegurada).';
-  const corpoComCodigo = `${teor}\n\n=========================\nVIA DO RÉU — CÓDIGO DE HABILITAÇÃO DA DEFESA: ${codigo}\nEntregue este código ao seu advogado. Informar dados falsos ou tentar adivinhar o código é infração sujeita a sanção administrativa.`;
+  const corpoComCodigo = documentos.corpoIntimacaoReu(codigo);
 
   const nomeJuiz = await documentoPng.nomeExibicao(interaction.guild, processo.juiz);
   const png = await documentoPng.gerarDocumentoPNG({
@@ -1771,19 +1753,10 @@ function modalIntimacao(numero, { destinatarioId, destinatarioNome, teorPadrao }
 // GENÉRICO "Emitir intimação". O "Receber e intimar" da petição inicial civil (abaixo) continua
 // exatamente como sempre foi, com preenchimento automático próprio — não usa nada disto.
 
-const TEOR_PRESETS_INTIMACAO = {
-  depoimento: { label: 'Prestar depoimento como testemunha', texto: 'Fica Vossa Senhoria intimado(a) a comparecer para prestar depoimento como testemunha nos autos deste processo, em data e local a serem informados.' },
-  defesa: { label: 'Apresentar defesa', texto: 'Fica Vossa Senhoria intimado(a) a apresentar defesa nos autos deste processo, no prazo legal.' },
-  audiencia: { label: 'Comparecer à audiência', texto: 'Fica Vossa Senhoria intimado(a) a comparecer à audiência designada nos autos deste processo.' },
-  esclarecimentos: { label: 'Prestar esclarecimentos', texto: 'Fica Vossa Senhoria intimado(a) a comparecer para prestar esclarecimentos nos autos deste processo.' },
-  determinacao: { label: 'Cumprir determinação judicial', texto: 'Fica Vossa Senhoria intimado(a) a cumprir a determinação judicial constante nos autos deste processo.' },
-  outro: { label: 'Outro', texto: '' },
-};
-
 function selectTeorIntimacao(customId) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder('Qual o teor da intimação?')
-      .addOptions(Object.entries(TEOR_PRESETS_INTIMACAO).map(([value, { label }]) => ({ label, value }))),
+      .addOptions(Object.entries(documentos.TEOR_PRESETS_INTIMACAO).map(([value, { label }]) => ({ label, value }))),
   );
 }
 
@@ -1858,7 +1831,7 @@ async function confirmarDestinatarioForaIntimacao(interaction, numero) {
 
 async function processarSelecaoTeorIntimacao(interaction, chaveDestinatario) {
   const [numero, destinatarioRef] = chaveDestinatario.split('#');
-  const preset = TEOR_PRESETS_INTIMACAO[interaction.values[0]];
+  const preset = documentos.TEOR_PRESETS_INTIMACAO[interaction.values[0]];
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:intimargenerico:${numero}#${destinatarioRef}`).setTitle(`Intimação — ${preset.label}`.slice(0, 45));
   const campoTeor = new TextInputBuilder().setCustomId('teor').setLabel('Teor da intimação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000);
   if (preset.texto) campoTeor.setValue(preset.texto);
@@ -1900,7 +1873,7 @@ async function abrirModalReceberEIntimar(interaction, numero) {
   // Sem Discord, o réu ainda é conhecido por nome+RG (gravados na abertura) — vira a dica do campo
   // e o destinatário do documento, sem forçar o Juiz a arranjar um @ (Frente 5.2).
   const reuNomeRg = processo.reuNome ? `${processo.reuNome}${processo.reuRg ? ` (RG ${processo.reuRg})` : ''}` : null;
-  const teorPadrao = `Fica Vossa Senhoria citado(a) para, querendo, apresentar contestação no prazo de ${config.prazoContestacaoDias} dias corridos, contados desta citação, sob pena de revelia.`;
+  const teorPadrao = documentos.teorCitacao(config.prazoContestacaoDias);
   return interaction.showModal(modalIntimacao(numero, { destinatarioId: reuId, destinatarioNome: reuNomeRg, teorPadrao }));
 }
 
@@ -1978,11 +1951,7 @@ async function arquivarCivil(interaction, numero) {
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) {
     await canal.send({
-      content: documentos.textoDespacho({
-        numero, tipo: 'Civil', titulo: 'DESPACHO DE INDEFERIMENTO DA PETIÇÃO INICIAL',
-        texto: 'Analisados os requisitos de admissibilidade, INDEFIRO a petição inicial, ante a ausência de requisitos essenciais para o regular prosseguimento do feito, e determino o arquivamento.',
-        autorId: interaction.user.id, cargoAutor: 'Juiz(a) de Direito',
-      }),
+      content: documentos.despachoIndeferimentoInicial({ numero, autorId: interaction.user.id }),
     });
     await canais.arquivarCanal(canal);
   }
@@ -2418,7 +2387,7 @@ async function salvarAddCrime(interaction, numero) {
 async function intimarDefesaSobreCrimeNovo(guild, processo, crimesNovos, executorId) {
   const numero = processo.numero;
   const nomes = crimesNovos.map(c => crimeLabel(c)).join('; ');
-  const teor = `Fica a defesa INTIMADA a se manifestar, no prazo legal, sobre o(s) crime(s) acrescentado(s) à imputação: ${nomes}. Assegura-se o contraditório quanto a esta(s) imputação(ões) antes de qualquer julgamento a seu respeito.`;
+  const teor = documentos.teorIntimacaoCrimeTardio(nomes);
   const habilitados = (processo.habilitacoes || []).filter(h => h.status === 'Aprovado');
   for (const h of habilitados) {
     await postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId: h.advogadoId, destinatarioNome: null, teor });
@@ -3456,22 +3425,15 @@ module.exports = {
       return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processoAlvo.juiz}>.`, ephemeral: true });
     }
 
-    const textoDigitado = interaction.fields.getTextInputValue('texto');
-    // Pena/regime só vêm no modal quando o resultado é Condenado (ver painel.js, select de
-    // resultado) — getTextInputValue lançaria se o campo não existir nesse envio.
-    const pena = resultado === 'Condenado' ? interaction.fields.getTextInputValue('pena') : null;
-    const regime = resultado === 'Condenado' ? interaction.fields.getTextInputValue('regime') : null;
-
-    // Atenuantes marcadas na tela de apoio (se o Juiz passou por ela) — puramente qualitativo,
-    // só acrescenta a frase padrão no texto da sentença; nenhum cálculo de redução de pena.
-    const atenuantesSelecionadas = resultado === 'Condenado' ? rascunhoSentenca.obter(interaction.user.id, numero) : [];
-    const rotulosAtenuantes = labelsDe(atenuantesSelecionadas);
-    const texto = rotulosAtenuantes.length ? `${textoDigitado}\n\nAtenuada em razão de: ${rotulosAtenuantes.join(', ')}.` : textoDigitado;
+    const texto = interaction.fields.getTextInputValue('texto');
+    // Só chega aqui a absolvição penal e o cível (procedente/improcedente): sem pena, regime ou
+    // atenuantes. A condenação penal vai sempre pelo fluxo por-crime (modalSentencaPorCrime →
+    // salvarSentencaPorCrime), então `resultado` nunca é 'Condenado' neste handler.
     rascunhoSentenca.limpar(interaction.user.id, numero);
 
     // Em vez de publicar direto, guarda o rascunho e oferece a revisão por IA DENTRO do fluxo
     // dos Fundamentos (Discord não deixa botão dentro do modal, então é o passo logo após).
-    rascunhoDecisao.set(chaveDecisao(interaction.user.id, numero), { texto, pena, regime, resultado });
+    rascunhoDecisao.set(chaveDecisao(interaction.user.id, numero), { texto, pena: null, regime: null, resultado });
     // Revisão automática ligada: pula a tela de escolha e já publica o texto revisado pela IA.
     if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return executarSentenca(interaction, numero, 'auto');
     return interaction.reply(revisaoIA.telaEscolha('sentenca', { extra: numero, titulo: 'Fundamentos da sentença', texto }));
@@ -3510,10 +3472,8 @@ module.exports = {
 
   criarProcessoPenal,
   criarProcessoCivil,
-  vincularReu,
   modalSentenca,
   embedProcesso,
-  embedCapaPublica,
   processoPublico,
   temAcessoTotal,
   verProcesso,
@@ -3546,7 +3506,6 @@ module.exports = {
   abrirSelectTestemunha,
   processarSelecaoTestemunha,
   registrarDepoimentoHandler,
-  botoesJuiz,
   montarPainelAcoes,
   peticionar,
   decidirPeticao,
@@ -3571,11 +3530,9 @@ module.exports = {
   salvarSentencaPorCrime,
   intimarReu,
   marcarIntimacaoReuCumprida,
-  painelAtual,
   repostarPainel,
   pedirRevisaoArquivamento,
   abrirModalRecorrer,
-  criarApelacao,
   abrirSelecaoResultadoReforma,
   abrirModalFundamentacaoReforma,
   abrirModalFundamentacaoDecisao,

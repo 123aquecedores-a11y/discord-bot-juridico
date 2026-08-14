@@ -357,12 +357,10 @@ module.exports = {
 
   contratarComRole,
   demitirComRole,
-  aplicarApelido,
   selectCargoDesejado,
   modalSolicitacao,
   solicitarCargo,
   aprovarSolicitacao,
   negarSolicitacao,
-  fichaFuncional,
   mostrarFichaFuncional,
 };

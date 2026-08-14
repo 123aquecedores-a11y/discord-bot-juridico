@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../database/db');
 const config = require('../config');
-const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
+const { temCargo, isAdmin, isSuperStaff, papelInstitucional } = require('../utils/permissoes');
 const rh = require('../utils/rh');
 const crimes = require('../data/crimes.json');
 const { crimeLabel, buscarCrimes } = require('../utils/crimesTexto');
@@ -460,7 +460,7 @@ async function processarModalCertidaoLivre(interaction) {
   if (!certidoes.podeSolicitarCertidao(interaction)) {
     return interaction.reply({ content: 'Só Juiz, Promotor, Desembargador ou Procurador podem requisitar certidão.', ephemeral: true });
   }
-  const instituicao = certidoes.instituicaoDoSolicitante(interaction);
+  const instituicao = papelInstitucional(interaction);
   const resultado = await certidoes.solicitarCertidao({
     guild: interaction.guild,
     rg: interaction.fields.getTextInputValue('rg'),
@@ -986,7 +986,7 @@ async function tratarSelect(interaction, modulo, campo, extra) {
       guild: interaction.guild, processoNumero: numero, destinatario: inst.nome,
       assunto: preset.assunto, conteudo: preset.conteudo,
       emitidoPorId: interaction.user.id, emitidoPorTag: interaction.user.tag,
-      instituicao: oficioCmd.instituicaoDoEmissor(interaction), aguardaRetorno: true,
+      instituicao: papelInstitucional(interaction), aguardaRetorno: true,
     });
     if (resultado.erro) return interaction.followUp({ content: resultado.erro, ephemeral: true });
     return interaction.followUp({ content: `✅ ${preset.label} solicitada — ofício ${resultado.numero} expedido em ${resultado.canal}.`, ephemeral: true });
@@ -1209,7 +1209,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
       guild: interaction.guild, processoNumero: numero, destinatario,
       assunto: preset.assunto, conteudo: preset.conteudo,
       emitidoPorId: interaction.user.id, emitidoPorTag: interaction.user.tag,
-      instituicao: oficioCmd.instituicaoDoEmissor(interaction), aguardaRetorno: true,
+      instituicao: papelInstitucional(interaction), aguardaRetorno: true,
     });
     if (resultado.erro) return interaction.editReply({ content: resultado.erro });
     return interaction.editReply({ content: `✅ ${preset.label} solicitada — ofício ${resultado.numero} expedido em ${resultado.canal}.` });
@@ -1335,7 +1335,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
       conteudo: interaction.fields.getTextInputValue('conteudo'),
       emitidoPorId: interaction.user.id,
       emitidoPorTag: interaction.user.tag,
-      instituicao: oficioCmd.instituicaoDoEmissor(interaction),
+      instituicao: papelInstitucional(interaction),
     });
     if (resultado.erro) return interaction.editReply({ content: resultado.erro });
     return respostaSumindo(interaction, { content: `Ofício ${resultado.numero} expedido em ${resultado.canal}.` });

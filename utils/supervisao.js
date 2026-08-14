@@ -13,8 +13,8 @@ const { crimeLabel } = require('./crimesTexto');
 // processoCmd é requerido sob demanda (não no topo do arquivo) de propósito: processo.js -> medida.js
 // -> supervisao.js -> processo.js forma um ciclo, e um require no topo aqui pega o module.exports
 // de processo.js ainda incompleto (objeto vazio, dependendo da ordem em que os arquivos carregam
-// na inicialização), fazendo `processoCmd.botoesJuiz` virar undefined silenciosamente até alguém
-// clicar. Resolvendo dentro da função, o require só roda depois que todo o boot já terminou.
+// na inicialização), fazendo `processoCmd.montarPainelAcoes` virar undefined silenciosamente até
+// alguém clicar. Resolvendo dentro da função, o require só roda depois que todo o boot já terminou.
 
 // Botões clicados a partir de uma DM não têm interaction.guild (Discord não manda contexto de
 // servidor em interação de DM) — cai pro guild configurado, senão os cliques que chegam de

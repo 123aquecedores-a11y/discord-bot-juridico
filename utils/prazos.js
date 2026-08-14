@@ -158,15 +158,6 @@ async function verificarRenovacoesPorteArma(client) {
   }
 }
 
-// Frente 7: identidade do cliente = nome + RG e a petição é PROTOCOLADA já na abertura (não existe
-// mais o estado 'Aguardando vínculo' nem cancelamento por falta de vínculo de Discord). Este job
-// virou no-op — mantido só pra não quebrar o agendamento em index.js e por compatibilidade com
-// qualquer petição antiga que ainda estivesse nesse estado (o banco de produção foi zerado, então
-// não há nenhuma). Vincular o Discord do cliente passou a ser opcional e nunca cancela nada.
-async function verificarVinculosPendentes() {
-  return; // desativado na Frente 7
-}
-
 // Processo civil sem Juiz disponível na abertura ficava em "Aguardando sorteio de juiz" pra
 // sempre — nada nunca tentava sortear de novo. Roda junto do job frequente (10min): assim que
 // algum Juiz fica disponível, o processo é distribuído automaticamente.
@@ -485,7 +476,7 @@ async function verificarPrazoDefesa(client, guild) {
 }
 
 module.exports = {
-  verificarPrazosJulgamento, verificarRenovacoesPorteArma, verificarVinculosPendentes,
+  verificarPrazosJulgamento, verificarRenovacoesPorteArma,
   verificarProcessosSemJuiz, verificarProcessosPenaisSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
   verificarMedidasAguardandoMP, verificarMedidasAguardandoJuiz, verificarMandadosPendentes,
   verificarApelacoesPendentes, verificarPrazosContestacao,

@@ -56,9 +56,8 @@ async function fetchComTimeout(url, opcoes, consumir, timeoutMs = 25000) {
   }
 }
 
-// Formatador único do bloco "📝 Despacho do Cartório" — evita a string ser montada em dois
-// lugares (despachoParaCanal e blocoResumoPdf) e divergir. `comQuebraInicial` adiciona o \n\n de
-// quando o bloco é concatenado ao final de outra mensagem.
+// Formatador único do bloco "📝 Despacho do Cartório", usado por despachoParaCanal.
+// `comQuebraInicial` adiciona o \n\n de quando o bloco é concatenado ao final de outra mensagem.
 function blocoDespacho(texto, { comQuebraInicial = false } = {}) {
   const prefixo = comQuebraInicial ? '\n\n' : '';
   return `${prefixo}📝 **Despacho do Cartório** *(resumo automático da IA — apoio, não é decisão)*\n> ${texto.replace(/\n+/g, '\n> ')}`;

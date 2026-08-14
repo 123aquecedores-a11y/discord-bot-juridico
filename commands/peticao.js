@@ -7,7 +7,7 @@ const config = require('../config');
 const canais = require('../utils/canais');
 const rh = require('../utils/rh');
 const { proximoNumero } = require('../utils/numeracao');
-const { temCargo, isSuperStaff, isAdmin } = require('../utils/permissoes');
+const { temCargo, isSuperStaff, isAdmin, papelInstitucional } = require('../utils/permissoes');
 const { truncar, extrairMencaoOuId } = require('../utils/texto');
 const cruzamento = require('../utils/cruzamento');
 const ficha = require('../utils/ficha');
@@ -136,7 +136,7 @@ async function solicitarCertidaoDaPeticao(interaction, numero) {
   if (!certidoes.podeSolicitarCertidao(interaction)) {
     return interaction.reply({ content: 'Só Juiz, Promotor, Desembargador ou Procurador podem requisitar certidão.', ephemeral: true });
   }
-  const instituicao = certidoes.instituicaoDoSolicitante(interaction);
+  const instituicao = papelInstitucional(interaction);
   const resultado = await certidoes.solicitarCertidao({
     guild: interaction.guild, rg: peticao.rgCliente, nomeCliente: peticao.nomeCliente || peticao.nomeNovo,
     finalidade: `Petição ${numero} (${TIPO_LABEL[peticao.tipo]})`, executorId: interaction.user.id, instituicao,

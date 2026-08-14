@@ -30,12 +30,6 @@ const CARGO_POR_INSTITUICAO = {
   'PODER JUDICIÁRIO': 'Juiz de Direito', 'MINISTÉRIO PÚBLICO': 'Membro do Ministério Público', 'POLÍCIA CIVIL': 'Delegado de Polícia',
 };
 
-// Ofício pode sair de três instituições diferentes — o cabeçalho do documento segue quem
-// realmente assina, mesma lógica já usada em certidão (certidoes.js).
-function instituicaoDoEmissor(interaction) {
-  return papelInstitucional(interaction); // Frente 4a.3 — fonte única do mapa cargo→instituição
-}
-
 function podeEmitirOficio(interaction) {
   // Frente 4a.4 — reusa ehMembroDoMP (isAdmin || Promotor || Procurador) em vez de reinlinar.
   return temCargo(interaction, 'Delegado') || ministerioPublico.ehMembroDoMP(interaction) || temCargo(interaction, 'Juiz');
@@ -213,7 +207,7 @@ module.exports = {
       conteudo: interaction.options.getString('conteudo'),
       emitidoPorId: interaction.user.id,
       emitidoPorTag: interaction.user.tag,
-      instituicao: instituicaoDoEmissor(interaction),
+      instituicao: papelInstitucional(interaction),
       aguardaRetorno: interaction.options.getBoolean('aguarda_retorno') ?? true,
     });
 
@@ -223,7 +217,6 @@ module.exports = {
 
   criarOficio,
   podeEmitirOficio,
-  instituicaoDoEmissor,
   cumprirOficio,
 
   async autocomplete(interaction) {
