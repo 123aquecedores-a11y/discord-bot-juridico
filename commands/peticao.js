@@ -539,78 +539,103 @@ function abrirModalAlvaraEvento(interaction) {
   return interaction.showModal(modal);
 }
 
+// ---- Submissão compartilhada SLASH × MODAL (uma função por tipo) ----
+// Cada tipo tem UMA função de submissão: o handler /slash e o processador do modal só extraem os
+// campos do seu jeito (options.getString vs fields.getTextInputValue) e delegam aqui todo o resto
+// (defer → criarPeticao* → grava endereço na ficha → resposta → follow-ups). O comportamento e a
+// ordem dos passos são idênticos aos dois fluxos originais.
+async function submeterPorteArma(interaction, { rg, nome, endereco }) {
+  await interaction.deferReply({ ephemeral: true });
+  const { numero, canal } = await criarPeticaoPorteArma({
+    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
+    nomeCliente: nome, enderecoCliente: endereco,
+  });
+  ficha.adicionarEndereco(rg, endereco, numero);
+  await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
+  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
+}
+
+async function submeterTrocaNome(interaction, { rg, nomeAtual, nomeNovo, endereco }) {
+  // Frente 5.4 — sem trava de 2ª vez no formulário. A reincidência é detectada pelo sistema
+  // (jaTrocouNomeAntes) e vira AVISO forte no card do julgador; a justificativa, se necessária,
+  // vem no PDF ou por diligência do juiz.
+  const jaTrocou = ficha.jaTrocouNomeAntes(rg);
+  await interaction.deferReply({ ephemeral: true });
+  const { numero, canal } = await criarPeticaoTrocaNome({
+    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
+    nomeAtual, nomeNovo, enderecoCliente: endereco, jaUsouGratuita: jaTrocou,
+  });
+  ficha.adicionarEndereco(rg, endereco, numero);
+  await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
+  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
+}
+
+async function submeterLimpezaFicha(interaction, { rg, nome, endereco }) {
+  // Frente 5.4 — sem trava de 2ª vez no formulário. A reincidência é detectada pelo sistema
+  // (jaTeveLimpezaFichaDeferida) e vira AVISO forte no card do julgador; a justificativa, se
+  // necessária, vem no PDF ou por diligência do juiz.
+  const jaTeveAntes = ficha.jaTeveLimpezaFichaDeferida(rg);
+  await interaction.deferReply({ ephemeral: true });
+  const { numero, canal } = await criarPeticaoLimpezaFicha({
+    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
+    nomeCliente: nome, enderecoCliente: endereco, jaTeveAntes,
+  });
+  ficha.adicionarEndereco(rg, endereco, numero);
+  await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
+  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
+}
+
+// Alvará NÃO grava o local do evento como endereço pessoal na ficha do organizador — é onde o
+// evento acontece, não onde a pessoa mora; o local fica só no registro da própria petição. Por
+// isso, ao contrário dos outros três tipos, esta submissão não chama ficha.adicionarEndereco.
+async function submeterAlvaraEvento(interaction, { rg, nome, evento, local, numeroPessoas }) {
+  await interaction.deferReply({ ephemeral: true });
+  const { numero, canal } = await criarPeticaoAlvaraEvento({
+    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
+    nomeCliente: nome, nomeEvento: evento, localEvento: local, numeroPessoas,
+  });
+  await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
+  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
+}
+
 async function processarModalAlvaraEvento(interaction) {
   const pessoasTexto = interaction.fields.getTextInputValue('pessoas');
   const numeroPessoas = parseInt(pessoasTexto, 10);
   if (!Number.isFinite(numeroPessoas) || numeroPessoas < 0 || String(numeroPessoas) !== pessoasTexto.trim()) {
     return interaction.reply({ content: `"${pessoasTexto}" não é um número válido de pessoas. Abra a petição de novo e informe só o número (ex: 20).`, ephemeral: true });
   }
-
-  const rg = interaction.fields.getTextInputValue('rg');
-  await interaction.deferReply({ ephemeral: true });
-  const local = interaction.fields.getTextInputValue('local');
-  const { numero, canal } = await criarPeticaoAlvaraEvento({
-    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
-    nomeCliente: interaction.fields.getTextInputValue('nome'),
-    nomeEvento: interaction.fields.getTextInputValue('evento'),
-    localEvento: local, numeroPessoas,
+  return submeterAlvaraEvento(interaction, {
+    rg: interaction.fields.getTextInputValue('rg'),
+    nome: interaction.fields.getTextInputValue('nome'),
+    evento: interaction.fields.getTextInputValue('evento'),
+    local: interaction.fields.getTextInputValue('local'),
+    numeroPessoas,
   });
-  // NÃO grava o local do evento como endereço pessoal na ficha do organizador — é onde o evento
-  // acontece, não onde a pessoa mora. O local fica só no registro da própria petição (campo Local).
-  await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
 }
 
-async function processarModalPorteArma(interaction) {
-  const rg = interaction.fields.getTextInputValue('rg');
-  await interaction.deferReply({ ephemeral: true });
-  const { numero, canal } = await criarPeticaoPorteArma({
-    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
-    nomeCliente: interaction.fields.getTextInputValue('nome'),
-    enderecoCliente: interaction.fields.getTextInputValue('endereco'),
+function processarModalPorteArma(interaction) {
+  return submeterPorteArma(interaction, {
+    rg: interaction.fields.getTextInputValue('rg'),
+    nome: interaction.fields.getTextInputValue('nome'),
+    endereco: interaction.fields.getTextInputValue('endereco'),
   });
-  ficha.adicionarEndereco(rg, interaction.fields.getTextInputValue('endereco'), numero);
-  await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
 }
 
-async function processarModalTrocaNome(interaction) {
-  const rg = interaction.fields.getTextInputValue('rg');
-  // Frente 5.4 — sem trava de 2ª vez no formulário. A reincidência continua sendo detectada pelo
-  // sistema (jaTrocouNomeAntes) e vira AVISO forte no card do julgador; a justificativa, se
-  // necessária, vem no PDF ou por diligência do juiz.
-  const jaTrocou = ficha.jaTrocouNomeAntes(rg);
-  await interaction.deferReply({ ephemeral: true });
-  const endereco = interaction.fields.getTextInputValue('endereco');
-  const { numero, canal } = await criarPeticaoTrocaNome({
-    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
+function processarModalTrocaNome(interaction) {
+  return submeterTrocaNome(interaction, {
+    rg: interaction.fields.getTextInputValue('rg'),
     nomeAtual: interaction.fields.getTextInputValue('nome_atual'),
     nomeNovo: interaction.fields.getTextInputValue('nome_novo'),
-    enderecoCliente: endereco,
-    jaUsouGratuita: jaTrocou,
+    endereco: interaction.fields.getTextInputValue('endereco'),
   });
-  ficha.adicionarEndereco(rg, endereco, numero);
-  await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
 }
 
-async function processarModalLimpezaFicha(interaction) {
-  const rg = interaction.fields.getTextInputValue('rg');
-  // Frente 5.4 — sem trava de 2ª vez no formulário. A reincidência continua sendo detectada pelo
-  // sistema (jaTeveLimpezaFichaDeferida) e vira AVISO forte no card do julgador; a justificativa,
-  // se necessária, vem no PDF ou por diligência do juiz.
-  const jaTeveAntes = ficha.jaTeveLimpezaFichaDeferida(rg);
-  await interaction.deferReply({ ephemeral: true });
-  const endereco = interaction.fields.getTextInputValue('endereco');
-  const { numero, canal } = await criarPeticaoLimpezaFicha({
-    guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
-    nomeCliente: interaction.fields.getTextInputValue('nome'),
-    enderecoCliente: endereco,
-    jaTeveAntes,
+function processarModalLimpezaFicha(interaction) {
+  return submeterLimpezaFicha(interaction, {
+    rg: interaction.fields.getTextInputValue('rg'),
+    nome: interaction.fields.getTextInputValue('nome'),
+    endereco: interaction.fields.getTextInputValue('endereco'),
   });
-  ficha.adicionarEndereco(rg, endereco, numero);
-  await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-  return enviarFollowUpsCadastro(interaction, numero, rg, canal);
 }
 
 // ---- Decisão (Juiz) ----
@@ -873,66 +898,38 @@ module.exports = {
     }
 
     if (sub === 'porte-arma') {
-      const rg = interaction.options.getString('rg');
-      await interaction.deferReply({ ephemeral: true });
-      const endereco = interaction.options.getString('endereco');
-      const { numero, canal } = await criarPeticaoPorteArma({
-        guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
-        nomeCliente: interaction.options.getString('nome'), enderecoCliente: endereco,
+      return submeterPorteArma(interaction, {
+        rg: interaction.options.getString('rg'),
+        nome: interaction.options.getString('nome'),
+        endereco: interaction.options.getString('endereco'),
       });
-      ficha.adicionarEndereco(rg, endereco, numero);
-      await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-      return enviarFollowUpsCadastro(interaction, numero, rg, canal);
     }
 
     if (sub === 'troca-nome') {
-      const rg = interaction.options.getString('rg');
-      // Frente 5.4 — sem trava de 2ª vez; reincidência vira aviso forte no card do julgador.
-      const jaTrocou = ficha.jaTrocouNomeAntes(rg);
-      await interaction.deferReply({ ephemeral: true });
-      const endereco = interaction.options.getString('endereco');
-      const { numero, canal } = await criarPeticaoTrocaNome({
-        guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
+      return submeterTrocaNome(interaction, {
+        rg: interaction.options.getString('rg'),
         nomeAtual: interaction.options.getString('nome_atual'),
         nomeNovo: interaction.options.getString('nome_novo'),
-        enderecoCliente: endereco,
-        jaUsouGratuita: jaTrocou,
+        endereco: interaction.options.getString('endereco'),
       });
-      ficha.adicionarEndereco(rg, endereco, numero);
-      await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-      return enviarFollowUpsCadastro(interaction, numero, rg, canal);
     }
 
     if (sub === 'limpeza-ficha') {
-      const rg = interaction.options.getString('rg');
-      // Frente 5.4 — sem trava de 2ª vez; reincidência vira aviso forte no card do julgador.
-      const jaTeveAntes = ficha.jaTeveLimpezaFichaDeferida(rg);
-      await interaction.deferReply({ ephemeral: true });
-      const endereco = interaction.options.getString('endereco');
-      const { numero, canal } = await criarPeticaoLimpezaFicha({
-        guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
-        nomeCliente: interaction.options.getString('nome'), enderecoCliente: endereco,
-        jaTeveAntes,
+      return submeterLimpezaFicha(interaction, {
+        rg: interaction.options.getString('rg'),
+        nome: interaction.options.getString('nome'),
+        endereco: interaction.options.getString('endereco'),
       });
-      ficha.adicionarEndereco(rg, endereco, numero);
-      await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-      return enviarFollowUpsCadastro(interaction, numero, rg, canal);
     }
 
     if (sub === 'alvara-evento') {
-      const rg = interaction.options.getString('rg');
-      await interaction.deferReply({ ephemeral: true });
-      const local = interaction.options.getString('local');
-      const { numero, canal } = await criarPeticaoAlvaraEvento({
-        guild: interaction.guild, requerenteId: interaction.user.id, rgCliente: rg,
-        nomeCliente: interaction.options.getString('nome'),
-        nomeEvento: interaction.options.getString('evento'),
-        localEvento: local, numeroPessoas: interaction.options.getInteger('pessoas'),
+      return submeterAlvaraEvento(interaction, {
+        rg: interaction.options.getString('rg'),
+        nome: interaction.options.getString('nome'),
+        evento: interaction.options.getString('evento'),
+        local: interaction.options.getString('local'),
+        numeroPessoas: interaction.options.getInteger('pessoas'),
       });
-      // NÃO grava o local do evento como endereço pessoal na ficha do organizador (ver
-      // processarModalAlvaraEvento) — o local fica só no registro da própria petição.
-      await interaction.editReply({ content: `Petição ${numero} aberta em ${canal}. 📎 Anexe os documentos pedidos direto na conversa.` });
-      return enviarFollowUpsCadastro(interaction, numero, rg, canal);
     }
   },
 
