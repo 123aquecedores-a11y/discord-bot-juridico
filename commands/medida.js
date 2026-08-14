@@ -335,6 +335,146 @@ async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvo
   return { numero, canal };
 }
 
+// R3 — os dois pares de reconsideração (negativa do MP → Procurador; indeferimento do Juiz →
+// Desembargador) eram ~180 linhas espelhadas. Cada diferença vira um campo do config; o fluxo
+// (pedir: gate → cria ticket → embed → 2 botões → grava pendente; decidir: gate → aprovar sorteia
+// Juiz + reencaminha / manter) é o mesmo. Comportamento idêntico ao das 4 funções originais.
+const RECON_CONFIG = {
+  procurador: {
+    campoStatus: 'reconsideracao', campoCanal: 'reconsideracaoCanalId', prefixoCanal: 'reconsideracao',
+    cargoConvocado: 'Procurador', cargoDecisor: 'Procurador', customIdBase: 'decidirreconsideracao',
+    statusNecessario: 'Negada', msgStatusFail: 'Essa medida não está negada.',
+    gateBloqueia: (interaction, medida) => interaction.user.id !== medida.delegado && !isSuperStaff(interaction),
+    msgGatePedir: (medida) => `Só o Delegado que abriu esta medida pode pedir reconsideração — no caso, <@${medida.delegado}>.`,
+    msgGateDecisor: 'Só Procuradores podem decidir um pedido de reconsideração.',
+    embedTitulo: (numero) => `📋 Reconsideração — medida ${numero} negada`,
+    embedCampos: (medida) => [
+      { name: 'Delegado', value: `<@${medida.delegado}>`, inline: true },
+      { name: 'Promotor que negou', value: `<@${medida.promotor}>`, inline: true },
+      { name: 'Tipo', value: medida.tipo, inline: true },
+      { name: 'Alvo', value: truncar(medida.alvo) },
+      { name: 'Motivo/Indícios originais', value: truncar(medida.motivo) },
+    ],
+    labelAprovar: 'Aprovar e enviar a Juiz', labelManter: 'Manter negativa',
+    sortearExcluir: (medida) => [medida.delegado, medida.promotor],
+    msgSemJuiz: 'Não há Juiz ativo disponível para sorteio.',
+    msgAprovarCanalMedida: (interaction, juizId) => `Reconsideração aprovada pelo Procurador <@${interaction.user.id}> — a negativa do MP foi revertida. <@${juizId}> foi sorteado para deliberar.`,
+    msgManterCanalMedida: (interaction) => `O Procurador <@${interaction.user.id}> analisou o pedido de reconsideração e **manteve a negativa** do MP.`,
+    msgManterCanalRecon: (interaction) => `❌ Negativa **mantida** pelo Procurador <@${interaction.user.id}>.`,
+    replyManter: (numero) => `Negativa da medida ${numero} mantida.`,
+    auditoriaPedir: 'Reconsideração de medida solicitada',
+    auditoriaAprovar: 'Reconsideração de medida aprovada',
+    auditoriaManter: 'Reconsideração de medida mantida',
+  },
+  juiz: {
+    campoStatus: 'reconsideracaoJuiz', campoCanal: 'reconsideracaoJuizCanalId', prefixoCanal: 'reconsideracaojuiz',
+    cargoConvocado: 'Desembargador', cargoDecisor: 'Desembargador', customIdBase: 'decidirreconsideracaojuiz',
+    statusNecessario: 'Indeferida pelo Juiz', msgStatusFail: 'Essa medida não foi indeferida pelo Juiz.',
+    gateBloqueia: (interaction, medida) => ![medida.delegado, medida.promotor].includes(interaction.user.id) && !isSuperStaff(interaction),
+    msgGatePedir: (medida) => `Só o Delegado ou o Promotor desta medida podem pedir reconsideração — no caso, <@${medida.delegado}> ou <@${medida.promotor}>.`,
+    msgGateDecisor: 'Só Desembargadores podem decidir um pedido de reconsideração de indeferimento judicial.',
+    embedTitulo: (numero) => `📋 Reconsideração — medida ${numero} indeferida pelo Juiz`,
+    embedCampos: (medida) => [
+      { name: 'Delegado', value: `<@${medida.delegado}>`, inline: true },
+      { name: 'Promotor', value: `<@${medida.promotor}>`, inline: true },
+      { name: 'Juiz que indeferiu', value: `<@${medida.juiz}>`, inline: true },
+      { name: 'Tipo', value: medida.tipo, inline: true },
+      { name: 'Alvo', value: truncar(medida.alvo) },
+      { name: 'Fundamentação do indeferimento', value: truncar(medida.fundamentacaoJuiz) },
+    ],
+    labelAprovar: 'Aprovar e sortear novo Juiz', labelManter: 'Manter indeferimento',
+    sortearExcluir: (medida) => [medida.delegado, medida.promotor, medida.juiz, medida.alvoDiscordId].filter(Boolean),
+    msgSemJuiz: 'Não há outro Juiz ativo disponível para sorteio.',
+    msgAprovarCanalMedida: (interaction, juizId) => `Reconsideração aprovada pelo Desembargador <@${interaction.user.id}> — o indeferimento foi revertido. <@${juizId}> foi sorteado para novo julgamento.`,
+    msgManterCanalMedida: (interaction) => `O Desembargador <@${interaction.user.id}> analisou o pedido de reconsideração e **manteve o indeferimento** do Juiz.`,
+    msgManterCanalRecon: (interaction) => `❌ Indeferimento **mantido** pelo Desembargador <@${interaction.user.id}>.`,
+    replyManter: (numero) => `Indeferimento da medida ${numero} mantido.`,
+    auditoriaPedir: 'Reconsideração de indeferimento judicial solicitada',
+    auditoriaAprovar: 'Reconsideração de indeferimento judicial aprovada',
+    auditoriaManter: 'Reconsideração de indeferimento judicial mantida',
+  },
+};
+
+async function pedirReconsideracaoGenerica(interaction, numero, cfg) {
+  const medida = db.buscarPorNumero('medidas', numero);
+  if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
+  if (cfg.gateBloqueia(interaction, medida)) return interaction.reply({ content: cfg.msgGatePedir(medida), ephemeral: true });
+  if (medida.status !== cfg.statusNecessario) return interaction.reply({ content: cfg.msgStatusFail, ephemeral: true });
+  if (medida[cfg.campoStatus] === 'Pendente') return interaction.reply({ content: 'Já existe um pedido de reconsideração pendente.', ephemeral: true });
+
+  const convocados = rh.listarPorCargo(cfg.cargoConvocado).filter(p => !p.licenca);
+  const canalRecon = await canais.criarCanalTicket(interaction.guild, {
+    categoriaId: config.categoriaReconsideracoesId, prefixo: cfg.prefixoCanal, numero,
+    membros: [medida.delegado, medida.promotor, ...convocados.map(p => p.discordId)],
+  });
+
+  db.atualizar('medidas', numero, { [cfg.campoStatus]: 'Pendente', [cfg.campoCanal]: canalRecon.id });
+
+  const embed = new EmbedBuilder().setTitle(cfg.embedTitulo(numero)).setColor(0xf39c12).addFields(...cfg.embedCampos(medida));
+  const botoes = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`painel:acao:medida:${cfg.customIdBase}:${numero}#aprovar`).setLabel(cfg.labelAprovar).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`painel:acao:medida:${cfg.customIdBase}:${numero}#manter`).setLabel(cfg.labelManter).setStyle(ButtonStyle.Danger),
+  );
+  await canalRecon.send({
+    content: convocados.length ? convocados.map(p => `<@${p.discordId}>`).join(' ') : `Nenhum ${cfg.cargoConvocado} ativo cadastrado no momento — o pedido fica pendente até haver um.`,
+    embeds: [embed], components: [botoes],
+  });
+
+  await auditoria.registrar(interaction.guild, { acao: cfg.auditoriaPedir, executorId: interaction.user.id, referencia: numero });
+  return interaction.reply({ content: `Pedido de reconsideração aberto em ${canalRecon}.`, ephemeral: true });
+}
+
+async function decidirReconsideracaoGenerica(interaction, extra, cfg) {
+  const [numero, decisao] = extra.split('#');
+  if (!temCargo(interaction, cfg.cargoDecisor) && !isAdmin(interaction)) {
+    return interaction.reply({ content: cfg.msgGateDecisor, ephemeral: true });
+  }
+  const guild = await resolverGuild(interaction);
+  if (!guild) return interaction.reply({ content: 'Não consegui identificar o servidor — tente pelo /painel direto no Discord.', ephemeral: true });
+
+  const medida = db.buscarPorNumero('medidas', numero);
+  if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
+  if (medida[cfg.campoStatus] !== 'Pendente') return interaction.reply({ content: 'Esse pedido de reconsideração já foi decidido.', ephemeral: true });
+
+  const canalMedida = await guild.channels.fetch(medida.canalId).catch(() => null);
+  const canalRecon = medida[cfg.campoCanal] ? await guild.channels.fetch(medida[cfg.campoCanal]).catch(() => null) : null;
+
+  if (decisao === 'aprovar') {
+    const juizId = rh.sortearJuiz({ excluirIds: cfg.sortearExcluir(medida) });
+    if (!juizId) return interaction.reply({ content: cfg.msgSemJuiz, ephemeral: true });
+
+    db.atualizar('medidas', numero, {
+      status: 'Aprovada - aguardando juiz', juiz: juizId, [cfg.campoStatus]: 'Aprovada',
+      aguardandoJuizDesde: new Date().toISOString(), lembreteJuizEnviado: false, escalonamentoJuizEnviado: false,
+    });
+    if (canalMedida) {
+      await canais.adicionarMembro(canalMedida, juizId);
+      await canalMedida.send({
+        content: cfg.msgAprovarCanalMedida(interaction, juizId),
+        embeds: [embedMedida(db.buscarPorNumero('medidas', numero))],
+        components: [botoesJuizMedida(numero)],
+      });
+    }
+    if (canalRecon) {
+      await canalRecon.send({ content: `✅ Reconsideração **aprovada**. Medida encaminhada a <@${juizId}> no canal ${canalMedida || medida.canalId}.` });
+      await canais.arquivarCanal(canalRecon);
+    }
+    await auditoria.registrar(guild, { acao: cfg.auditoriaAprovar, executorId: interaction.user.id, referencia: `${numero} → Juiz <@${juizId}>` });
+    return interaction.reply({ content: `Reconsideração aprovada. Medida ${numero} encaminhada a <@${juizId}>.`, ephemeral: true });
+  }
+
+  db.atualizar('medidas', numero, { [cfg.campoStatus]: 'Mantida' });
+  if (canalMedida) {
+    await canalMedida.send({ content: cfg.msgManterCanalMedida(interaction) });
+  }
+  if (canalRecon) {
+    await canalRecon.send({ content: cfg.msgManterCanalRecon(interaction) });
+    await canais.arquivarCanal(canalRecon);
+  }
+  await auditoria.registrar(guild, { acao: cfg.auditoriaManter, executorId: interaction.user.id, referencia: numero });
+  return interaction.reply({ content: cfg.replyManter(numero), ephemeral: true });
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('medida')
@@ -482,193 +622,24 @@ module.exports = {
   // Pedido de reconsideração ao Procurador ganha um ticket próprio, mesmo critério da apelação
   // ao Desembargador: canal dedicado numa categoria própria, não uma mensagem no canal da medida.
   async pedirReconsideracao(interaction, numero) {
-    const medida = db.buscarPorNumero('medidas', numero);
-    if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.delegado && !isSuperStaff(interaction)) {
-      return interaction.reply({ content: `Só o Delegado que abriu esta medida pode pedir reconsideração — no caso, <@${medida.delegado}>.`, ephemeral: true });
-    }
-    if (medida.status !== 'Negada') return interaction.reply({ content: 'Essa medida não está negada.', ephemeral: true });
-    if (medida.reconsideracao === 'Pendente') return interaction.reply({ content: 'Já existe um pedido de reconsideração pendente.', ephemeral: true });
-
-    const procuradores = rh.listarPorCargo('Procurador').filter(p => !p.licenca);
-    const canalRecon = await canais.criarCanalTicket(interaction.guild, {
-      categoriaId: config.categoriaReconsideracoesId, prefixo: 'reconsideracao', numero,
-      membros: [medida.delegado, medida.promotor, ...procuradores.map(p => p.discordId)],
-    });
-
-    db.atualizar('medidas', numero, { reconsideracao: 'Pendente', reconsideracaoCanalId: canalRecon.id });
-
-    const embed = new EmbedBuilder()
-      .setTitle(`📋 Reconsideração — medida ${numero} negada`)
-      .setColor(0xf39c12)
-      .addFields(
-        { name: 'Delegado', value: `<@${medida.delegado}>`, inline: true },
-        { name: 'Promotor que negou', value: `<@${medida.promotor}>`, inline: true },
-        { name: 'Tipo', value: medida.tipo, inline: true },
-        { name: 'Alvo', value: truncar(medida.alvo) },
-        { name: 'Motivo/Indícios originais', value: truncar(medida.motivo) },
-      );
-    const botoes = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`painel:acao:medida:decidirreconsideracao:${numero}#aprovar`).setLabel('Aprovar e enviar a Juiz').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`painel:acao:medida:decidirreconsideracao:${numero}#manter`).setLabel('Manter negativa').setStyle(ButtonStyle.Danger),
-    );
-    await canalRecon.send({
-      content: procuradores.length ? procuradores.map(p => `<@${p.discordId}>`).join(' ') : 'Nenhum Procurador ativo cadastrado no momento — o pedido fica pendente até haver um.',
-      embeds: [embed], components: [botoes],
-    });
-
-    await auditoria.registrar(interaction.guild, { acao: 'Reconsideração de medida solicitada', executorId: interaction.user.id, referencia: numero });
-    return interaction.reply({ content: `Pedido de reconsideração aberto em ${canalRecon}.`, ephemeral: true });
+    return pedirReconsideracaoGenerica(interaction, numero, RECON_CONFIG.procurador);
   },
 
   // Decisão do Procurador acontece no ticket de reconsideração, mas o resultado também é
   // avisado no canal original da medida — é lá que o Juiz vai agir se for aprovada.
   async decidirReconsideracao(interaction, extra) {
-    const [numero, decisao] = extra.split('#');
-    if (!temCargo(interaction, 'Procurador') && !isAdmin(interaction)) {
-      return interaction.reply({ content: 'Só Procuradores podem decidir um pedido de reconsideração.', ephemeral: true });
-    }
-    const guild = await resolverGuild(interaction);
-    if (!guild) return interaction.reply({ content: 'Não consegui identificar o servidor — tente pelo /painel direto no Discord.', ephemeral: true });
-
-    const medida = db.buscarPorNumero('medidas', numero);
-    if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (medida.reconsideracao !== 'Pendente') return interaction.reply({ content: 'Esse pedido de reconsideração já foi decidido.', ephemeral: true });
-
-    const canalMedida = await guild.channels.fetch(medida.canalId).catch(() => null);
-    const canalRecon = medida.reconsideracaoCanalId ? await guild.channels.fetch(medida.reconsideracaoCanalId).catch(() => null) : null;
-
-    if (decisao === 'aprovar') {
-      const juizId = rh.sortearJuiz({ excluirIds: [medida.delegado, medida.promotor] });
-      if (!juizId) return interaction.reply({ content: 'Não há Juiz ativo disponível para sorteio.', ephemeral: true });
-
-      db.atualizar('medidas', numero, {
-        status: 'Aprovada - aguardando juiz', juiz: juizId, reconsideracao: 'Aprovada',
-        aguardandoJuizDesde: new Date().toISOString(), lembreteJuizEnviado: false, escalonamentoJuizEnviado: false,
-      });
-      if (canalMedida) {
-        await canais.adicionarMembro(canalMedida, juizId);
-        await canalMedida.send({
-          content: `Reconsideração aprovada pelo Procurador <@${interaction.user.id}> — a negativa do MP foi revertida. <@${juizId}> foi sorteado para deliberar.`,
-          embeds: [embedMedida(db.buscarPorNumero('medidas', numero))],
-          components: [botoesJuizMedida(numero)],
-        });
-      }
-      if (canalRecon) {
-        await canalRecon.send({ content: `✅ Reconsideração **aprovada**. Medida encaminhada a <@${juizId}> no canal ${canalMedida || medida.canalId}.` });
-        await canais.arquivarCanal(canalRecon);
-      }
-      await auditoria.registrar(guild, { acao: 'Reconsideração de medida aprovada', executorId: interaction.user.id, referencia: `${numero} → Juiz <@${juizId}>` });
-      return interaction.reply({ content: `Reconsideração aprovada. Medida ${numero} encaminhada a <@${juizId}>.`, ephemeral: true });
-    }
-
-    db.atualizar('medidas', numero, { reconsideracao: 'Mantida' });
-    if (canalMedida) {
-      await canalMedida.send({ content: `O Procurador <@${interaction.user.id}> analisou o pedido de reconsideração e **manteve a negativa** do MP.` });
-    }
-    if (canalRecon) {
-      await canalRecon.send({ content: `❌ Negativa **mantida** pelo Procurador <@${interaction.user.id}>.` });
-      await canais.arquivarCanal(canalRecon);
-    }
-    await auditoria.registrar(guild, { acao: 'Reconsideração de medida mantida', executorId: interaction.user.id, referencia: numero });
-    return interaction.reply({ content: `Negativa da medida ${numero} mantida.`, ephemeral: true });
+    return decidirReconsideracaoGenerica(interaction, extra, RECON_CONFIG.procurador);
   },
 
   // Mesmo padrão da reconsideração ao Procurador, só que pra quando é o JUIZ que nega
   // provimento (antes disso não existia nenhum recurso possível nesse ponto — beco sem saída).
   // Delegado ou Promotor podem pedir, já que os dois têm interesse no desfecho da medida.
   async pedirReconsideracaoJuiz(interaction, numero) {
-    const medida = db.buscarPorNumero('medidas', numero);
-    if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (![medida.delegado, medida.promotor].includes(interaction.user.id) && !isSuperStaff(interaction)) {
-      return interaction.reply({ content: `Só o Delegado ou o Promotor desta medida podem pedir reconsideração — no caso, <@${medida.delegado}> ou <@${medida.promotor}>.`, ephemeral: true });
-    }
-    if (medida.status !== 'Indeferida pelo Juiz') return interaction.reply({ content: 'Essa medida não foi indeferida pelo Juiz.', ephemeral: true });
-    if (medida.reconsideracaoJuiz === 'Pendente') return interaction.reply({ content: 'Já existe um pedido de reconsideração pendente.', ephemeral: true });
-
-    const desembargadores = rh.listarPorCargo('Desembargador').filter(d => !d.licenca);
-    const canalRecon = await canais.criarCanalTicket(interaction.guild, {
-      categoriaId: config.categoriaReconsideracoesId, prefixo: 'reconsideracaojuiz', numero,
-      membros: [medida.delegado, medida.promotor, ...desembargadores.map(d => d.discordId)],
-    });
-
-    db.atualizar('medidas', numero, { reconsideracaoJuiz: 'Pendente', reconsideracaoJuizCanalId: canalRecon.id });
-
-    const embed = new EmbedBuilder()
-      .setTitle(`📋 Reconsideração — medida ${numero} indeferida pelo Juiz`)
-      .setColor(0xf39c12)
-      .addFields(
-        { name: 'Delegado', value: `<@${medida.delegado}>`, inline: true },
-        { name: 'Promotor', value: `<@${medida.promotor}>`, inline: true },
-        { name: 'Juiz que indeferiu', value: `<@${medida.juiz}>`, inline: true },
-        { name: 'Tipo', value: medida.tipo, inline: true },
-        { name: 'Alvo', value: truncar(medida.alvo) },
-        { name: 'Fundamentação do indeferimento', value: truncar(medida.fundamentacaoJuiz) },
-      );
-    const botoes = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`painel:acao:medida:decidirreconsideracaojuiz:${numero}#aprovar`).setLabel('Aprovar e sortear novo Juiz').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`painel:acao:medida:decidirreconsideracaojuiz:${numero}#manter`).setLabel('Manter indeferimento').setStyle(ButtonStyle.Danger),
-    );
-    await canalRecon.send({
-      content: desembargadores.length ? desembargadores.map(d => `<@${d.discordId}>`).join(' ') : 'Nenhum Desembargador ativo cadastrado no momento — o pedido fica pendente até haver um.',
-      embeds: [embed], components: [botoes],
-    });
-
-    await auditoria.registrar(interaction.guild, { acao: 'Reconsideração de indeferimento judicial solicitada', executorId: interaction.user.id, referencia: numero });
-    return interaction.reply({ content: `Pedido de reconsideração aberto em ${canalRecon}.`, ephemeral: true });
+    return pedirReconsideracaoGenerica(interaction, numero, RECON_CONFIG.juiz);
   },
 
   async decidirReconsideracaoJuiz(interaction, extra) {
-    const [numero, decisao] = extra.split('#');
-    if (!temCargo(interaction, 'Desembargador') && !isAdmin(interaction)) {
-      return interaction.reply({ content: 'Só Desembargadores podem decidir um pedido de reconsideração de indeferimento judicial.', ephemeral: true });
-    }
-    const guild = await resolverGuild(interaction);
-    if (!guild) return interaction.reply({ content: 'Não consegui identificar o servidor — tente pelo /painel direto no Discord.', ephemeral: true });
-
-    const medida = db.buscarPorNumero('medidas', numero);
-    if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (medida.reconsideracaoJuiz !== 'Pendente') return interaction.reply({ content: 'Esse pedido de reconsideração já foi decidido.', ephemeral: true });
-
-    const canalMedida = await guild.channels.fetch(medida.canalId).catch(() => null);
-    const canalRecon = medida.reconsideracaoJuizCanalId ? await guild.channels.fetch(medida.reconsideracaoJuizCanalId).catch(() => null) : null;
-
-    if (decisao === 'aprovar') {
-      // Exclui o Juiz que já indeferiu e o alvo identificado — reconsideração vai pra um
-      // julgador diferente, e nunca pro próprio alvo do pedido.
-      const novoJuizId = rh.sortearJuiz({ excluirIds: [medida.delegado, medida.promotor, medida.juiz, medida.alvoDiscordId].filter(Boolean) });
-      if (!novoJuizId) return interaction.reply({ content: 'Não há outro Juiz ativo disponível para sorteio.', ephemeral: true });
-
-      db.atualizar('medidas', numero, {
-        status: 'Aprovada - aguardando juiz', juiz: novoJuizId, reconsideracaoJuiz: 'Aprovada',
-        aguardandoJuizDesde: new Date().toISOString(), lembreteJuizEnviado: false, escalonamentoJuizEnviado: false,
-      });
-      if (canalMedida) {
-        await canais.adicionarMembro(canalMedida, novoJuizId);
-        await canalMedida.send({
-          content: `Reconsideração aprovada pelo Desembargador <@${interaction.user.id}> — o indeferimento foi revertido. <@${novoJuizId}> foi sorteado para novo julgamento.`,
-          embeds: [embedMedida(db.buscarPorNumero('medidas', numero))],
-          components: [botoesJuizMedida(numero)],
-        });
-      }
-      if (canalRecon) {
-        await canalRecon.send({ content: `✅ Reconsideração **aprovada**. Medida encaminhada a <@${novoJuizId}> no canal ${canalMedida || medida.canalId}.` });
-        await canais.arquivarCanal(canalRecon);
-      }
-      await auditoria.registrar(guild, { acao: 'Reconsideração de indeferimento judicial aprovada', executorId: interaction.user.id, referencia: `${numero} → Juiz <@${novoJuizId}>` });
-      return interaction.reply({ content: `Reconsideração aprovada. Medida ${numero} encaminhada a <@${novoJuizId}>.`, ephemeral: true });
-    }
-
-    db.atualizar('medidas', numero, { reconsideracaoJuiz: 'Mantida' });
-    if (canalMedida) {
-      await canalMedida.send({ content: `O Desembargador <@${interaction.user.id}> analisou o pedido de reconsideração e **manteve o indeferimento** do Juiz.` });
-    }
-    if (canalRecon) {
-      await canalRecon.send({ content: `❌ Indeferimento **mantido** pelo Desembargador <@${interaction.user.id}>.` });
-      await canais.arquivarCanal(canalRecon);
-    }
-    await auditoria.registrar(guild, { acao: 'Reconsideração de indeferimento judicial mantida', executorId: interaction.user.id, referencia: numero });
-    return interaction.reply({ content: `Indeferimento da medida ${numero} mantido.`, ephemeral: true });
+    return decidirReconsideracaoGenerica(interaction, extra, RECON_CONFIG.juiz);
   },
 
   // Referendar (deferir) e negar provimento agora exigem a fundamentação do Juiz por escrito —
