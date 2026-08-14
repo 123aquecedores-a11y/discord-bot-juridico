@@ -133,7 +133,7 @@ async function verificarPrazosJulgamento(client, guild) {
     for (const d of desembargadores) await dmSeguro(client, d.discordId, avisoSupervisao);
     for (const pr of procuradores) await dmSeguro(client, pr.discordId, avisoSupervisao);
 
-    await processoCmd.postarOuAtualizarDiario(guild, p.numero);
+    await processoCmd.postarOuAtualizarCapaPublica(guild, p.numero);
   }
 }
 

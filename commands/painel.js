@@ -688,6 +688,8 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   }
 
   if (modulo === 'processo') {
+    // Fase 4 — botões-hub por cargo abrem o submenu efêmero (só quem clicou vê).
+    if (['hubjuiz', 'hubmp', 'hubadvogado', 'hubdelegado'].includes(acao)) return processoCmd.abrirHubProcesso(interaction, acao, extra);
     if (acao === 'penal') {
       if (!temCargo(interaction, 'Delegado')) return interaction.reply({ content: 'Só Delegados podem abrir processo penal.', ephemeral: true });
       return abrirModalProcessoPenal(interaction);
