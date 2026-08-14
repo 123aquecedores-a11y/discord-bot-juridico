@@ -14,8 +14,8 @@ module.exports = {
 
   // Canal público "Advogar - Pegar Casos" onde a capa dos processos é postada/atualizada (é onde
   // o advogado se habilita/entra no caso). Lê a env nova; a antiga (CANAL_DIARIO_OFICIAL_ID) segue
-  // valendo como fallback pra não quebrar quem já tinha configurado. A chave interna mantém o nome.
-  canalDiarioOficialId: process.env.CANAL_ADVOGAR_PEGAR_CASOS_ID || process.env.CANAL_DIARIO_OFICIAL_ID || null,
+  // valendo como fallback pra não quebrar quem já tinha configurado.
+  canalAdvogarPegarCasosId: process.env.CANAL_ADVOGAR_PEGAR_CASOS_ID || process.env.CANAL_DIARIO_OFICIAL_ID || null,
 
   // Roles do Discord atribuídos automaticamente pelo /rh contratar
   roleDelegadoId: process.env.ROLE_DELEGADO_ID || null,

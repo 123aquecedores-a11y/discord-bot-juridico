@@ -54,7 +54,7 @@ async function distribuirJuizAoCaso(guild, { tabela, numero }, juizId, { origem 
     });
     db.atualizar('processos', numero, { painelMsgId: msg.id });
   }
-  await processoCmd.postarOuAtualizarDiario(guild, numero);
+  await processoCmd.postarOuAtualizarCapaPublica(guild, numero);
   return true;
 }
 

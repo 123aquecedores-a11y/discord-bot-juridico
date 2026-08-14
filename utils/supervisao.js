@@ -364,7 +364,7 @@ async function executarForcarDenuncia(interaction, numero, motivo) {
     detalhe: `Procurador <@${interaction.user.id}> forçou a denúncia. Motivo: ${motivo}`,
     executorId: interaction.user.id, metadata: { resultado: 'Denuncia forcada', novoJuiz: juizId },
   });
-  await processoCmd.postarOuAtualizarDiario(guild, numero);
+  await processoCmd.postarOuAtualizarCapaPublica(guild, numero);
 
   return interaction.editReply({ content: `Denúncia forçada. Processo ${numero} agora em Instrução com <@${juizId}> como Juiz.` });
 }

@@ -103,14 +103,6 @@ function embedProcesso(p) {
   return embed;
 }
 
-// View do CATALOGO_ACOES (Frente 4a.1): mesma linha de botões da fase de denúncia, mas os customIds
-// vêm todos do catálogo (fonte única). Saída idêntica à de antes — só não duplica mais as strings.
-function botoesDenuncia(numero) {
-  return new ActionRowBuilder().addComponents(
-    ['oferecer_denuncia', 'arquivar_mp', 'identificar_reu', 'historico', 'anexar_relatorio'].map(id => botaoDoCatalogo(id, numero)),
-  );
-}
-
 // Modal final da sentença do caminho direto: absolvição penal e cível (procedente/improcedente),
 // sem tela de apoio. A condenação penal não passa por aqui — vai sempre pelo fluxo por-crime
 // (veredicto por crime → modalSentencaPorCrime), que é quem coleta pena e regime.
@@ -336,7 +328,7 @@ async function executarParecerMp(interaction, numero, modo) {
     }
 
     await auditoria.registrar(interaction.guild, { acao: 'Denúncia oferecida', executorId: interaction.user.id, referencia: `Processo ${numero} → Juiz <@${juizId}>` });
-    await postarOuAtualizarDiario(interaction.guild, numero);
+    await postarOuAtualizarCapaPublica(interaction.guild, numero);
     return interaction.editReply({ content: `Denúncia oferecida no processo ${numero}. Juiz sorteado: <@${juizId}>.` });
   }
 
@@ -347,35 +339,6 @@ async function executarParecerMp(interaction, numero, modo) {
   }
   await auditoria.registrar(interaction.guild, { acao: 'Processo arquivado (MP)', executorId: interaction.user.id, referencia: `Processo ${numero}` });
   return interaction.editReply({ content: `Processo ${numero} arquivado.` });
-}
-
-// Botões liberados assim que o processo tem Juiz sorteado (civil desde a abertura, penal
-// desde a denúncia oferecida). Habilitação de advogado agora passa pelo canal "Advogar - Pegar Casos",
-// não por um botão de autoatendimento aqui.
-// Retorna DUAS linhas (a primeira já estava cheia, 5/5 — limite do Discord por ActionRow) —
-// quem chama precisa espalhar o array em vez de embrulhar num array só, ver call sites.
-// View do CATALOGO_ACOES (Frente 4a.1): mesmas linhas do painel do Juiz, com os customIds vindos
-// do catálogo (fonte única). Saída idêntica à de antes.
-function botoesJuiz(numero) {
-  const linhas = [
-    new ActionRowBuilder().addComponents(
-      ['julgar', 'gerenciar_defesa', 'parte_tardia', 'emitir_intimacao', 'arquivar_manual'].map(id => botaoDoCatalogo(id, numero)),
-    ),
-    new ActionRowBuilder().addComponents(botaoDoCatalogo('historico', numero)),
-  ];
-
-  // Mandado/medida coercitiva só fazem sentido em processo penal (painel-contexto-e-tipo-mandado.md,
-  // seção 3) — civil não tem Delegado nem essas figuras. botoesJuiz é usado nos dois tipos, então
-  // decide aqui olhando o processo de verdade em vez de espalhar esse "if" em cada call site.
-  const processo = db.buscarPorNumero('processos', numero);
-  if (processo?.tipo === 'Penal') {
-    const linha3 = new ActionRowBuilder().addComponents(botaoDoCatalogo('emitir_mandado', numero));
-    if (processo.promotor) linha3.addComponents(botaoDoCatalogo('solicitar_medida', numero));
-    linha3.addComponents(botaoDoCatalogo('registrar_depoimento', numero));
-    linhas.push(linha3);
-  }
-
-  return linhas;
 }
 
 // ---- Catálogo central de ações do painel (spec-andamentos-processuais_4.md, seção 8.6) ----
@@ -539,38 +502,96 @@ const CATALOGO_ACOES = [
   },
 ];
 
-// Fonte única do customId: pega o botão de uma ação pelo id do catálogo. É o que deixa
-// botoesDenuncia/botoesJuiz serem "views" do CATALOGO_ACOES (Frente 4a.1) — a string do customId
-// vive SÓ aqui no catálogo, então não tem como as três definições divergirem.
+// Fonte única do customId: pega o botão de uma ação pelo id do catálogo. A string do customId vive
+// SÓ aqui no catálogo, então os hubs (Fase 4) e qualquer outra "view" derivam daqui sem divergir.
 function botaoDoCatalogo(id, numero) {
   const acao = CATALOGO_ACOES.find(a => a.id === id);
   if (!acao) throw new Error(`botaoDoCatalogo: ação "${id}" não existe no CATALOGO_ACOES`);
   return acao.botao(numero);
 }
 
-// Monta o painel de ações a partir do catálogo acima, filtrando pelo tipo/status do processo e
-// empacotando por `grupo` em ActionRows (máx. 5 botões por linha, limite do Discord). Substitui
-// botoesJuiz/botoesDenuncia como fonte da verdade — as duas funções continuam existindo por
-// compatibilidade com quem já as chama direto, mas passam a ser espelho deste catálogo.
-function montarPainelAcoes(processo) {
-  if (STATUS_TERMINAIS_PAINEL.includes(processo.status)) return [];
-  // Sem early-return pra civil-sem-juiz: o catálogo já filtra por `quando()`, então as ações de
-  // Juiz não aparecem, mas as UNIVERSAIS (grupo 2: Peticionar/Histórico/Solicitar documento)
-  // continuam disponíveis pro Advogado enquanto o juiz não é sorteado (antes o painel ficava vazio).
-  const aplicaveis = CATALOGO_ACOES.filter(a => a.quando(processo));
-  const porGrupo = new Map();
-  for (const acao of aplicaveis) {
-    if (!porGrupo.has(acao.grupo)) porGrupo.set(acao.grupo, []);
-    porGrupo.get(acao.grupo).push(acao.botao(processo.numero));
-  }
+function acaoDoCatalogo(id) {
+  return CATALOGO_ACOES.find(a => a.id === id);
+}
 
+// Empacota uma lista de botões em ActionRows (máx. 5 por linha, limite do Discord).
+function empacotarBotoes(botoes) {
   const linhas = [];
-  for (const botoesDoGrupo of porGrupo.values()) {
-    for (let i = 0; i < botoesDoGrupo.length; i += 5) {
-      linhas.push(new ActionRowBuilder().addComponents(botoesDoGrupo.slice(i, i + 5)));
-    }
+  for (let i = 0; i < botoes.length; i += 5) {
+    linhas.push(new ActionRowBuilder().addComponents(botoes.slice(i, i + 5)));
   }
   return linhas;
+}
+
+// ---- Fase 4: HUD por cargo (hubs) ----
+// O painel do processo agrupa as ações por CARGO. Cada hub é UM botão na mensagem compartilhada do
+// canal; clicar abre um submenu EFÊMERO (só quem clicou vê) com as ações daquele cargo que se
+// aplicam à FASE (quando) E ao CARGO de quem clicou. O gate real de cada ação continua no seu
+// handler (esconder é só UX). Os hubs reusam o CATALOGO_ACOES (mesmos customIds e handlers) — são
+// camada de apresentação, não um segundo sistema de permissão: a visibilidade por cargo sai do
+// próprio campo `cargo` do catálogo. Ações compartilhadas (ex.: Anexar prova, Registrar depoimento)
+// aparecem em mais de um hub chamando A MESMA função/botão do catálogo, sem duplicar código.
+const HUBS_PROCESSO = [
+  {
+    id: 'hubjuiz', label: '⚖️ Juiz', estilo: ButtonStyle.Primary,
+    visivel: (p) => !!p.juiz,
+    acoes: ['julgar', 'intimar_reu', 'citar_reu_civil', 'emitir_intimacao', 'emitir_mandado', 'registrar_depoimento', 'parte_tardia', 'gerenciar_defesa', 'arquivar_manual', 'voltar_fase', 'gerenciar'],
+  },
+  {
+    id: 'hubmp', label: '🏛️ Ministério Público', estilo: ButtonStyle.Primary,
+    visivel: (p) => p.tipo === 'Penal',
+    // O "peticionar" do MP é a Manifestação do MP (o gate de peticionar é advogado-parte; o MP
+    // manifesta/requer por aqui — oferecer denúncia, arquivar, medida, requerimento livre).
+    acoes: ['manifestacao_mp', 'solicitar_medida', 'registrar_depoimento', 'anexar_prova'],
+  },
+  {
+    id: 'hubadvogado', label: '📎 Advogado / Defesa', estilo: ButtonStyle.Secondary,
+    visivel: () => true,
+    acoes: ['peticionar', 'anexar_prova', 'rol_provas'],
+  },
+  {
+    id: 'hubdelegado', label: '🚓 Delegado', estilo: ButtonStyle.Secondary,
+    visivel: (p) => p.tipo === 'Penal' && !p.juiz,
+    acoes: ['identificar_reu', 'anexar_relatorio', 'gerenciar', 'registrar_depoimento'],
+  },
+];
+
+// Ações universais que ficam como botão DIRETO no painel (fora de hub) — qualquer parte precisa
+// delas em qualquer fase/tipo, então não faz sentido escondê-las atrás de um cargo. (Histórico e
+// "Solicitar documento externo" são `cargo: qualquer`; "Designar Juiz" é ação de destravamento.)
+const ACOES_UNIVERSAIS_PAINEL = ['historico', 'solicitar_documento_externo', 'designar_juiz'];
+
+function botaoHub(hub, numero) {
+  return new ButtonBuilder().setCustomId(`painel:acao:processo:${hub.id}:${numero}`).setLabel(hub.label).setStyle(hub.estilo);
+}
+
+// Uma ação é visível para ESTE clicker? Reusa o metadado `cargo` do catálogo (não cria sistema
+// novo): 'qualquer' → todos; senão precisa ter um dos cargos (temCargo) ou ser staff/admin. É só
+// filtro de UX no submenu efêmero — o gate de verdade continua no handler de cada ação.
+function acaoVisivelParaClicker(interaction, acao) {
+  if ((acao.cargo || []).includes('qualquer')) return true;
+  if (isSuperStaff(interaction) || isAdmin(interaction)) return true;
+  return (acao.cargo || []).some(c => temCargo(interaction, c));
+}
+
+// Monta o painel de ações do processo (Fase 4): um botão por HUB de cargo cuja fase se aplica, mais
+// os botões universais. O conteúdo de cada hub é resolvido no clique (abrirHubProcesso), por cargo
+// de quem clicou. Em status terminal o painel some (sem ações).
+function montarPainelAcoes(processo) {
+  if (STATUS_TERMINAIS_PAINEL.includes(processo.status)) return [];
+  const botoes = [];
+  for (const hub of HUBS_PROCESSO) {
+    if (!hub.visivel(processo)) continue;
+    // Só cria o botão-hub se ao menos uma ação dele se aplica à fase atual (senão o submenu
+    // nasceria vazio pra todo mundo).
+    const temAlgo = hub.acoes.some(id => { const a = acaoDoCatalogo(id); return a && a.quando(processo); });
+    if (temAlgo) botoes.push(botaoHub(hub, processo.numero));
+  }
+  for (const id of ACOES_UNIVERSAIS_PAINEL) {
+    const a = acaoDoCatalogo(id);
+    if (a && a.quando(processo)) botoes.push(a.botao(processo.numero));
+  }
+  return empacotarBotoes(botoes);
 }
 
 // Painel geral de ações do processo (Autos Digitais, seção 6) — a MESMA combinação embed+botões
@@ -605,6 +626,29 @@ async function repostarPainel(guild, processoOuNumero) {
 
   const nova = await canal.send(painel).catch(() => null);
   db.atualizar('processos', processo.numero, { painelMsgId: nova?.id || null });
+}
+
+// Abre o submenu efêmero de um hub de cargo (Fase 4) — só quem clicou enxerga. Mostra as ações do
+// hub aplicáveis à fase (quando) E visíveis pro cargo de quem clicou; cada ação reusa o botão do
+// catálogo (mesmo customId/handler), então o gate real continua no handler da ação (esconder é UX).
+async function abrirHubProcesso(interaction, hubId, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  const hub = HUBS_PROCESSO.find(h => h.id === hubId);
+  if (!hub) return interaction.reply({ content: 'Menu indisponível.', ephemeral: true });
+
+  const acoes = hub.acoes
+    .map(acaoDoCatalogo)
+    .filter(a => a && a.quando(processo) && acaoVisivelParaClicker(interaction, a));
+
+  if (acoes.length === 0) {
+    return interaction.reply({ content: `Você não tem ações disponíveis em **${hub.label}** neste processo.`, ephemeral: true });
+  }
+  return interaction.reply({
+    content: `${hub.label} — escolha a ação:`,
+    components: empacotarBotoes(acoes.map(a => a.botao(numero))),
+    ephemeral: true,
+  });
 }
 
 // ---- Depoimento de testemunha (spec-atualizacoes-bot-juridico.md, seção 0) ----
@@ -763,7 +807,7 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
 
   const processo = db.buscarPorNumero('processos', numero);
   const mencoes = [delegadoId, promotorFinal].filter(Boolean).map(id => `<@${id}>`).join(' ');
-  const msgAbertura = await canal.send({ content: mencoes, embeds: [embedProcesso(processo)], components: [botoesDenuncia(numero)] });
+  const msgAbertura = await canal.send({ content: mencoes, embeds: [embedProcesso(processo)], components: montarPainelAcoes(processo) });
   // A mensagem de abertura JÁ É o painel geral (mesmo conteúdo que painelAtual produziria pra
   // um Penal sem juiz) — grava o id agora pra repostarPainel achar e limpar ela mais tarde, em
   // vez de deixá-la pra trás com botões vivos na primeira vez que algum andamento futuro repostar.
@@ -830,7 +874,7 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
 
   const processo = db.buscarPorNumero('processos', numero);
   const componentes = [botoesCivilAbertura(numero), botaoAnexarPeticaoInicial(numero)];
-  if (juizId) componentes.push(...botoesJuiz(numero));
+  if (juizId) componentes.push(...montarPainelAcoes(processo));
   const avisoSemJuiz = juizId ? '' : '\n\n⚠️ **Nenhum Juiz foi sorteado ainda.** Não há Juiz elegível — provavelmente porque o único Juiz cadastrado é parte/advogado deste processo (juiz não julga a própria causa), ou não há Juiz cadastrado. Assim que existir um Juiz elegível, o sorteio acontece **automaticamente** (o bot tenta de novo a cada 10 min). O painel completo (Julgar, etc.) aparece quando houver Juiz.';
   await canal.send({
     content: `<@${advogadoId}>${juizId ? ` <@${juizId}>` : ''}\n📎 Clique em **"Anexar petição inicial"** abaixo pra juntar o PDF aos autos.${avisoSemJuiz}`,
@@ -845,7 +889,7 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
   // uso único desta fase ("Anexar petição inicial") — se repostarPainel limpasse os componentes
   // dela mais tarde, apagaria também um botão que ainda pode ser necessário.
 
-  await postarOuAtualizarDiario(guild, numero);
+  await postarOuAtualizarCapaPublica(guild, numero);
   await auditoria.registrar(guild, { acao: 'Processo civil aberto', executorId: advogadoId, referencia: numero });
   return { numero, canal };
 }
@@ -1112,14 +1156,14 @@ function botaoSolicitarHabilitacao(numero) {
 
 // Publica a capa no canal "Advogar - Pegar Casos" na primeira vez que o processo se torna público, e
 // depois disso EDITA o mesmo post a cada mudança relevante (nunca duplica).
-async function postarOuAtualizarDiario(guild, numero) {
-  if (!config.canalDiarioOficialId) return;
+async function postarOuAtualizarCapaPublica(guild, numero) {
+  if (!config.canalAdvogarPegarCasosId) return;
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo || !processoPublico(processo)) return;
 
-  const canal = await guild.channels.fetch(config.canalDiarioOficialId).catch(() => null);
+  const canal = await guild.channels.fetch(config.canalAdvogarPegarCasosId).catch(() => null);
   if (!canal || !canal.isTextBased?.()) {
-    console.error(`CANAL_ADVOGAR_PEGAR_CASOS_ID (${config.canalDiarioOficialId}) não é um canal de texto válido — capa do processo ${numero} não foi publicada.`);
+    console.error(`CANAL_ADVOGAR_PEGAR_CASOS_ID (${config.canalAdvogarPegarCasosId}) não é um canal de texto válido — capa do processo ${numero} não foi publicada.`);
     return;
   }
 
@@ -1208,7 +1252,7 @@ async function marcarIntimacaoReuCumprida(interaction, numero) {
     executorId: interaction.user.id,
   });
   await auditoria.registrar(interaction.guild, { acao: 'Intimação do réu cumprida', executorId: interaction.user.id, referencia: `Processo ${numero}` });
-  await postarOuAtualizarDiario(interaction.guild, numero); // revela a capa cega no canal de advogados
+  await postarOuAtualizarCapaPublica(interaction.guild, numero); // revela a capa cega no canal de advogados
   await repostarPainel(interaction.guild, numero);
   return interaction.update({ content: '✅ Intimação do réu cumprida — habilitação da defesa aberta. O caso aparece (cego) no canal de advogados e o prazo de 48h para constituir advogado começou.', components: [] });
 }
@@ -1288,7 +1332,7 @@ async function vincularReu({ guild, numero, reusTexto, executorId = null }) {
     await canal.send({ embeds: [embedProcesso(db.buscarPorNumero('processos', numero))] });
   }
 
-  await postarOuAtualizarDiario(guild, numero);
+  await postarOuAtualizarCapaPublica(guild, numero);
   if (executorId) {
     await andamentos.registrar(guild, numero, {
       tipo: 'parte_tardia_reu', titulo: '🧑‍⚖️ Réu adicionado ao processo',
@@ -1960,7 +2004,7 @@ async function arquivarCivil(interaction, numero) {
   }
 
   await auditoria.registrar(interaction.guild, { acao: 'Petição inicial arquivada (civil)', executorId: interaction.user.id, referencia: `Processo ${numero}` });
-  await postarOuAtualizarDiario(interaction.guild, numero);
+  await postarOuAtualizarCapaPublica(interaction.guild, numero);
 }
 
 // ---- Revisão de arquivamento (Delegado pede, Procurador decide — ver commands/supervisao.js) ----
@@ -3014,7 +3058,7 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
       if (novoJuizId) await canais.adicionarMembro(canalOriginalParaJuiz, novoJuizId);
       await canalOriginalParaJuiz.send({
         content: `Apelação ${numeroApelacao} anulou a sentença.${novoJuizId ? ` <@${novoJuizId}> foi sorteado para novo julgamento.` : ' Nenhum Juiz disponível pra sorteio — atribua manualmente.'}`,
-        components: novoJuizId ? botoesJuiz(processoOriginal.numero) : [],
+        components: novoJuizId ? montarPainelAcoes(db.buscarPorNumero('processos', processoOriginal.numero)) : [],
       });
       if (novoJuizId) {
         const processoReaberto = db.buscarPorNumero('processos', processoOriginal.numero);
@@ -3059,7 +3103,7 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
         ...anexoAcordao,
       });
     }
-    await postarOuAtualizarDiario(interaction.guild, processoOriginal.numero);
+    await postarOuAtualizarCapaPublica(interaction.guild, processoOriginal.numero);
   }
 
   await auditoria.registrar(interaction.guild, {
@@ -3203,7 +3247,7 @@ async function executarSentenca(interaction, numero, modo) {
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) await canais.arquivarCanal(canal);
   await auditoria.registrar(interaction.guild, { acao: `Sentença: ${resultado}`, executorId: interaction.user.id, referencia: `Processo ${numero}` });
-  await postarOuAtualizarDiario(interaction.guild, numero);
+  await postarOuAtualizarCapaPublica(interaction.guild, numero);
 }
 
 module.exports = {
@@ -3456,7 +3500,7 @@ module.exports = {
   verProcesso,
   verHistoricoProcesso,
   listarProcessos,
-  postarOuAtualizarDiario,
+  postarOuAtualizarCapaPublica,
   abrirSelectPapelParteTardia,
   processarSelecaoPapelParteTardia,
   confirmarParteTardia,
@@ -3484,6 +3528,7 @@ module.exports = {
   processarSelecaoTestemunha,
   registrarDepoimentoHandler,
   montarPainelAcoes,
+  abrirHubProcesso,
   peticionar,
   decidirPeticao,
   abrirModalAnexarProva,
