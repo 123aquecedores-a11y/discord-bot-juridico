@@ -15,7 +15,7 @@ const { historicoDoProcesso } = require('../utils/historico');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const dossie = require('../utils/dossie');
-const { aguardarAnexoPDF, aguardarAnexos } = require('../utils/anexoPdf');
+const { aguardarAnexoPDF, aguardarAnexos, coletarAnexoPdf } = require('../utils/anexoPdf');
 const cartorio = require('../utils/cartorio');
 const preferencias = require('../utils/preferencias');
 const { RascunhoTTL } = require('../utils/rascunhoTtl');
@@ -111,23 +111,14 @@ function botoesDenuncia(numero) {
   );
 }
 
-// Modal final da sentença — extraído pra ser reaproveitado tanto pelo caminho direto
-// (Absolvido/Procedente/Improcedente, sem tela de apoio) quanto pelos botões "Continuar"/"Pular
-// sugestões" da tela de apoio à condenação (ver montarPainelSentencaPenal).
+// Modal final da sentença do caminho direto: absolvição penal e cível (procedente/improcedente),
+// sem tela de apoio. A condenação penal não passa por aqui — vai sempre pelo fluxo por-crime
+// (veredicto por crime → modalSentencaPorCrime), que é quem coleta pena e regime.
 function modalSentenca(numero, resultado) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:sentenca:${numero}#${resultado}`).setTitle('Sentença');
   modal.addComponents(new ActionRowBuilder().addComponents(
     new TextInputBuilder().setCustomId('texto').setLabel('Fundamentação e decisão').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
   ));
-  // Pena e regime só fazem sentido numa condenação — sentença absolutória e cível não têm
-  // esses dados, e o modal do Discord não tem como esconder campo depois de criado, só
-  // decide o conjunto de campos na hora de montar (resultado já é conhecido aqui).
-  if (resultado === 'Condenado') {
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('pena').setLabel('Pena (ex: 6 anos de reclusão)').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('regime').setLabel('Regime inicial (ex: semiaberto)').setStyle(TextInputStyle.Short).setRequired(true)),
-    );
-  }
   return modal;
 }
 
@@ -244,14 +235,31 @@ async function confirmarParecerMp(interaction, chave) {
 }
 
 // Gera a revisão por IA e mostra antes→depois; o Promotor escolhe qual enviar.
-async function revisarParecerTexto(interaction, numero) {
-  const d = rascunhoDecisao.get(chaveParecer(interaction.user.id, numero));
-  if (!d) return interaction.update({ content: 'A prévia do parecer expirou. Refaça a ação.', components: [] }).catch(() => {});
+// R1 — esqueleto ÚNICO da revisão-IA in-flow (parecer/razões/acórdão/sentença): pega o rascunho,
+// guarda contra expiração, revisa o texto pela IA e mostra a tela antes→depois (ou o fallback).
+// Cada fluxo é um wrapper fino que só informa a chave, o campo do texto no rascunho, a tela e a
+// mensagem de expiração — comportamento idêntico ao que era copiado 4×.
+async function revisarRascunho(interaction, { chave, campo, telaId, extra, msgExpirou }) {
+  const d = rascunhoDecisao.get(chave);
+  if (!d) return interaction.update({ content: msgExpirou, components: [] }).catch(() => {});
   await interaction.deferUpdate();
-  const revisado = await cartorio.revisarTexto(d.texto).catch(() => null);
-  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('parecermp', numero));
+  const revisado = await cartorio.revisarTexto(d[campo]).catch(() => null);
+  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA(telaId, extra));
   d.textoRevisado = revisado;
-  return interaction.editReply(revisaoIA.telaAntesDepois('parecermp', { extra: numero, textoOriginal: d.texto, textoRevisado: revisado }));
+  return interaction.editReply(revisaoIA.telaAntesDepois(telaId, { extra, textoOriginal: d[campo], textoRevisado: revisado }));
+}
+
+// R1 — escolhe o texto a publicar (original ou o revisado pela IA) e, no modo 'auto', gera a
+// revisão sob demanda (fallback pro original se a IA não responder). `campo` é a chave do texto no
+// rascunho (texto/razoes/fundamentacao). Substitui o trio usarRevisado repetido em cada executar*.
+async function resolverTextoFinal(d, modo, campo) {
+  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d[campo]).catch(() => null);
+  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
+  return usarRevisado && d.textoRevisado ? d.textoRevisado : d[campo];
+}
+
+async function revisarParecerTexto(interaction, numero) {
+  return revisarRascunho(interaction, { chave: chaveParecer(interaction.user.id, numero), campo: 'texto', telaId: 'parecermp', extra: numero, msgExpirou: 'A prévia do parecer expirou. Refaça a ação.' });
 }
 
 // Commit do parecer (gera PNG, posta nos autos, sorteia juiz/arquiva). `usarRevisado` decide
@@ -271,9 +279,7 @@ async function executarParecerMp(interaction, numero, modo) {
   await interaction.deferReply({ ephemeral: true });
   rascunhoDecisao.delete(chaveP);
   const acao = d.acao;
-  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.texto).catch(() => null);
-  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
-  const parecer = usarRevisado && d.textoRevisado ? d.textoRevisado : d.texto;
+  const parecer = await resolverTextoFinal(d, modo, 'texto');
   const nomeReu = processo.reuNome || (
     (processo.reus || []).length
       ? (await Promise.all(processo.reus.map(id => documentoPng.nomeExibicao(interaction.guild, id)))).join(' e ')
@@ -323,11 +329,7 @@ async function executarParecerMp(interaction, numero, modo) {
       await canais.adicionarMembro(canal, juizId);
       const reusTxt = (processo.reus || []).map(id => `<@${id}>`).join(', ') || 'réu(s) a identificar';
       const msgPainel = await canal.send({
-        content: documentos.textoDespacho({
-          numero, tipo: processo.tipo, titulo: 'DESPACHO DE RECEBIMENTO DA DENÚNCIA',
-          texto: `Recebo a denúncia oferecida pelo Ministério Público em desfavor de ${reusTxt}. Distribuído por sorteio a <@${juizId}>. Cite-se o(s) réu(s) para instrução e julgamento.`,
-          autorId: interaction.user.id, cargoAutor: 'Promotor de Justiça',
-        }),
+        content: documentos.despachoRecebimentoDenuncia({ numero, tipo: processo.tipo, reusTxt, juizId, autorId: interaction.user.id }),
         components: montarPainelAcoes(db.buscarPorNumero('processos', numero)),
       });
       db.atualizar('processos', numero, { painelMsgId: msgPainel.id });
@@ -860,13 +862,9 @@ async function anexarPeticaoInicial(interaction, numero) {
     return interaction.reply({ content: 'A petição inicial já foi anexada a este processo.', ephemeral: true });
   }
 
-  const anexo = await aguardarAnexoPDF(interaction);
-  if (!anexo) return; // aguardarAnexoPDF já avisou o motivo (tempo esgotado ou não é PDF)
-
-  anexos.criarDocumento({
-    tipo: 'peticao_inicial', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
-    atoOrigemId: numero, protocoloVinculado: numero,
-  });
+  const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'peticao_inicial', protocolo: numero });
+  if (!coletado) return; // coletarAnexoPdf já avisou o motivo (tempo esgotado ou não é PDF)
+  const { anexo } = coletado;
 
   const componentesRestantes = (interaction.message?.components || []).filter(row =>
     !(row.components || []).some(c => c.customId === `painel:acao:processo:anexarpeticaoinicial:${numero}`),
@@ -901,13 +899,9 @@ async function anexarRelatorioInquerito(interaction, numero) {
     return interaction.reply({ content: 'O relatório de inquérito já foi anexado a este processo.', ephemeral: true });
   }
 
-  const anexo = await aguardarAnexoPDF(interaction);
-  if (!anexo) return;
-
-  anexos.criarDocumento({
-    tipo: 'relatorio_inquerito', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
-    atoOrigemId: numero, protocoloVinculado: numero,
-  });
+  const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'relatorio_inquerito', protocolo: numero });
+  if (!coletado) return;
+  const { anexo } = coletado;
 
   const linhasAtualizadas = (interaction.message?.components || []).map(row => {
     const mantidos = (row.components || []).filter(c => c.customId !== `painel:acao:processo:anexarrelatorio:${numero}`);
@@ -949,13 +943,9 @@ async function anexarContestacao(interaction, chave) {
     return interaction.reply({ content: `Este processo não está aguardando contestação no momento (status atual: "${processo.status}").`, ephemeral: true });
   }
 
-  const anexo = await aguardarAnexoPDF(interaction);
-  if (!anexo) return;
-
-  anexos.criarDocumento({
-    tipo: 'contestacao', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
-    atoOrigemId: numero, protocoloVinculado: numero,
-  });
+  const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'contestacao', protocolo: numero });
+  if (!coletado) return;
+  const { anexo } = coletado;
   db.atualizar('processos', numero, { status: 'Concluso para julgamento', contestacaoEm: new Date().toISOString() });
 
   if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
@@ -1003,11 +993,7 @@ async function decretarRevelia(interaction, numero) {
   const processoAtualizado = db.buscarPorNumero('processos', numero);
   const reusTxt = (processo.reus || []).map(id => `<@${id}>`).join(', ') || 'o(a) réu(ré)';
   await interaction.followUp({
-    content: documentos.textoDespacho({
-      numero, tipo: 'Civil', titulo: 'DECRETO DE REVELIA',
-      texto: `Decorrido o prazo de contestação sem manifestação de ${reusTxt}, decreto a revelia, nos termos do art. 344 do Código de Processo Civil. Processo concluso para julgamento.`,
-      autorId: interaction.user.id, cargoAutor: 'Juiz de Direito',
-    }),
+    content: documentos.despachoDecretoRevelia({ numero, reusTxt, autorId: interaction.user.id }),
     embeds: [embedProcesso(processoAtualizado)],
   });
 
@@ -1181,8 +1167,7 @@ async function intimarReu(interaction, numero) {
   const codigo = processo.codigoHabilitacao || gerarCodigoHabilitacao();
   if (!processo.codigoHabilitacao) db.atualizar('processos', numero, { codigoHabilitacao: codigo });
 
-  const teor = 'Fica o(a) réu(ré) INTIMADO(a) a constituir advogado para sua defesa nos autos deste processo, no prazo legal. Apresente esta via ao advogado que escolher — o código abaixo é necessário para a habilitação da defesa. Não havendo advogado constituído no prazo, o Juízo nomeará defensor dativo e o processo seguirá com defesa (ampla defesa assegurada).';
-  const corpoComCodigo = `${teor}\n\n=========================\nVIA DO RÉU — CÓDIGO DE HABILITAÇÃO DA DEFESA: ${codigo}\nEntregue este código ao seu advogado. Informar dados falsos ou tentar adivinhar o código é infração sujeita a sanção administrativa.`;
+  const corpoComCodigo = documentos.corpoIntimacaoReu(codigo);
 
   const nomeJuiz = await documentoPng.nomeExibicao(interaction.guild, processo.juiz);
   const png = await documentoPng.gerarDocumentoPNG({
@@ -1428,6 +1413,17 @@ function dadosBatemComReu(processo, nome, rg) {
   }
   return alvos.some(a => a.nome && a.rg && normalizarDado(a.nome) === nomeIn && normalizarDado(a.rg) === rgIn);
 }
+// Réu "identificado" = existe algum alvo (reuNome/reuRg do processo, ou parte com papel réu) com
+// nome E RG preenchidos. Sem isso não há contra o que conferir os dados informados, e o inquérito
+// pode ser intimado (gerando código) antes de o réu ter RG nos autos — então cobrar dadosBatemComReu
+// nesse estado travaria toda habilitação mesmo com o código certo.
+function reuIdentificado(processo) {
+  const alvos = [{ nome: processo.reuNome, rg: processo.reuRg }];
+  for (const p of (processo.partes || [])) {
+    if (/r[ée]u/i.test(p.papel || '')) alvos.push({ nome: p.nome, rg: p.rg });
+  }
+  return alvos.some(a => a.nome && a.rg);
+}
 function habilitacaoBloqueada(processo, uid) {
   const t = (processo.tentativasHabilitacao || []).find(x => x.advogadoId === uid);
   return !!(t && t.erros >= 3);
@@ -1491,7 +1487,11 @@ async function criarHabilitacaoPenal(interaction, processo, numero) {
   const codigoInformado = (interaction.fields.getTextInputValue('codigo') || '').trim();
 
   const codigoOk = !!processo.codigoHabilitacao && codigoInformado === processo.codigoHabilitacao;
-  const dadosOk = dadosBatemComReu(processo, nomeCliente, rgCliente);
+  // Se o réu ainda não foi identificado nos autos (sem nome+RG), não há como conferir os dados
+  // informados — a habilitação se apoia só no código (entregue de forma privada na intimação).
+  // Assim o código continua funcionando e o advogado não é bloqueado por um dado que ninguém tem.
+  const reuJaIdentificado = reuIdentificado(processo);
+  const dadosOk = !reuJaIdentificado || dadosBatemComReu(processo, nomeCliente, rgCliente);
 
   if (!codigoOk || !dadosOk) {
     const tentativas = processo.tentativasHabilitacao || [];
@@ -1713,6 +1713,10 @@ async function removerHabilitacao(interaction, numero, habIdTexto) {
   const alvo = habilitacoes.find(h => h.id === Number(habIdTexto));
   if (!alvo) return interaction.reply({ content: 'Habilitação não encontrada.', ephemeral: true });
 
+  // Réu pode ser só nome/RG (sem Discord): reuId null geraria `<@null>`. Mesma referência que
+  // decidirHabilitacao usa — menção se tem Discord, senão o nome.
+  const reuRef = alvo.reuId ? `<@${alvo.reuId}>` : `**${alvo.reuNome || 'o réu'}**`;
+
   const atualizadas = habilitacoes.map(h => h.id === alvo.id ? { ...h, status: 'Removido' } : h);
   db.atualizar('processos', numero, { habilitacoes: atualizadas });
 
@@ -1720,15 +1724,15 @@ async function removerHabilitacao(interaction, numero, habIdTexto) {
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) {
     if (!aindaTemAcesso) await canal.permissionOverwrites.delete(alvo.advogadoId).catch(() => {});
-    await canal.send({ content: `<@${alvo.advogadoId}> foi removido da defesa de <@${alvo.reuId}> pelo Juiz. O réu mantém acesso ao canal.` });
+    await canal.send({ content: `<@${alvo.advogadoId}> foi removido da defesa de ${reuRef} pelo Juiz. O réu mantém acesso ao canal.` });
   }
 
   await auditoria.registrar(interaction.guild, {
     acao: 'Advogado removido da defesa', executorId: interaction.user.id,
-    referencia: `Processo ${numero}: <@${alvo.advogadoId}> (defendia <@${alvo.reuId}>)`,
+    referencia: `Processo ${numero}: <@${alvo.advogadoId}> (defendia ${reuRef})`,
   });
 
-  return interaction.update({ content: `Removido. <@${alvo.advogadoId}> não representa mais <@${alvo.reuId}> neste processo.`, components: [] });
+  return interaction.update({ content: `Removido. <@${alvo.advogadoId}> não representa mais ${reuRef} neste processo.`, components: [] });
 }
 
 // ---- Intimação (Juiz) ----
@@ -1752,19 +1756,10 @@ function modalIntimacao(numero, { destinatarioId, destinatarioNome, teorPadrao }
 // GENÉRICO "Emitir intimação". O "Receber e intimar" da petição inicial civil (abaixo) continua
 // exatamente como sempre foi, com preenchimento automático próprio — não usa nada disto.
 
-const TEOR_PRESETS_INTIMACAO = {
-  depoimento: { label: 'Prestar depoimento como testemunha', texto: 'Fica Vossa Senhoria intimado(a) a comparecer para prestar depoimento como testemunha nos autos deste processo, em data e local a serem informados.' },
-  defesa: { label: 'Apresentar defesa', texto: 'Fica Vossa Senhoria intimado(a) a apresentar defesa nos autos deste processo, no prazo legal.' },
-  audiencia: { label: 'Comparecer à audiência', texto: 'Fica Vossa Senhoria intimado(a) a comparecer à audiência designada nos autos deste processo.' },
-  esclarecimentos: { label: 'Prestar esclarecimentos', texto: 'Fica Vossa Senhoria intimado(a) a comparecer para prestar esclarecimentos nos autos deste processo.' },
-  determinacao: { label: 'Cumprir determinação judicial', texto: 'Fica Vossa Senhoria intimado(a) a cumprir a determinação judicial constante nos autos deste processo.' },
-  outro: { label: 'Outro', texto: '' },
-};
-
 function selectTeorIntimacao(customId) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder('Qual o teor da intimação?')
-      .addOptions(Object.entries(TEOR_PRESETS_INTIMACAO).map(([value, { label }]) => ({ label, value }))),
+      .addOptions(Object.entries(documentos.TEOR_PRESETS_INTIMACAO).map(([value, { label }]) => ({ label, value }))),
   );
 }
 
@@ -1839,7 +1834,7 @@ async function confirmarDestinatarioForaIntimacao(interaction, numero) {
 
 async function processarSelecaoTeorIntimacao(interaction, chaveDestinatario) {
   const [numero, destinatarioRef] = chaveDestinatario.split('#');
-  const preset = TEOR_PRESETS_INTIMACAO[interaction.values[0]];
+  const preset = documentos.TEOR_PRESETS_INTIMACAO[interaction.values[0]];
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:intimargenerico:${numero}#${destinatarioRef}`).setTitle(`Intimação — ${preset.label}`.slice(0, 45));
   const campoTeor = new TextInputBuilder().setCustomId('teor').setLabel('Teor da intimação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000);
   if (preset.texto) campoTeor.setValue(preset.texto);
@@ -1881,7 +1876,7 @@ async function abrirModalReceberEIntimar(interaction, numero) {
   // Sem Discord, o réu ainda é conhecido por nome+RG (gravados na abertura) — vira a dica do campo
   // e o destinatário do documento, sem forçar o Juiz a arranjar um @ (Frente 5.2).
   const reuNomeRg = processo.reuNome ? `${processo.reuNome}${processo.reuRg ? ` (RG ${processo.reuRg})` : ''}` : null;
-  const teorPadrao = `Fica Vossa Senhoria citado(a) para, querendo, apresentar contestação no prazo de ${config.prazoContestacaoDias} dias corridos, contados desta citação, sob pena de revelia.`;
+  const teorPadrao = documentos.teorCitacao(config.prazoContestacaoDias);
   return interaction.showModal(modalIntimacao(numero, { destinatarioId: reuId, destinatarioNome: reuNomeRg, teorPadrao }));
 }
 
@@ -1959,11 +1954,7 @@ async function arquivarCivil(interaction, numero) {
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) {
     await canal.send({
-      content: documentos.textoDespacho({
-        numero, tipo: 'Civil', titulo: 'DESPACHO DE INDEFERIMENTO DA PETIÇÃO INICIAL',
-        texto: 'Analisados os requisitos de admissibilidade, INDEFIRO a petição inicial, ante a ausência de requisitos essenciais para o regular prosseguimento do feito, e determino o arquivamento.',
-        autorId: interaction.user.id, cargoAutor: 'Juiz(a) de Direito',
-      }),
+      content: documentos.despachoIndeferimentoInicial({ numero, autorId: interaction.user.id }),
     });
     await canais.arquivarCanal(canal);
   }
@@ -2399,7 +2390,7 @@ async function salvarAddCrime(interaction, numero) {
 async function intimarDefesaSobreCrimeNovo(guild, processo, crimesNovos, executorId) {
   const numero = processo.numero;
   const nomes = crimesNovos.map(c => crimeLabel(c)).join('; ');
-  const teor = `Fica a defesa INTIMADA a se manifestar, no prazo legal, sobre o(s) crime(s) acrescentado(s) à imputação: ${nomes}. Assegura-se o contraditório quanto a esta(s) imputação(ões) antes de qualquer julgamento a seu respeito.`;
+  const teor = documentos.teorIntimacaoCrimeTardio(nomes);
   const habilitados = (processo.habilitacoes || []).filter(h => h.status === 'Aprovado');
   for (const h of habilitados) {
     await postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId: h.advogadoId, destinatarioNome: null, teor });
@@ -2844,13 +2835,7 @@ async function confirmarRazoes(interaction, numero) {
 }
 
 async function revisarRazoesTexto(interaction, numero) {
-  const d = rascunhoDecisao.get(chaveRazoes(interaction.user.id, numero));
-  if (!d) return interaction.update({ content: 'A prévia do recurso expirou. Refaça a ação.', components: [] }).catch(() => {});
-  await interaction.deferUpdate();
-  const revisado = await cartorio.revisarTexto(d.razoes).catch(() => null);
-  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('razoes', numero));
-  d.textoRevisado = revisado;
-  return interaction.editReply(revisaoIA.telaAntesDepois('razoes', { extra: numero, textoOriginal: d.razoes, textoRevisado: revisado }));
+  return revisarRascunho(interaction, { chave: chaveRazoes(interaction.user.id, numero), campo: 'razoes', telaId: 'razoes', extra: numero, msgExpirou: 'A prévia do recurso expirou. Refaça a ação.' });
 }
 
 async function criarApelacao(interaction, numero, modo) {
@@ -2865,9 +2850,7 @@ async function criarApelacao(interaction, numero, modo) {
   // Defer antes de criar canal (operação lenta) — evita o estouro da janela de 3s do Discord.
   await interaction.deferReply({ ephemeral: true });
   rascunhoDecisao.delete(chaveR);
-  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.razoes).catch(() => null);
-  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
-  const razoes = usarRevisado && d.textoRevisado ? d.textoRevisado : d.razoes;
+  const razoes = await resolverTextoFinal(d, modo, 'razoes');
   const recorrenteId = interaction.user.id;
   const parteContrariaId = parteContrariaDoRecurso(processo, recorrenteId);
 
@@ -3018,7 +3001,9 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
     // mantém o comportamento anterior (Instrução) — não tem pra quem mandar o dossiê ainda.
     db.atualizar('processos', processoOriginal.numero, {
       status: novoJuizId ? 'Concluso para julgamento' : 'Instrução',
-      juiz: novoJuizId, juizDesde: new Date().toISOString(), sentenca: null, resultado: null, apelacaoNumero: null,
+      // sentencaPorCrime[] acompanha sentenca/resultado (penal por-crime); anular sem limpá-lo deixa
+      // o veredicto por crime antigo órfão até o re-julgamento (lido em displays e no PNG).
+      juiz: novoJuizId, juizDesde: new Date().toISOString(), sentenca: null, resultado: null, sentencaPorCrime: null, apelacaoNumero: null,
     });
     const canalOriginalParaJuiz = await interaction.guild.channels.fetch(processoOriginal.canalId).catch(() => null);
     if (canalOriginalParaJuiz) {
@@ -3103,13 +3088,7 @@ async function confirmarAcordao(interaction, numeroApelacao, decisao, extras = {
 }
 
 async function revisarAcordaoTexto(interaction, numeroApelacao) {
-  const d = rascunhoDecisao.get(chaveAcordao(interaction.user.id, numeroApelacao));
-  if (!d) return interaction.update({ content: 'A prévia do acórdão expirou. Refaça a decisão.', components: [] }).catch(() => {});
-  await interaction.deferUpdate();
-  const revisado = await cartorio.revisarTexto(d.fundamentacao).catch(() => null);
-  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('acordao', numeroApelacao));
-  d.textoRevisado = revisado;
-  return interaction.editReply(revisaoIA.telaAntesDepois('acordao', { extra: numeroApelacao, textoOriginal: d.fundamentacao, textoRevisado: revisado }));
+  return revisarRascunho(interaction, { chave: chaveAcordao(interaction.user.id, numeroApelacao), campo: 'fundamentacao', telaId: 'acordao', extra: numeroApelacao, msgExpirou: 'A prévia do acórdão expirou. Refaça a decisão.' });
 }
 
 async function executarAcordao(interaction, numeroApelacao, modo) {
@@ -3119,12 +3098,8 @@ async function executarAcordao(interaction, numeroApelacao, modo) {
   rascunhoDecisao.delete(chaveA);
   // Modo automático: acusa o recebimento (defer) e revisa aqui, já que finalizarApelacao usa o
   // texto logo em seguida. Fallback pro original se a IA não responder.
-  if (modo === 'auto') {
-    await interaction.deferReply({ ephemeral: true });
-    if (!d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.fundamentacao).catch(() => null);
-  }
-  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
-  const fundamentacao = usarRevisado && d.textoRevisado ? d.textoRevisado : d.fundamentacao;
+  if (modo === 'auto') await interaction.deferReply({ ephemeral: true });
+  const fundamentacao = await resolverTextoFinal(d, modo, 'fundamentacao');
   return finalizarApelacao(interaction, numeroApelacao, d.decisao, { fundamentacao, novoResultado: d.novoResultado });
 }
 
@@ -3181,9 +3156,7 @@ async function executarSentenca(interaction, numero, modo) {
   // Defer público ANTES do PNG (Puppeteer) — a sentença é pública no canal. No modo "revisão
   // automática" a revisão pela IA acontece depois do defer (é lenta), com fallback pro original.
   await interaction.deferReply();
-  if (modo === 'auto' && !d.textoRevisado) d.textoRevisado = await cartorio.revisarTexto(d.texto).catch(() => null);
-  const usarRevisado = modo === 'auto' ? !!d.textoRevisado : modo;
-  const texto = usarRevisado && d.textoRevisado ? d.textoRevisado : d.texto;
+  const texto = await resolverTextoFinal(d, modo, 'texto');
   const { pena, regime, resultado, sentencaPorCrime } = d;
   db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaPorCrime: sentencaPorCrime || null, sentencaEm: new Date().toISOString() });
 
@@ -3243,12 +3216,14 @@ module.exports = {
       .addUserOption(o => o.setName('promotor').setDescription('Promotor responsável'))
       .addStringOption(o => o.setName('reus').setDescription('Menções @ dos réus, se já identificados'))
       .addStringOption(o => o.setName('medida').setDescription('Número da medida cautelar vinculada, se houver')))
+    // Opções obrigatórias precisam vir ANTES das opcionais (regra do Discord), por isso os dois
+    // nomes + réu_nome (obrigatórios) ficam agrupados antes dos @ do Discord (opcionais).
     .addSubcommand(sub => sub.setName('civil').setDescription('Abre um processo civil — Advogado (anexe a petição inicial depois, no canal)')
       .addStringOption(o => o.setName('nome_acao').setDescription('Nome da ação (ex: Ação indenizatória de perdas e danos por acidente de trânsito)').setRequired(true))
       .addStringOption(o => o.setName('autor_nome').setDescription('Nome completo do autor').setRequired(true))
-      .addUserOption(o => o.setName('autor_discord').setDescription('Usuário Discord do autor').setRequired(true))
       .addStringOption(o => o.setName('reu_nome').setDescription('Nome completo do réu').setRequired(true))
-      .addUserOption(o => o.setName('reu_discord').setDescription('Usuário Discord do réu').setRequired(true)))
+      .addUserOption(o => o.setName('autor_discord').setDescription('Usuário Discord do autor (opcional — deixe vazio se não estiver no Discord)'))
+      .addUserOption(o => o.setName('reu_discord').setDescription('Usuário Discord do réu (opcional — deixe vazio se não estiver no Discord)')))
     .addSubcommand(sub => sub.setName('listar').setDescription('Lista processos')
       .addStringOption(o => o.setName('status').setDescription('Filtrar por status')))
     .addSubcommand(sub => sub.setName('ver').setDescription('Ver detalhes de um processo')
@@ -3290,9 +3265,9 @@ module.exports = {
         advogadoId: interaction.user.id,
         nomeAcao: interaction.options.getString('nome_acao'),
         autorNome: interaction.options.getString('autor_nome'),
-        autorDiscordId: interaction.options.getUser('autor_discord').id,
+        autorDiscordId: interaction.options.getUser('autor_discord')?.id || null,
         reuNome: interaction.options.getString('reu_nome'),
-        reuDiscordId: interaction.options.getUser('reu_discord').id,
+        reuDiscordId: interaction.options.getUser('reu_discord')?.id || null,
       });
 
       return interaction.editReply({ content: `Processo civil ${resultado.numero} aberto em ${resultado.canal}.` });
@@ -3433,22 +3408,15 @@ module.exports = {
       return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processoAlvo.juiz}>.`, ephemeral: true });
     }
 
-    const textoDigitado = interaction.fields.getTextInputValue('texto');
-    // Pena/regime só vêm no modal quando o resultado é Condenado (ver painel.js, select de
-    // resultado) — getTextInputValue lançaria se o campo não existir nesse envio.
-    const pena = resultado === 'Condenado' ? interaction.fields.getTextInputValue('pena') : null;
-    const regime = resultado === 'Condenado' ? interaction.fields.getTextInputValue('regime') : null;
-
-    // Atenuantes marcadas na tela de apoio (se o Juiz passou por ela) — puramente qualitativo,
-    // só acrescenta a frase padrão no texto da sentença; nenhum cálculo de redução de pena.
-    const atenuantesSelecionadas = resultado === 'Condenado' ? rascunhoSentenca.obter(interaction.user.id, numero) : [];
-    const rotulosAtenuantes = labelsDe(atenuantesSelecionadas);
-    const texto = rotulosAtenuantes.length ? `${textoDigitado}\n\nAtenuada em razão de: ${rotulosAtenuantes.join(', ')}.` : textoDigitado;
+    const texto = interaction.fields.getTextInputValue('texto');
+    // Só chega aqui a absolvição penal e o cível (procedente/improcedente): sem pena, regime ou
+    // atenuantes. A condenação penal vai sempre pelo fluxo por-crime (modalSentencaPorCrime →
+    // salvarSentencaPorCrime), então `resultado` nunca é 'Condenado' neste handler.
     rascunhoSentenca.limpar(interaction.user.id, numero);
 
     // Em vez de publicar direto, guarda o rascunho e oferece a revisão por IA DENTRO do fluxo
     // dos Fundamentos (Discord não deixa botão dentro do modal, então é o passo logo após).
-    rascunhoDecisao.set(chaveDecisao(interaction.user.id, numero), { texto, pena, regime, resultado });
+    rascunhoDecisao.set(chaveDecisao(interaction.user.id, numero), { texto, pena: null, regime: null, resultado });
     // Revisão automática ligada: pula a tela de escolha e já publica o texto revisado pela IA.
     if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return executarSentenca(interaction, numero, 'auto');
     return interaction.reply(revisaoIA.telaEscolha('sentenca', { extra: numero, titulo: 'Fundamentos da sentença', texto }));
@@ -3456,13 +3424,7 @@ module.exports = {
 
   // Gera a revisão por IA e mostra antes→depois; o Juiz escolhe qual publicar.
   async revisarSentencaTexto(interaction, numero) {
-    const d = rascunhoDecisao.get(chaveDecisao(interaction.user.id, numero));
-    if (!d) return interaction.update({ content: 'A prévia da sentença expirou. Refaça pelo botão "Julgar".', components: [] }).catch(() => {});
-    await interaction.deferUpdate();
-    const revisado = await cartorio.revisarTexto(d.texto).catch(() => null);
-    if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('sentenca', numero));
-    d.textoRevisado = revisado;
-    return interaction.editReply(revisaoIA.telaAntesDepois('sentenca', { extra: numero, textoOriginal: d.texto, textoRevisado: revisado }));
+    return revisarRascunho(interaction, { chave: chaveDecisao(interaction.user.id, numero), campo: 'texto', telaId: 'sentenca', extra: numero, msgExpirou: 'A prévia da sentença expirou. Refaça pelo botão "Julgar".' });
   },
 
   async publicarSentenca(interaction, numero) { return executarSentenca(interaction, numero, false); },
@@ -3487,10 +3449,8 @@ module.exports = {
 
   criarProcessoPenal,
   criarProcessoCivil,
-  vincularReu,
   modalSentenca,
   embedProcesso,
-  embedCapaPublica,
   processoPublico,
   temAcessoTotal,
   verProcesso,
@@ -3523,7 +3483,6 @@ module.exports = {
   abrirSelectTestemunha,
   processarSelecaoTestemunha,
   registrarDepoimentoHandler,
-  botoesJuiz,
   montarPainelAcoes,
   peticionar,
   decidirPeticao,
@@ -3548,11 +3507,9 @@ module.exports = {
   salvarSentencaPorCrime,
   intimarReu,
   marcarIntimacaoReuCumprida,
-  painelAtual,
   repostarPainel,
   pedirRevisaoArquivamento,
   abrirModalRecorrer,
-  criarApelacao,
   abrirSelecaoResultadoReforma,
   abrirModalFundamentacaoReforma,
   abrirModalFundamentacaoDecisao,

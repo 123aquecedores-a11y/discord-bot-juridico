@@ -24,17 +24,21 @@ async function avisarCasoSemJuiz(client, guild, { tabela, numero, canalId }) {
   if (!reg || reg.avisoSemJuizEnviado) return;
   const criado = parseCriadoEm(reg.criado_em);
   if (criado && Date.now() - criado.getTime() < GRACE_SEM_JUIZ_MS) return; // ainda no grace
-  db.atualizar(tabela, numero, { avisoSemJuizEnviado: true });
 
   const canal = canalId ? await guild.channels.fetch(canalId).catch(() => null) : null;
+  let enviado = false;
   if (canal) {
-    await canal.send({
+    enviado = await canal.send({
       content: '⚖️ **Comunicação do Tribunal** — não há Juiz disponível na lotação neste momento. O sorteio é retentado automaticamente a cada 10 (dez) minutos e, assim que houver Juiz elegível, o caso será distribuído. Se preferir agilizar, a **Supervisão** (Desembargador/Procurador) ou a **Staff** pode designar um Juiz agora.',
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`painel:acao:supervisao:designarjulgador:${numero}`).setLabel('⚖️ Designar Juiz').setStyle(ButtonStyle.Primary),
       )],
-    });
+    }).then(() => true).catch(() => false);
   }
+  // Só marca como avisado depois do envio ao canal ter dado certo (ou quando não há canal pra
+  // avisar) — assim um envio que falhou é retentado no próximo ciclo em vez de o aviso sumir calado.
+  if (enviado || !canal) db.atualizar(tabela, numero, { avisoSemJuizEnviado: true });
+
   const avisoSup = `⚖️ **Comunicação do Tribunal** — o caso ${numero} está sem Juiz disponível (sorteio sem cargo elegível). Você pode designar um Juiz pelo botão no canal do caso ou por \`/painel\` > Supervisão.`;
   for (const d of rh.listarPorCargo('Desembargador').filter(x => !x.licenca)) await dmSeguro(client, d.discordId, avisoSup);
   for (const pr of rh.listarPorCargo('Procurador').filter(x => !x.licenca)) await dmSeguro(client, pr.discordId, avisoSup);
@@ -154,15 +158,6 @@ async function verificarRenovacoesPorteArma(client) {
   }
 }
 
-// Frente 7: identidade do cliente = nome + RG e a petição é PROTOCOLADA já na abertura (não existe
-// mais o estado 'Aguardando vínculo' nem cancelamento por falta de vínculo de Discord). Este job
-// virou no-op — mantido só pra não quebrar o agendamento em index.js e por compatibilidade com
-// qualquer petição antiga que ainda estivesse nesse estado (o banco de produção foi zerado, então
-// não há nenhuma). Vincular o Discord do cliente passou a ser opcional e nunca cancela nada.
-async function verificarVinculosPendentes() {
-  return; // desativado na Frente 7
-}
-
 // Processo civil sem Juiz disponível na abertura ficava em "Aguardando sorteio de juiz" pra
 // sempre — nada nunca tentava sortear de novo. Roda junto do job frequente (10min): assim que
 // algum Juiz fica disponível, o processo é distribuído automaticamente.
@@ -225,11 +220,12 @@ async function verificarDiligenciasPendentes(client, guild) {
     }
 
     if (decorrido >= AVISO_DILIGENCIA_MS && !p.lembreteDiligenciaEnviado) {
-      db.atualizar('peticoes', p.numero, { lembreteDiligenciaEnviado: true });
       const canal = await guild.channels.fetch(p.canalId).catch(() => null);
-      if (canal) {
-        await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${p.requerenteId}>, restam aproximadamente 4 (quatro) horas para cumprimento da diligência determinada. Junte o documento solicitado e comunique <@${p.juiz}>, sob pena de indeferimento.` });
-      }
+      const enviado = canal
+        ? await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${p.requerenteId}>, restam aproximadamente 4 (quatro) horas para cumprimento da diligência determinada. Junte o documento solicitado e comunique <@${p.juiz}>, sob pena de indeferimento.` }).then(() => true).catch(() => false)
+        : false;
+      // Flag só depois do envio (ou sem canal) — envio falho é retentado, o aviso não se perde.
+      if (enviado || !canal) db.atualizar('peticoes', p.numero, { lembreteDiligenciaEnviado: true });
       await dmSeguro(client, p.requerenteId, `⏰ **Comunicação do Tribunal** — a petição ${p.numero} será indeferida em aproximadamente 4 (quatro) horas, caso a diligência determinada não seja cumprida.`);
     }
   }
@@ -263,9 +259,10 @@ async function verificarMedidasAguardandoMP(client, guild) {
     const decorrido = agora - new Date(m.aguardandoMpDesde).getTime();
 
     if (decorrido >= AVISO_MEDIDA_MP_MS && !m.lembreteMpEnviado) {
-      db.atualizar('medidas', m.numero, { lembreteMpEnviado: true });
       const canal = await guild.channels.fetch(m.canalId).catch(() => null);
-      if (canal) await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${m.promotor}>, a medida ${m.numero} aguarda manifestação do Ministério Público (aprovar/negar) há mais de 20 (vinte) horas.` });
+      const enviado = canal ? await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${m.promotor}>, a medida ${m.numero} aguarda manifestação do Ministério Público (aprovar/negar) há mais de 20 (vinte) horas.` }).then(() => true).catch(() => false) : false;
+      // Flag só depois do envio (ou sem canal) — envio falho é retentado, o aviso não se perde.
+      if (enviado || !canal) db.atualizar('medidas', m.numero, { lembreteMpEnviado: true });
       await dmSeguro(client, m.promotor, `⏰ **Comunicação do Tribunal** — a medida ${m.numero} aguarda sua manifestação há mais de 20 (vinte) horas.`);
     }
 
@@ -287,9 +284,10 @@ async function verificarMedidasAguardandoJuiz(client, guild) {
     const decorrido = agora - new Date(m.aguardandoJuizDesde).getTime();
 
     if (decorrido >= AVISO_MEDIDA_JUIZ_MS && !m.lembreteJuizEnviado) {
-      db.atualizar('medidas', m.numero, { lembreteJuizEnviado: true });
       const canal = await guild.channels.fetch(m.canalId).catch(() => null);
-      if (canal) await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${m.juiz}>, a medida ${m.numero} aguarda deliberação judicial (referendar/negar provimento) há mais de 20 (vinte) horas.` });
+      const enviado = canal ? await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${m.juiz}>, a medida ${m.numero} aguarda deliberação judicial (referendar/negar provimento) há mais de 20 (vinte) horas.` }).then(() => true).catch(() => false) : false;
+      // Flag só depois do envio (ou sem canal) — envio falho é retentado, o aviso não se perde.
+      if (enviado || !canal) db.atualizar('medidas', m.numero, { lembreteJuizEnviado: true });
       await dmSeguro(client, m.juiz, `⏰ **Comunicação do Tribunal** — a medida ${m.numero} aguarda sua deliberação há mais de 20 (vinte) horas.`);
     }
 
@@ -313,13 +311,16 @@ async function verificarMandadosPendentes(client, guild) {
     const criado = parseCriadoEm(m.criado_em);
     if (!criado || agora - criado.getTime() < AVISO_MANDADO_MS) continue;
 
-    db.atualizar('mandados', m.numero, { lembreteMandadoEnviado: true });
     const medida = m.medidaNumero ? db.buscarPorNumero('medidas', m.medidaNumero) : null;
     const delegadoId = medida?.delegado;
-    if (!delegadoId) continue;
+    // Sem delegado responsável não há pra quem avisar — marca assim mesmo pra não reprocessar todo
+    // ciclo (era o efeito do flag antigo, que era gravado logo de cara).
+    if (!delegadoId) { db.atualizar('mandados', m.numero, { lembreteMandadoEnviado: true }); continue; }
 
     const canal = medida.canalId ? await guild.channels.fetch(medida.canalId).catch(() => null) : null;
-    if (canal) await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${delegadoId}>, o mandado ${m.numero} ainda não foi cumprido.` });
+    const enviado = canal ? await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${delegadoId}>, o mandado ${m.numero} ainda não foi cumprido.` }).then(() => true).catch(() => false) : false;
+    // Flag só depois do envio (ou sem canal) — envio falho é retentado, o aviso não se perde.
+    if (enviado || !canal) db.atualizar('mandados', m.numero, { lembreteMandadoEnviado: true });
     await dmSeguro(client, delegadoId, `⏰ **Comunicação do Tribunal** — o mandado ${m.numero} ainda não foi cumprido.`);
   }
 }
@@ -336,9 +337,10 @@ async function verificarApelacoesPendentes(client, guild) {
     const dias = Math.floor((agora - criado.getTime()) / DIA_MS);
 
     if (dias >= AVISO_APELACAO_DIAS && !a.lembreteApelacaoEnviado) {
-      db.atualizar('apelacoes', a.numero, { lembreteApelacaoEnviado: true });
       const canal = await guild.channels.fetch(a.canalId).catch(() => null);
-      if (canal) await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${a.desembargadorId}>, a apelação ${a.numero} aguarda decisão há ${dias} dia(s).` });
+      const enviado = canal ? await canal.send({ content: `⏰ **Comunicação do Tribunal** — <@${a.desembargadorId}>, a apelação ${a.numero} aguarda decisão há ${dias} dia(s).` }).then(() => true).catch(() => false) : false;
+      // Flag só depois do envio (ou sem canal) — envio falho é retentado, o aviso não se perde.
+      if (enviado || !canal) db.atualizar('apelacoes', a.numero, { lembreteApelacaoEnviado: true });
       await dmSeguro(client, a.desembargadorId, `⏰ **Comunicação do Tribunal** — a apelação ${a.numero} aguarda sua decisão há ${dias} dia(s).`);
     }
 
@@ -364,11 +366,12 @@ async function verificarPrazosContestacao(client, guild) {
   for (const p of pendentes) {
     if (agora < new Date(p.prazoContestacaoAte).getTime()) continue;
 
-    db.atualizar('processos', p.numero, { avisoPrazoContestacaoEnviado: true });
     const aviso = `⏰ **Comunicação do Tribunal** — Processo ${p.numero}: o prazo de contestação venceu sem manifestação da defesa. Ponto de atenção — decida manualmente (a contestação ainda pode chegar, ou utilize "Decretar revelia" no canal do processo).`;
     if (p.juiz) await dmSeguro(client, p.juiz, aviso);
     const canal = await guild.channels.fetch(p.canalId).catch(() => null);
-    if (canal) await canal.send({ content: `${p.juiz ? `<@${p.juiz}> ` : ''}${aviso}` });
+    const enviado = canal ? await canal.send({ content: `${p.juiz ? `<@${p.juiz}> ` : ''}${aviso}` }).then(() => true).catch(() => false) : false;
+    // Flag só depois do envio (ou sem canal) — envio falho é retentado, o aviso não se perde.
+    if (enviado || !canal) db.atualizar('processos', p.numero, { avisoPrazoContestacaoEnviado: true });
   }
 }
 
@@ -473,7 +476,7 @@ async function verificarPrazoDefesa(client, guild) {
 }
 
 module.exports = {
-  verificarPrazosJulgamento, verificarRenovacoesPorteArma, verificarVinculosPendentes,
+  verificarPrazosJulgamento, verificarRenovacoesPorteArma,
   verificarProcessosSemJuiz, verificarProcessosPenaisSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
   verificarMedidasAguardandoMP, verificarMedidasAguardandoJuiz, verificarMandadosPendentes,
   verificarApelacoesPendentes, verificarPrazosContestacao,

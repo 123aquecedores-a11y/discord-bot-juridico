@@ -3,7 +3,7 @@ const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const config = require('./config');
 const {
-  verificarPrazosJulgamento, verificarRenovacoesPorteArma, verificarVinculosPendentes,
+  verificarPrazosJulgamento, verificarRenovacoesPorteArma,
   verificarProcessosSemJuiz, verificarProcessosPenaisSemJuiz, verificarDiligenciasPendentes, verificarPeticoesSemJuiz,
   verificarMedidasAguardandoMP, verificarMedidasAguardandoJuiz, verificarMandadosPendentes,
   verificarApelacoesPendentes, verificarPrazosContestacao,
@@ -77,7 +77,6 @@ client.once('ready', async () => {
   // Prazos curtos (1h, 24h), retentativas e limpeza do canal do painel não esperam o job
   // diário — rodam a cada 10min.
   const rodarChecagensFrequentes = () => {
-    verificarVinculosPendentes(client, guild).catch(err => console.error('Erro na checagem de vínculos pendentes:', err));
     verificarProcessosSemJuiz(client, guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (civil):', err));
     verificarProcessosPenaisSemJuiz(client, guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (penal):', err));
     verificarPeticoesSemJuiz(client, guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (petição):', err));

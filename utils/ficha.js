@@ -42,11 +42,6 @@ function vincularDiscordId(rg, discordId, origem = 'Não especificada') {
   }
 }
 
-function enderecosDe(rg) {
-  const ficha = buscarPorRG(rg);
-  return ficha ? (ficha.enderecos || []) : [];
-}
-
 // Não duplica endereço igual (comparação simples, sem normalizar abreviação/acento) — só
 // registra endereço novo de fato, mantendo o histórico completo em vez de sobrescrever.
 function adicionarEndereco(rg, endereco, origem) {
@@ -175,7 +170,7 @@ async function sincronizarNovoMembro(member) {
 
 module.exports = {
   buscarPorRG, buscarPorDiscordId, garantirFicha, vincularDiscordId,
-  enderecosDe, adicionarEndereco, adicionarTelefone, adicionarRedeSocial, buscarPorTermo,
+  adicionarEndereco, adicionarTelefone, adicionarRedeSocial, buscarPorTermo,
   jaTrocouNomeAntes, registrarTrocaNome, definirNomeSeVazio,
   jaTeveLimpezaFichaDeferida, peticoesDoRG, registrosRelacionados, sincronizarNovoMembro,
 };

@@ -374,8 +374,68 @@ function textoOficio({ numero, processoNumero, destinatario, assunto, conteudo, 
   ].join('\n');
 }
 
+// ---- Atos do processo (textos formais antes inline em commands/processo.js, reunidos aqui) ----
+
+// Despacho de recebimento da denúncia (penal) — o Juiz sorteado recebe a denúncia do MP.
+function despachoRecebimentoDenuncia({ numero, tipo, reusTxt, juizId, autorId }) {
+  return textoDespacho({
+    numero, tipo, titulo: 'DESPACHO DE RECEBIMENTO DA DENÚNCIA',
+    texto: `Recebo a denúncia oferecida pelo Ministério Público em desfavor de ${reusTxt}. Distribuído por sorteio a <@${juizId}>. Cite-se o(s) réu(s) para instrução e julgamento.`,
+    autorId, cargoAutor: 'Promotor de Justiça',
+  });
+}
+
+// Decreto de revelia (civil) — réu não contestou no prazo.
+function despachoDecretoRevelia({ numero, reusTxt, autorId }) {
+  return textoDespacho({
+    numero, tipo: 'Civil', titulo: 'DECRETO DE REVELIA',
+    texto: `Decorrido o prazo de contestação sem manifestação de ${reusTxt}, decreto a revelia, nos termos do art. 344 do Código de Processo Civil. Processo concluso para julgamento.`,
+    autorId, cargoAutor: 'Juiz de Direito',
+  });
+}
+
+// Indeferimento da petição inicial (civil) — arquivamento por ausência de requisitos.
+function despachoIndeferimentoInicial({ numero, autorId }) {
+  return textoDespacho({
+    numero, tipo: 'Civil', titulo: 'DESPACHO DE INDEFERIMENTO DA PETIÇÃO INICIAL',
+    texto: 'Analisados os requisitos de admissibilidade, INDEFIRO a petição inicial, ante a ausência de requisitos essenciais para o regular prosseguimento do feito, e determino o arquivamento.',
+    autorId, cargoAutor: 'Juiz(a) de Direito',
+  });
+}
+
+// Teor da citação do réu (civil) — prazo de contestação sob pena de revelia. `prazoDias` fica no
+// chamador (config.prazoContestacaoDias) pra não acoplar documentos.js à config.
+function teorCitacao(prazoDias) {
+  return `Fica Vossa Senhoria citado(a) para, querendo, apresentar contestação no prazo de ${prazoDias} dias corridos, contados desta citação, sob pena de revelia.`;
+}
+
+// Intimação do réu (penal) — manda constituir advogado; a via do réu leva o código de
+// habilitação da defesa impresso no rodapé.
+const TEOR_INTIMACAO_REU = 'Fica o(a) réu(ré) INTIMADO(a) a constituir advogado para sua defesa nos autos deste processo, no prazo legal. Apresente esta via ao advogado que escolher — o código abaixo é necessário para a habilitação da defesa. Não havendo advogado constituído no prazo, o Juízo nomeará defensor dativo e o processo seguirá com defesa (ampla defesa assegurada).';
+
+function corpoIntimacaoReu(codigo) {
+  return `${TEOR_INTIMACAO_REU}\n\n=========================\nVIA DO RÉU — CÓDIGO DE HABILITAÇÃO DA DEFESA: ${codigo}\nEntregue este código ao seu advogado. Informar dados falsos ou tentar adivinhar o código é infração sujeita a sanção administrativa.`;
+}
+
+// Intimação da defesa sobre crime acrescentado tarde — assegura contraditório antes de julgar.
+function teorIntimacaoCrimeTardio(nomesCrimes) {
+  return `Fica a defesa INTIMADA a se manifestar, no prazo legal, sobre o(s) crime(s) acrescentado(s) à imputação: ${nomesCrimes}. Assegura-se o contraditório quanto a esta(s) imputação(ões) antes de qualquer julgamento a seu respeito.`;
+}
+
+// Presets do teor da intimação genérica (select "Qual o teor da intimação?").
+const TEOR_PRESETS_INTIMACAO = {
+  depoimento: { label: 'Prestar depoimento como testemunha', texto: 'Fica Vossa Senhoria intimado(a) a comparecer para prestar depoimento como testemunha nos autos deste processo, em data e local a serem informados.' },
+  defesa: { label: 'Apresentar defesa', texto: 'Fica Vossa Senhoria intimado(a) a apresentar defesa nos autos deste processo, no prazo legal.' },
+  audiencia: { label: 'Comparecer à audiência', texto: 'Fica Vossa Senhoria intimado(a) a comparecer à audiência designada nos autos deste processo.' },
+  esclarecimentos: { label: 'Prestar esclarecimentos', texto: 'Fica Vossa Senhoria intimado(a) a comparecer para prestar esclarecimentos nos autos deste processo.' },
+  determinacao: { label: 'Cumprir determinação judicial', texto: 'Fica Vossa Senhoria intimado(a) a cumprir a determinação judicial constante nos autos deste processo.' },
+  outro: { label: 'Outro', texto: '' },
+};
+
 module.exports = {
   dataExtenso, textoSentenca, textoAcordao, textoMandado, textoMandadoDireto, textoDespacho, textoSentencaPeticao,
   textoIntimacao, textoSentencaMandado, textoRequisicaoCertidao, textoRequisicaoMP,
   textoRecomendacaoMP, textoPortariaInqueritoCivil, textoOficio,
+  despachoRecebimentoDenuncia, despachoDecretoRevelia, despachoIndeferimentoInicial,
+  teorCitacao, corpoIntimacaoReu, teorIntimacaoCrimeTardio, TEOR_PRESETS_INTIMACAO,
 };

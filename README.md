@@ -11,13 +11,14 @@ Bot Discord (Node.js + discord.js v14) com três fluxos automatizados por botõe
 - **`/rh contratar|demitir|licenca|listar`** — só Staff/Administração. Define quem tem qual cargo jurídico (Delegado/Promotor/Juiz/Advogado), o que também controla o Role do Discord e quem entra no sorteio de juiz.
 - **`/oficio criar`** — vinculado a um processo, postado direto no canal dele.
 - **`/mandado ver|listar`** — consulta (mandados agora nascem automaticamente do referendo de uma medida, não são mais criados manualmente).
+- **`/peticao`** — petições administrativas: porte de arma, troca de nome e limpeza de ficha criminal, cada uma como ticket com decisão (deferir/indeferir) do Juiz; porte de arma deferido passa a valer por prazo e vence automaticamente.
+- **Recurso/apelação** — quem perde a sentença tem o botão **Recorrer**; sorteia um Desembargador relator, que decide **manter**, **reformar** ou **anular** (anular re-sorteia Juiz e reabre o processo).
 
 ## O que ficou de fora desta versão (combinado)
 
 - Audiência de custódia — fica só no RP orgânico, sem virar mecânica do bot.
-- Prazos processuais — revelia é sempre manual (juiz decide quando aplicar, sem contagem automática).
-- Recurso/apelação (Desembargador) e Corregedoria (crimes do CPM) — próxima fase.
-- Petições administrativas (CNPJ, nome, testamento, porte de arma) — módulo separado, a discutir depois.
+- Corregedoria (crimes do CPM) — próxima fase.
+- Petições de CNPJ e testamento — ficam para depois (o módulo de petições hoje cobre porte de arma, troca de nome e limpeza de ficha).
 
 ## Passo a passo
 
@@ -58,6 +59,4 @@ discord-bot-juridico/
 
 ## Próximos passos sugeridos (não bloqueiam esta versão)
 - Corregedoria + crimes do CPM (fase 2, conforme combinado).
-- Recurso/apelação ao Desembargador.
-- Módulo de petições administrativas (`/peticao`), com integração entre porte de arma deferido e o crime de porte ilegal.
 - Fiança — quem arbitra, como é registrada.

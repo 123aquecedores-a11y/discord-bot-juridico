@@ -16,6 +16,11 @@ const TITULO = {
   Advogado: 'Advogado', Desembargador: 'Des.', Procurador: 'Procurador',
 };
 
+// Cargos que NÃO podem ser pedidos por autoatendimento (só a Staff atribui, via /rh contratar):
+// decisão de mérito (Juiz) e supervisão (Desembargador/Procurador). Sem isso, qualquer um pedia
+// Juiz/Desembargador/Procurador livremente, ficando só na barreira da aprovação manual da staff.
+const CARGOS_RESTRITOS = ['Juiz', 'Desembargador', 'Procurador'];
+
 function roleIdPorCargo(cargo) {
   return {
     Delegado: config.roleDelegadoId,
@@ -37,10 +42,20 @@ async function aplicarApelido(membro, cargo, nomePersonagem) {
 }
 
 async function contratarComRole(guild, usuarioId, cargo, executorId = null, nomePersonagem = null) {
+  // Captura o cargo ATIVO anterior antes de contratar (rh.contratar desativa o registro antigo).
+  const anterior = rh.getCargo(usuarioId);
   rh.contratar(usuarioId, cargo, nomePersonagem);
   const membro = await guild.members.fetch(usuarioId).catch(() => null);
   const roleId = roleIdPorCargo(cargo);
-  if (roleId && membro) await membro.roles.add(roleId).catch(() => {});
+  if (membro) {
+    // Troca de cargo: remove a role do cargo anterior — senão promover (ex.) Delegado→Juiz deixava
+    // a role de Delegado pendurada no Discord (o temCargo segue o registro do rh, mas a role não).
+    if (anterior && anterior.cargo !== cargo) {
+      const roleAnterior = roleIdPorCargo(anterior.cargo);
+      if (roleAnterior) await membro.roles.remove(roleAnterior).catch(() => {});
+    }
+    if (roleId) await membro.roles.add(roleId).catch(() => {});
+  }
   const apelidoOk = nomePersonagem ? await aplicarApelido(membro, cargo, nomePersonagem) : null;
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: contratação', executorId, referencia: `<@${usuarioId}> → ${cargo}${nomePersonagem ? ` ("${nomePersonagem}")` : ''}` });
@@ -73,7 +88,7 @@ function selectCargoDesejado() {
     new StringSelectMenuBuilder()
       .setCustomId('painel:select:cargo:desejado')
       .setPlaceholder('Qual cargo você quer solicitar?')
-      .addOptions(rh.CARGOS.map(c => ({ label: c, value: c }))),
+      .addOptions(rh.CARGOS.filter(c => !CARGOS_RESTRITOS.includes(c)).map(c => ({ label: c, value: c }))),
   );
 }
 
@@ -91,6 +106,9 @@ function modalSolicitacao(cargo) {
 async function solicitarCargo(interaction, cargo) {
   if (!rh.CARGOS.includes(cargo)) {
     return interaction.reply({ content: 'Cargo inválido.', ephemeral: true });
+  }
+  if (CARGOS_RESTRITOS.includes(cargo)) {
+    return interaction.reply({ content: `O cargo **${cargo}** não pode ser solicitado por autoatendimento — é atribuído diretamente pela Staff (\`/rh contratar\`). Fale com a Staff.`, ephemeral: true });
   }
   const nome = interaction.fields.getTextInputValue('nome').trim();
   if (!nome) return interaction.reply({ content: 'Informe o nome do personagem.', ephemeral: true });
@@ -123,18 +141,29 @@ async function solicitarCargo(interaction, cargo) {
 
   const canalId = config.canalContratacoesId || config.canalAuditoriaId;
   const canalStaff = canalId ? await interaction.guild.channels.fetch(canalId).catch(() => null) : null;
-  const destino = canalStaff && canalStaff.isTextBased?.() ? canalStaff : interaction.channel;
-  await destino.send({ embeds: [embed], components: [botoes] }).catch(() => {});
-
+  // O card traz botões de aprovar/negar — só pode ir pra canal de staff (contratações ou auditoria).
+  // NÃO cai mais pro canal onde a pessoa clicou (o /painel abre em qualquer lugar, inclusive público),
+  // o que vazava o card num canal aberto. Sem canal de staff, a solicitação fica salva pra revisão.
+  if (canalStaff && canalStaff.isTextBased?.()) {
+    await canalStaff.send({ embeds: [embed], components: [botoes] }).catch(() => {});
+    return interaction.reply({
+      content: `✅ Solicitação enviada! A staff vai analisar seu pedido de **${cargo}** (personagem: **${nome}**). Você é avisado por DM quando for decidido.`,
+      ephemeral: true,
+    });
+  }
   return interaction.reply({
-    content: `✅ Solicitação enviada! A staff vai analisar seu pedido de **${cargo}** (personagem: **${nome}**). Você é avisado por DM quando for decidido.`,
+    content: `✅ Solicitação de **${cargo}** (personagem: **${nome}**) registrada. ⚠️ O canal de contratações ainda não está configurado — a Staff precisa revisar as solicitações pendentes manualmente (o card com os botões não foi postado pra não vazar num canal público).`,
     ephemeral: true,
   });
 }
 
-async function aprovarSolicitacao(interaction, id) {
+// R7 — aprovar × negar solicitação de cargo compartilham o mesmo esqueleto (gate staff, buscar,
+// guard "não pendente", deferUpdate, atualizarPorFiltro, DM, embed decidido). A divergência
+// (aprovar → contratarComRole + followUp com apelido; negar → auditoria) fica ramificada por
+// `aprovar`, PRESERVANDO a ordem exata de cada uma.
+async function decidirSolicitacao(interaction, id, aprovar) {
   if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: 'Só a staff pode aprovar solicitações de cargo.', ephemeral: true });
+    return interaction.reply({ content: `Só a staff pode ${aprovar ? 'aprovar' : 'negar'} solicitações de cargo.`, ephemeral: true });
   }
   const sol = db.buscarUm('solicitacoesCargo', s => s.id === Number(id));
   if (!sol) return interaction.reply({ content: 'Solicitação não encontrada.', ephemeral: true });
@@ -142,51 +171,43 @@ async function aprovarSolicitacao(interaction, id) {
 
   await interaction.deferUpdate();
   db.atualizarPorFiltro('solicitacoesCargo', s => s.id === Number(id), {
-    status: 'Aprovada', decididoPor: interaction.user.id, decididoEm: new Date().toISOString(),
+    status: aprovar ? 'Aprovada' : 'Negada', decididoPor: interaction.user.id, decididoEm: new Date().toISOString(),
   });
 
-  const { apelidoOk } = await contratarComRole(interaction.guild, sol.discordId, sol.cargo, interaction.user.id, sol.nomePersonagem);
+  let apelidoOk = null;
+  if (aprovar) {
+    ({ apelidoOk } = await contratarComRole(interaction.guild, sol.discordId, sol.cargo, interaction.user.id, sol.nomePersonagem));
+  }
 
   const membro = await interaction.guild.members.fetch(sol.discordId).catch(() => null);
-  if (membro) membro.send(`✅ Sua solicitação de **${sol.cargo}** foi **aprovada**! Seu cargo e apelido já foram aplicados no servidor.`).catch(() => {});
+  if (membro) {
+    membro.send(aprovar
+      ? `✅ Sua solicitação de **${sol.cargo}** foi **aprovada**! Seu cargo e apelido já foram aplicados no servidor.`
+      : `❌ Sua solicitação de **${sol.cargo}** foi **negada** pela staff.`).catch(() => {});
+  }
+
+  if (!aprovar) {
+    await auditoria.registrar(interaction.guild, { acao: 'Contratação negada (auto-atendimento)', executorId: interaction.user.id, referencia: `<@${sol.discordId}> → ${sol.cargo}` });
+  }
 
   const embed = EmbedBuilder.from(interaction.message.embeds[0])
-    .setColor(0x2ecc71).setTitle('🪪 Solicitação de cargo — APROVADA')
+    .setColor(aprovar ? 0x2ecc71 : 0xe74c3c).setTitle(aprovar ? '🪪 Solicitação de cargo — APROVADA' : '🪪 Solicitação de cargo — NEGADA')
     .addFields({ name: 'Decidido por', value: `<@${interaction.user.id}>` });
   await interaction.editReply({ embeds: [embed], components: [] }).catch(() => {});
 
-  const aviso = apelidoOk === false
-    ? '\n⚠️ O cargo foi dado, mas **não consegui trocar o apelido** — verifique se o cargo do bot está **acima** do cargo dado na hierarquia e se ele tem a permissão "Gerenciar Apelidos". Ajuste o apelido na mão.'
-    : '';
-  return interaction.followUp({
-    content: `✅ <@${sol.discordId}> agora é **${sol.cargo}** — apelido: \`${TITULO[sol.cargo] || sol.cargo} ${sol.nomePersonagem}\`.${aviso}`,
-    ephemeral: true,
-  });
-}
-
-async function negarSolicitacao(interaction, id) {
-  if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: 'Só a staff pode negar solicitações de cargo.', ephemeral: true });
+  if (aprovar) {
+    const aviso = apelidoOk === false
+      ? '\n⚠️ O cargo foi dado, mas **não consegui trocar o apelido** — verifique se o cargo do bot está **acima** do cargo dado na hierarquia e se ele tem a permissão "Gerenciar Apelidos". Ajuste o apelido na mão.'
+      : '';
+    return interaction.followUp({
+      content: `✅ <@${sol.discordId}> agora é **${sol.cargo}** — apelido: \`${TITULO[sol.cargo] || sol.cargo} ${sol.nomePersonagem}\`.${aviso}`,
+      ephemeral: true,
+    });
   }
-  const sol = db.buscarUm('solicitacoesCargo', s => s.id === Number(id));
-  if (!sol) return interaction.reply({ content: 'Solicitação não encontrada.', ephemeral: true });
-  if (sol.status !== 'Pendente') return interaction.reply({ content: `Essa solicitação já foi **${sol.status.toLowerCase()}**.`, ephemeral: true });
-
-  await interaction.deferUpdate();
-  db.atualizarPorFiltro('solicitacoesCargo', s => s.id === Number(id), {
-    status: 'Negada', decididoPor: interaction.user.id, decididoEm: new Date().toISOString(),
-  });
-
-  const membro = await interaction.guild.members.fetch(sol.discordId).catch(() => null);
-  if (membro) membro.send(`❌ Sua solicitação de **${sol.cargo}** foi **negada** pela staff.`).catch(() => {});
-
-  await auditoria.registrar(interaction.guild, { acao: 'Contratação negada (auto-atendimento)', executorId: interaction.user.id, referencia: `<@${sol.discordId}> → ${sol.cargo}` });
-
-  const embed = EmbedBuilder.from(interaction.message.embeds[0])
-    .setColor(0xe74c3c).setTitle('🪪 Solicitação de cargo — NEGADA')
-    .addFields({ name: 'Decidido por', value: `<@${interaction.user.id}>` });
-  return interaction.editReply({ embeds: [embed], components: [] }).catch(() => {});
 }
+
+async function aprovarSolicitacao(interaction, id) { return decidirSolicitacao(interaction, id, true); }
+async function negarSolicitacao(interaction, id) { return decidirSolicitacao(interaction, id, false); }
 
 // ---- Ficha funcional do judiciário (Parte 6) ----
 // Estatísticas de atuação de cada membro, calculadas na hora a partir dos autos existentes
@@ -332,12 +353,10 @@ module.exports = {
 
   contratarComRole,
   demitirComRole,
-  aplicarApelido,
   selectCargoDesejado,
   modalSolicitacao,
   solicitarCargo,
   aprovarSolicitacao,
   negarSolicitacao,
-  fichaFuncional,
   mostrarFichaFuncional,
 };

@@ -37,10 +37,9 @@ function isSuperStaff(interaction) {
   return !!(config.roleSuperStaffId && interaction.member.roles.cache.has(config.roleSuperStaffId));
 }
 
-// Mapa cargo → instituição do cabeçalho de documentos (ofício, certidão) — Frente 4a.3. Estava
-// duplicado em oficio.js (instituicaoDoEmissor) e certidoes.js (instituicaoDoSolicitante), a de
-// ofício só acrescentando o ramo do Delegado. Fonte única aqui (usa temCargo, então isAdmin
-// também resolve, mantendo o comportamento de antes).
+// Mapa cargo → instituição do cabeçalho de documentos (ofício, certidão) — Frente 4a.3. Fonte
+// única do mapa: ofício, certidão e petição chamam esta função direto (usa temCargo, então
+// isAdmin também resolve, mantendo o comportamento de antes).
 function papelInstitucional(interaction) {
   if (temCargo(interaction, 'Promotor') || temCargo(interaction, 'Procurador')) return 'MINISTÉRIO PÚBLICO';
   if (temCargo(interaction, 'Delegado')) return 'POLÍCIA CIVIL';

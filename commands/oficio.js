@@ -9,8 +9,7 @@ const documentos = require('../utils/documentos');
 const canais = require('../utils/canais');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
-const { aguardarAnexoPDF } = require('../utils/anexoPdf');
-const anexos = require('../utils/anexos');
+const { aguardarAnexoPDF, coletarAnexoPdf } = require('../utils/anexoPdf');
 const andamentos = require('../utils/andamentos');
 const processoCmd = require('./processo');
 const analiseDocumento = require('../utils/analiseDocumento');
@@ -29,12 +28,6 @@ const SUBUNIDADE_POR_INSTITUICAO = {
 const CARGO_POR_INSTITUICAO = {
   'PODER JUDICIÁRIO': 'Juiz de Direito', 'MINISTÉRIO PÚBLICO': 'Membro do Ministério Público', 'POLÍCIA CIVIL': 'Delegado de Polícia',
 };
-
-// Ofício pode sair de três instituições diferentes — o cabeçalho do documento segue quem
-// realmente assina, mesma lógica já usada em certidão (certidoes.js).
-function instituicaoDoEmissor(interaction) {
-  return papelInstitucional(interaction); // Frente 4a.3 — fonte única do mapa cargo→instituição
-}
 
 function podeEmitirOficio(interaction) {
   // Frente 4a.4 — reusa ehMembroDoMP (isAdmin || Promotor || Procurador) em vez de reinlinar.
@@ -68,13 +61,9 @@ async function cumprirOficio(interaction, numero) {
     return interaction.reply({ content: 'Este ofício já foi marcado como cumprido.', ephemeral: true });
   }
 
-  const anexo = await aguardarAnexoPDF(interaction);
-  if (!anexo) return;
-
-  anexos.criarDocumento({
-    tipo: 'cumprimento_oficio', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
-    atoOrigemId: numero, protocoloVinculado: oficio.processoNumero || numero,
-  });
+  const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'cumprimento_oficio', protocolo: oficio.processoNumero || numero });
+  if (!coletado) return;
+  const { anexo } = coletado;
 
   db.atualizar('oficios', numero, { status: 'Cumprido', cumpridoPor: interaction.user.id, cumpridoEm: new Date().toISOString() });
   // IA "cartório" faz a análise estruturada da resposta do ofício (best-effort).
@@ -213,7 +202,7 @@ module.exports = {
       conteudo: interaction.options.getString('conteudo'),
       emitidoPorId: interaction.user.id,
       emitidoPorTag: interaction.user.tag,
-      instituicao: instituicaoDoEmissor(interaction),
+      instituicao: papelInstitucional(interaction),
       aguardaRetorno: interaction.options.getBoolean('aguarda_retorno') ?? true,
     });
 
@@ -223,7 +212,6 @@ module.exports = {
 
   criarOficio,
   podeEmitirOficio,
-  instituicaoDoEmissor,
   cumprirOficio,
 
   async autocomplete(interaction) {

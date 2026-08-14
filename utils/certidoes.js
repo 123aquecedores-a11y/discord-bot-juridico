@@ -11,7 +11,7 @@ const documentos = require('./documentos');
 const auditoria = require('./auditoria');
 const canais = require('./canais');
 const { proximoNumeroClassico } = require('./numeracao');
-const { temCargo, papelInstitucional } = require('./permissoes');
+const { temCargo } = require('./permissoes');
 const ministerioPublico = require('./ministerioPublico');
 
 const CATEGORIA_CERTIDOES_CHAVE = 'categoriaCertidoesId';
@@ -20,10 +20,6 @@ const CATEGORIA_CERTIDOES_NOME = '📄 Certidões';
 function podeSolicitarCertidao(interaction) {
   // Frente 4a.4 — reusa ehMembroDoMP (isAdmin || Promotor || Procurador) no lugar do reinline.
   return ministerioPublico.ehMembroDoMP(interaction) || temCargo(interaction, 'Juiz') || temCargo(interaction, 'Desembargador');
-}
-
-function instituicaoDoSolicitante(interaction) {
-  return papelInstitucional(interaction); // Frente 4a.3 — fonte única (Delegado não pede certidão)
 }
 
 function botaoArquivarCertidao(numero) {
@@ -60,4 +56,4 @@ async function solicitarCertidao({ guild, rg, nomeCliente, finalidade, executorI
   return { numero, texto, canal };
 }
 
-module.exports = { podeSolicitarCertidao, instituicaoDoSolicitante, solicitarCertidao };
+module.exports = { podeSolicitarCertidao, solicitarCertidao };
