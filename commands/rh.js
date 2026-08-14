@@ -157,9 +157,13 @@ async function solicitarCargo(interaction, cargo) {
   });
 }
 
-async function aprovarSolicitacao(interaction, id) {
+// R7 — aprovar × negar solicitação de cargo compartilham o mesmo esqueleto (gate staff, buscar,
+// guard "não pendente", deferUpdate, atualizarPorFiltro, DM, embed decidido). A divergência
+// (aprovar → contratarComRole + followUp com apelido; negar → auditoria) fica ramificada por
+// `aprovar`, PRESERVANDO a ordem exata de cada uma.
+async function decidirSolicitacao(interaction, id, aprovar) {
   if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: 'Só a staff pode aprovar solicitações de cargo.', ephemeral: true });
+    return interaction.reply({ content: `Só a staff pode ${aprovar ? 'aprovar' : 'negar'} solicitações de cargo.`, ephemeral: true });
   }
   const sol = db.buscarUm('solicitacoesCargo', s => s.id === Number(id));
   if (!sol) return interaction.reply({ content: 'Solicitação não encontrada.', ephemeral: true });
@@ -167,51 +171,43 @@ async function aprovarSolicitacao(interaction, id) {
 
   await interaction.deferUpdate();
   db.atualizarPorFiltro('solicitacoesCargo', s => s.id === Number(id), {
-    status: 'Aprovada', decididoPor: interaction.user.id, decididoEm: new Date().toISOString(),
+    status: aprovar ? 'Aprovada' : 'Negada', decididoPor: interaction.user.id, decididoEm: new Date().toISOString(),
   });
 
-  const { apelidoOk } = await contratarComRole(interaction.guild, sol.discordId, sol.cargo, interaction.user.id, sol.nomePersonagem);
+  let apelidoOk = null;
+  if (aprovar) {
+    ({ apelidoOk } = await contratarComRole(interaction.guild, sol.discordId, sol.cargo, interaction.user.id, sol.nomePersonagem));
+  }
 
   const membro = await interaction.guild.members.fetch(sol.discordId).catch(() => null);
-  if (membro) membro.send(`✅ Sua solicitação de **${sol.cargo}** foi **aprovada**! Seu cargo e apelido já foram aplicados no servidor.`).catch(() => {});
+  if (membro) {
+    membro.send(aprovar
+      ? `✅ Sua solicitação de **${sol.cargo}** foi **aprovada**! Seu cargo e apelido já foram aplicados no servidor.`
+      : `❌ Sua solicitação de **${sol.cargo}** foi **negada** pela staff.`).catch(() => {});
+  }
+
+  if (!aprovar) {
+    await auditoria.registrar(interaction.guild, { acao: 'Contratação negada (auto-atendimento)', executorId: interaction.user.id, referencia: `<@${sol.discordId}> → ${sol.cargo}` });
+  }
 
   const embed = EmbedBuilder.from(interaction.message.embeds[0])
-    .setColor(0x2ecc71).setTitle('🪪 Solicitação de cargo — APROVADA')
+    .setColor(aprovar ? 0x2ecc71 : 0xe74c3c).setTitle(aprovar ? '🪪 Solicitação de cargo — APROVADA' : '🪪 Solicitação de cargo — NEGADA')
     .addFields({ name: 'Decidido por', value: `<@${interaction.user.id}>` });
   await interaction.editReply({ embeds: [embed], components: [] }).catch(() => {});
 
-  const aviso = apelidoOk === false
-    ? '\n⚠️ O cargo foi dado, mas **não consegui trocar o apelido** — verifique se o cargo do bot está **acima** do cargo dado na hierarquia e se ele tem a permissão "Gerenciar Apelidos". Ajuste o apelido na mão.'
-    : '';
-  return interaction.followUp({
-    content: `✅ <@${sol.discordId}> agora é **${sol.cargo}** — apelido: \`${TITULO[sol.cargo] || sol.cargo} ${sol.nomePersonagem}\`.${aviso}`,
-    ephemeral: true,
-  });
-}
-
-async function negarSolicitacao(interaction, id) {
-  if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: 'Só a staff pode negar solicitações de cargo.', ephemeral: true });
+  if (aprovar) {
+    const aviso = apelidoOk === false
+      ? '\n⚠️ O cargo foi dado, mas **não consegui trocar o apelido** — verifique se o cargo do bot está **acima** do cargo dado na hierarquia e se ele tem a permissão "Gerenciar Apelidos". Ajuste o apelido na mão.'
+      : '';
+    return interaction.followUp({
+      content: `✅ <@${sol.discordId}> agora é **${sol.cargo}** — apelido: \`${TITULO[sol.cargo] || sol.cargo} ${sol.nomePersonagem}\`.${aviso}`,
+      ephemeral: true,
+    });
   }
-  const sol = db.buscarUm('solicitacoesCargo', s => s.id === Number(id));
-  if (!sol) return interaction.reply({ content: 'Solicitação não encontrada.', ephemeral: true });
-  if (sol.status !== 'Pendente') return interaction.reply({ content: `Essa solicitação já foi **${sol.status.toLowerCase()}**.`, ephemeral: true });
-
-  await interaction.deferUpdate();
-  db.atualizarPorFiltro('solicitacoesCargo', s => s.id === Number(id), {
-    status: 'Negada', decididoPor: interaction.user.id, decididoEm: new Date().toISOString(),
-  });
-
-  const membro = await interaction.guild.members.fetch(sol.discordId).catch(() => null);
-  if (membro) membro.send(`❌ Sua solicitação de **${sol.cargo}** foi **negada** pela staff.`).catch(() => {});
-
-  await auditoria.registrar(interaction.guild, { acao: 'Contratação negada (auto-atendimento)', executorId: interaction.user.id, referencia: `<@${sol.discordId}> → ${sol.cargo}` });
-
-  const embed = EmbedBuilder.from(interaction.message.embeds[0])
-    .setColor(0xe74c3c).setTitle('🪪 Solicitação de cargo — NEGADA')
-    .addFields({ name: 'Decidido por', value: `<@${interaction.user.id}>` });
-  return interaction.editReply({ embeds: [embed], components: [] }).catch(() => {});
 }
+
+async function aprovarSolicitacao(interaction, id) { return decidirSolicitacao(interaction, id, true); }
+async function negarSolicitacao(interaction, id) { return decidirSolicitacao(interaction, id, false); }
 
 // ---- Ficha funcional do judiciário (Parte 6) ----
 // Estatísticas de atuação de cada membro, calculadas na hora a partir dos autos existentes
