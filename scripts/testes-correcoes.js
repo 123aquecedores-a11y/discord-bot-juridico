@@ -361,6 +361,55 @@ function seedProcesso(numero, extra) {
     ok(m.lembreteMpEnviado === true, 'envio ok → lembreteMpEnviado gravado (após o send)');
   }
 
+  // ============ ITEM 12: Trava de manifestação do MP em petição (Parte 1) ============
+  console.log('\nItem 12 — trava de manifestação do MP (petição): bloqueio/liberação/decurso/lazy:');
+  {
+    const agora = Date.now();
+    const recente = new Date(agora - 2 * 60 * 60 * 1000).toISOString();   // 2h atrás (dentro das 24h)
+    const antigo = new Date(agora - 25 * 60 * 60 * 1000).toISOString();   // 25h atrás (prazo estourado)
+
+    // 12a: sem manifestação, dentro das 24h → deferir travado
+    db.inserir('peticoes', { numero: '9001PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c1', sorteioPromotorEm: recente, manifestacoesMp: [] });
+    const it1 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it1, '9001PA', 'deferir');
+    ok(/Aguardando manifestação do Ministério Público/i.test(lastReplyText(it1)), '12a: deferir travado sem manifestação (dentro das 24h)');
+
+    // 12b: com manifestação → deferir liberado (vai pro diálogo de confirmação)
+    db.inserir('peticoes', { numero: '9002PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c2', sorteioPromotorEm: recente, manifestacoesMp: [{ posicao: 'Nada a opor', autorId: 'promP', data: recente }] });
+    const it2 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it2, '9002PA', 'deferir');
+    ok(/Confirma que os documentos/i.test(lastReplyText(it2)), '12b: com manifestação, deferir é liberado');
+
+    // 12c: decurso — 25h sem manifestação → deferir liberado (sem trava)
+    db.inserir('peticoes', { numero: '9003PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c3', sorteioPromotorEm: antigo, manifestacoesMp: [] });
+    const it3 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it3, '9003PA', 'deferir');
+    ok(/Confirma que os documentos/i.test(lastReplyText(it3)) && !/Aguardando manifest/i.test(lastReplyText(it3)), '12c: decurso das 24h libera a decisão');
+
+    // 12d: diligência NÃO é travada (a trava é só sobre a decisão final)
+    const it4 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it4, '9001PA', 'diligencia');
+    ok(!/Aguardando manifest/i.test(lastReplyText(it4)), '12d: diligência não é bloqueada pela trava');
+
+    // 12e: liberação é LAZY — estadoManifestacaoMp libera após 24h sem rodar job nenhum
+    const petLazy = { sorteioPromotorEm: recente, manifestacoesMp: [] };
+    const bloqAgora = peticaoCmd.estadoManifestacaoMp(petLazy, agora).bloqueado;
+    const bloqFuturo = peticaoCmd.estadoManifestacaoMp(petLazy, agora + 25 * 60 * 60 * 1000).bloqueado;
+    ok(bloqAgora === true && bloqFuturo === false, '12e: liberação lazy (bloqueado agora, liberado após 24h — sem cron/job)');
+
+    // 12f: decidir sem manifestação após o prazo grava o texto de decurso nos autos
+    rec.sends.length = 0;
+    db.inserir('peticoes', { numero: '9004PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c4', sorteioPromotorEm: antigo, manifestacoesMp: [], nomeCliente: 'C', rgCliente: 'r' });
+    await peticaoCmd.finalizarDecisao(fakeGuild(), '9004PA', 'Indeferido', { motivo: 'm' }, 'juizP');
+    ok(rec.sends.some(s => /Decorrido o prazo de 24/i.test(s.content || '')), '12f: decurso grava o texto de prazo decorrido nos autos');
+
+    // 12g: petição sem sorteioPromotorEm (aberta antes da mudança) → sem trava (fluxo antigo)
+    db.inserir('peticoes', { numero: '9005PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c5', manifestacoesMp: [] });
+    const it5 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it5, '9005PA', 'deferir');
+    ok(/Confirma que os documentos/i.test(lastReplyText(it5)), '12g: petição pré-mudança (sem sorteioPromotorEm) não é travada');
+  }
+
   // ---- Resumo ----
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`  ❌ ${f.nome}${f.detalhe ? ` — ${f.detalhe}` : ''}`)); }

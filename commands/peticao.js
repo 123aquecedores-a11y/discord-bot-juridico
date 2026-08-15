@@ -87,6 +87,13 @@ function embedPeticao(p) {
     const linhas = p.manifestacoesMp.map(m => `• **${m.posicao}** — <@${m.autorId}> (${new Date(m.data).toLocaleString('pt-BR')})`).join('\n');
     embed.addFields({ name: '📣 Manifestações do Ministério Público', value: truncar(linhas, 1000) });
   }
+  // Trava ativa: mostra o estado no card (não só no clique do juiz) — quem abre o ticket entende
+  // por que a decisão não anda.
+  const estadoMp = estadoManifestacaoMp(p);
+  if (estadoMp.bloqueado) {
+    const horas = Math.max(1, Math.ceil(estadoMp.liberaEmMs / (60 * 60 * 1000)));
+    embed.addFields({ name: '⏳ Decisão aguardando o Ministério Público', value: `Aguardando manifestação do MP — libera em ${horas}h.` });
+  }
   embed.addFields({ name: '📎 Documentos a anexar nesta conversa', value: DOCUMENTOS_NECESSARIOS[p.tipo] });
   return embed;
 }
@@ -143,6 +150,19 @@ function botoesDecisao(numero) {
 // desfaz: entra por append em manifestacoesMp (troca de promotor faz o novo complementar, não apagar).
 const rascunhoManifestacao = new Map(); // numero -> { numero, posicao, autorId, fundamentacao, textoRevisado }
 const POSICOES_MANIFESTACAO = { favoravel: 'Favorável', desfavoravel: 'Desfavorável' };
+const PRAZO_MANIFESTACAO_MS = 24 * 60 * 60 * 1000;
+
+// Estado da trava de manifestação do MP — LAZY: calculado na hora (Date.now()), sem job nem estado
+// "liberado" persistido; se o job diário não rodar, o juiz é liberado do mesmo jeito no clique.
+// { bloqueado, liberaEmMs, temManifestacao, decurso }. Só vale pra petições nascidas com o fluxo
+// novo (têm sorteioPromotorEm); as já abertas antes terminam sem trava, pra não congelar fila.
+function estadoManifestacaoMp(peticao, agora = Date.now()) {
+  const temManifestacao = Array.isArray(peticao.manifestacoesMp) && peticao.manifestacoesMp.length > 0;
+  if (!peticao.sorteioPromotorEm || temManifestacao) return { bloqueado: false, liberaEmMs: 0, temManifestacao, decurso: false };
+  const liberaEmMs = new Date(peticao.sorteioPromotorEm).getTime() + PRAZO_MANIFESTACAO_MS - agora;
+  if (liberaEmMs > 0) return { bloqueado: true, liberaEmMs, temManifestacao: false, decurso: false };
+  return { bloqueado: false, liberaEmMs: 0, temManifestacao: false, decurso: true }; // 24h estouraram sem manifestação
+}
 
 function botoesManifestacao(numero) {
   return new ActionRowBuilder().addComponents(
@@ -832,6 +852,13 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
 
   const canal = await guild.channels.fetch(peticao.canalId).catch(() => null);
   if (canal) {
+    // Decurso de prazo do MP: se a decisão FINAL sai sem manifestação (a trava só deixou passar
+    // porque as 24h estouraram), registra o texto de decurso nos autos e na auditoria, antes da
+    // sentença. Petições sem sorteioPromotorEm (fluxo antigo) não entram aqui.
+    if ((status === 'Deferido' || status === 'Indeferido') && peticao.sorteioPromotorEm && !(peticao.manifestacoesMp || []).length) {
+      await canal.send({ content: 'Decorrido o prazo de 24 (vinte e quatro) horas sem manifestação do Ministério Público, os autos vieram conclusos para decisão.' });
+      await auditoria.registrar(guild, { acao: 'Decisão sem manifestação do MP (decurso de prazo de 24h)', executorId: executorId || peticao.juiz, referencia: `Petição ${numero}` });
+    }
     if (status === 'Diligência') {
       // Diligência agora é uma intimação formal de verdade — o Juiz aponta exatamente o que
       // falta, e o texto já deixa claro o prazo e a consequência (indeferimento automático em
@@ -935,6 +962,17 @@ async function decidir(interaction, numero, acao) {
   // pedido for anexado na conversa. Só bloqueia se já foi Deferido/Indeferido de verdade.
   if (!['Pendente', 'Diligência'].includes(peticao.status)) {
     return interaction.reply({ content: 'Essa petição já foi decidida (deferida ou indeferida).', ephemeral: true });
+  }
+  // Trava de manifestação do MP (lazy): a decisão FINAL (deferir/indeferir) espera a manifestação do
+  // MP ou o decurso das 24h. Diligência e outros atos (intimar, pedir documento) seguem livres — a
+  // trava é só sobre a decisão final. Se a IA cai, o promotor ainda registra o parecer (fallback);
+  // se ninguém se manifesta, as 24h liberam sozinhas no clique, sem depender de job.
+  if (acao === 'deferir' || acao === 'indeferir') {
+    const estado = estadoManifestacaoMp(peticao);
+    if (estado.bloqueado) {
+      const horas = Math.max(1, Math.ceil(estado.liberaEmMs / (60 * 60 * 1000)));
+      return interaction.reply({ content: `⏳ Aguardando manifestação do Ministério Público — libera em ${horas}h. O MP foi notificado; nesse meio-tempo você pode intimar ou pedir documento.`, ephemeral: true });
+    }
   }
   // Frente 7: o Discord do cliente NÃO é mais exigido pra decidir — identidade = nome + RG, e o
   // cruzamento de antecedentes já funciona por RG. Vincular Discord é opcional.
@@ -1106,6 +1144,7 @@ module.exports = {
   // Manifestação do MP (Parte 1)
   abrirSelectPosicao, processarSelectPosicao, processarModalManifestacao,
   revisarManifestacao, finalizarManifestacao, registrarNadaAOpor, botoesManifestacao,
+  estadoManifestacaoMp,
   botaoReabrirCaso, reabrirCaso,
   // Exportadas pro simulador de demo (scripts/simuladorDemo.js) criar petições sem passar pelo modal.
   criarPeticaoPorteArma, criarPeticaoTrocaNome, criarPeticaoLimpezaFicha, criarPeticaoAlvaraEvento,
