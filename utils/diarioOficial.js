@@ -73,6 +73,18 @@ function montarEmbed(tipo, d) {
           d.validadeAte ? { name: 'Validade', value: `<t:${Math.floor(new Date(d.validadeAte).getTime() / 1000)}:D>`, inline: true } : null,
           d.magistradoId ? { name: 'Magistrado(a)', value: `<@${d.magistradoId}>`, inline: true } : null,
         ].filter(Boolean));
+    case 'arquivamento_inquerito':
+      return e.setColor(0x7f8c8d).setTitle(`📁 Inquérito arquivado — Processo nº ${d.numero}`)
+        .setDescription('O Ministério Público promoveu o **arquivamento** do inquérito.')
+        .addFields([d.promotorId ? { name: 'Promotor(a)', value: `<@${d.promotorId}>`, inline: true } : null].filter(Boolean));
+    case 'indeferimento_inicial':
+      return e.setColor(0xc0392b).setTitle(`📁 Petição inicial indeferida — Processo nº ${d.numero}`)
+        .setDescription('O Juízo **indeferiu a petição inicial** e arquivou os autos.')
+        .addFields([d.juizId ? { name: 'Magistrado(a)', value: `<@${d.juizId}>`, inline: true } : null].filter(Boolean));
+    case 'desarquivamento':
+      return e.setColor(0x27ae60).setTitle(`📂 Arquivamento revisto — Processo nº ${d.numero}`)
+        .setDescription('Em revisão de arquivamento, a **denúncia foi forçada** e o processo **reaberto para instrução**.')
+        .addFields([d.juizId ? { name: 'Juiz(a) sorteado(a)', value: `<@${d.juizId}>`, inline: true } : null].filter(Boolean));
     default:
       return e.setColor(0x2c3e50).setTitle('📜 Publicação Oficial').setDescription(String(d.texto || 'Ato publicado.'));
   }

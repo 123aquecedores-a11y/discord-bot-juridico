@@ -760,7 +760,7 @@ function seedProcesso(numero, extra) {
     ok(pub1 === true && !!emb1, '18a: publicarAto publica a decisão de petição administrativa');
     ok(emb1 && /porte de arma/i.test(JSON.stringify(emb1.embeds[0].data)), '  ...com o tipo do pedido no card');
     ok(emb1 && Array.isArray(emb1.files) && emb1.files.length, '  ...e o PNG anexado');
-    ok((db.buscarPorNumero('peticoes', 'DIA-PA1') || {}).diarioPublicadoEm, '  ...e marca diarioPublicadoEm no registro');
+    ok((db.buscarPorNumero('peticoes', 'DIA-PA1') || {}).diarioPublicado?.peticaoAdministrativa, '  ...e marca diarioPublicado[peticaoAdministrativa] no registro');
 
     // 18b: idempotente — segunda chamada não republica
     rec.sends.length = 0;
@@ -778,13 +778,63 @@ function seedProcesso(numero, extra) {
     rec.sends.length = 0;
     await peticaoCmd.finalizarDecisao(fakeGuild(), 'DIA-PA3', 'Deferido', { motivo: 'Autorizado.', nivelRisco: 'Baixo' }, 'juizD');
     ok(acharPub(), '18d: finalizarDecisao(Deferido) publica no Diário — porte de arma resolvido');
-    ok((db.buscarPorNumero('peticoes', 'DIA-PA3') || {}).diarioPublicadoEm, '  ...e marca o registro');
+    ok((db.buscarPorNumero('peticoes', 'DIA-PA3') || {}).diarioPublicado?.peticaoAdministrativa, '  ...e marca o registro');
 
     // 18e: Diligência (Nível 3) NÃO publica
     db.inserir('peticoes', { numero: 'DIA-PA4', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD', canalId: 'cpa4', nomeCliente: 'Ciclano', requerenteId: 'advB' });
     rec.sends.length = 0;
     await peticaoCmd.finalizarDecisao(fakeGuild(), 'DIA-PA4', 'Diligência', { motivo: 'Falta comprovante.' }, 'juizD');
-    ok(!acharPub() && !(db.buscarPorNumero('peticoes', 'DIA-PA4') || {}).diarioPublicadoEm, '18e: Diligência (Nível 3) não publica no Diário');
+    ok(!acharPub() && !(db.buscarPorNumero('peticoes', 'DIA-PA4') || {}).diarioPublicado?.peticaoAdministrativa, '18e: Diligência (Nível 3) não publica no Diário');
+  }
+
+  // ============ ITEM 19: Diário Etapa 2 — arquivamento inquérito / indeferimento inicial / desarquivamento ============
+  console.log('\nItem 19 — Diário Etapa 2 (arquivamento de inquérito, indeferimento inicial, desarquivamento):');
+  {
+    estado.definir('diarioOficialId', 'diariochan');
+    const acharPub = () => rec.sends.find(s => s.content === '@everyone' && Array.isArray(s.embeds) && s.embeds.length);
+    const dataDe = (pub) => JSON.stringify((pub && pub.embeds && pub.embeds[0] && pub.embeds[0].data) || {});
+
+    // 19a: arquivamento de inquérito (penal) publica + marca a natureza
+    const proc1 = db.inserir('processos', { numero: 'DIA-INQ1', tipo: 'Penal', status: 'Arquivado', promotor: 'promX' });
+    rec.sends.length = 0;
+    const r1 = await diarioAtos.publicarAto(fakeGuild(), 'arquivamentoInquerito', proc1);
+    ok(r1 === true && /inqu[eé]rito arquivado/i.test(dataDe(acharPub())), '19a: arquivamento de inquérito (penal) publica');
+    ok((db.buscarPorNumero('processos', 'DIA-INQ1') || {}).diarioPublicado?.arquivamentoInquerito, '  ...e marca a natureza');
+
+    // 19b: exclusão por tipo — indeferimentoInicial NÃO pega processo penal
+    rec.sends.length = 0;
+    const r1b = await diarioAtos.publicarAto(fakeGuild(), 'indeferimentoInicial', db.buscarPorNumero('processos', 'DIA-INQ1'));
+    ok(r1b === false && !acharPub(), '19b: indeferimentoInicial não pega processo penal (exclusão por tipo)');
+
+    // 19c: indeferimento inicial (cível) publica
+    const proc2 = db.inserir('processos', { numero: 'DIA-INI1', tipo: 'Civel', status: 'Arquivado', juiz: 'juizC' });
+    rec.sends.length = 0;
+    const r2 = await diarioAtos.publicarAto(fakeGuild(), 'indeferimentoInicial', proc2);
+    ok(r2 === true && /inicial indeferida/i.test(dataDe(acharPub())), '19c: indeferimento da inicial (cível) publica');
+
+    // 19d: exclusão por tipo — arquivamentoInquerito NÃO pega processo cível
+    rec.sends.length = 0;
+    const r2b = await diarioAtos.publicarAto(fakeGuild(), 'arquivamentoInquerito', db.buscarPorNumero('processos', 'DIA-INI1'));
+    ok(r2b === false && !acharPub(), '19d: arquivamentoInquerito não pega processo cível');
+
+    // 19e: desarquivamento publica E coexiste com o arquivamento no MESMO registro (mapa por natureza)
+    const proc3 = db.inserir('processos', { numero: 'DIA-DES1', tipo: 'Penal', status: 'Arquivado', promotor: 'promY' });
+    await diarioAtos.publicarAto(fakeGuild(), 'arquivamentoInquerito', proc3);
+    db.atualizar('processos', 'DIA-DES1', { status: 'Instrução', revisaoArquivamento: 'Decidida', juiz: 'juizR' });
+    rec.sends.length = 0;
+    const r3 = await diarioAtos.publicarAto(fakeGuild(), 'desarquivamento', db.buscarPorNumero('processos', 'DIA-DES1'), { files: [{ attachment: Buffer.from('x'), name: 'Dec.png' }] });
+    const pub3 = acharPub();
+    ok(r3 === true && pub3 && /reaberto/i.test(dataDe(pub3)), '19e: desarquivamento publica (processo reaberto)');
+    ok(pub3 && Array.isArray(pub3.files) && pub3.files.length, '  ...com o PNG da decisão anexado');
+    const dp = (db.buscarPorNumero('processos', 'DIA-DES1') || {}).diarioPublicado || {};
+    ok(dp.arquivamentoInquerito && dp.desarquivamento, '  ...e os DOIS atos coexistem no mesmo registro');
+
+    // 19f: END-TO-END — arquivarCivil publica o indeferimento inicial
+    db.inserir('processos', { numero: 'DIA-INI2', tipo: 'Civel', status: 'Distribuído', juiz: 'juizE', canalId: 'cini2', motivo: 'Ação de cobrança', crimes: [], reus: [], partes: [], habilitacoes: [] });
+    rec.sends.length = 0;
+    const itCiv = makeInteraction({ userId: 'juizE', guild: fakeGuild(), member: null });
+    await processoCmd.arquivarCivil(itCiv, 'DIA-INI2');
+    ok(acharPub() && (db.buscarPorNumero('processos', 'DIA-INI2') || {}).diarioPublicado?.indeferimentoInicial, '19f: arquivarCivil publica o indeferimento inicial (end-to-end)');
   }
 
   // ---- Resumo ----

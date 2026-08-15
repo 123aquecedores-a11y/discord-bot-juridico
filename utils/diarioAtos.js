@@ -43,6 +43,35 @@ const NATUREZAS = {
       },
     }),
   },
+
+  // NÍVEL 1 — arquivamento de inquérito (MP promove o arquivamento). Penal. Publica na decisão.
+  // Predicado casa por tipo pra ser mutuamente exclusivo com indeferimentoInicial (a varredura da
+  // Etapa 5 nunca publica os dois pro mesmo processo).
+  arquivamentoInquerito: {
+    tabela: 'processos',
+    nivel: 1,
+    publicavel: (p) => !!p && p.status === 'Arquivado' && p.tipo === 'Penal',
+    montar: (p) => ({ tipo: 'arquivamento_inquerito', dados: { numero: p.numero, promotorId: p.promotor || null } }),
+  },
+
+  // NÍVEL 1 — indeferimento/arquivamento da petição inicial cível (Juiz indefere a inicial). Cível.
+  indeferimentoInicial: {
+    tabela: 'processos',
+    nivel: 1,
+    publicavel: (p) => !!p && p.status === 'Arquivado' && p.tipo !== 'Penal',
+    montar: (p) => ({ tipo: 'indeferimento_inicial', dados: { numero: p.numero, juizId: p.juiz || null } }),
+  },
+
+  // NÍVEL 1 — desarquivamento (Procurador força a denúncia em revisão): reverte um arquivamento já
+  // publicado e muda o status PÚBLICO do caso (arquivado → em curso). Publica pra o Diário não ficar
+  // mostrando "arquivado" pra sempre. revisaoArquivamento='Decidida' + status 'Instrução' distingue
+  // forçar (reabre) de manter (segue arquivado, Nível 3).
+  desarquivamento: {
+    tabela: 'processos',
+    nivel: 1,
+    publicavel: (p) => !!p && p.status === 'Instrução' && p.revisaoArquivamento === 'Decidida',
+    montar: (p) => ({ tipo: 'desarquivamento', dados: { numero: p.numero, juizId: p.juiz || null } }),
+  },
 };
 
 /**
@@ -57,7 +86,10 @@ async function publicarAto(guild, natureza, record, opts = {}) {
   try {
     const def = NATUREZAS[natureza];
     if (!def || !guild || !record) return false;
-    if (record.diarioPublicadoEm) return false;        // já publicado — não republica (idempotente)
+    // Idempotência POR NATUREZA (não por registro): um mesmo processo pode publicar atos distintos
+    // ao longo da vida (arquivamento de inquérito → depois desarquivamento → depois sentença). Cada
+    // natureza ocupa um slot próprio no mapa; só não se republica o MESMO ato.
+    if (record.diarioPublicado && record.diarioPublicado[natureza]) return false;
     if (!def.publicavel(record)) return false;         // o estado atual ainda não justifica publicar
     const { tipo, dados } = def.montar(record, guild);
     const files = Array.isArray(opts.files) && opts.files.length ? opts.files : undefined;
@@ -65,9 +97,11 @@ async function publicarAto(guild, natureza, record, opts = {}) {
     // Diário não configurado / canal sumiu / sem permissão → publicarNoDiario devolve false. NÃO
     // marca: assim a varredura (Etapa 5) tenta de novo depois, em vez de perder a publicação.
     if (!enviada) return false;
-    const patch = { diarioPublicadoEm: new Date().toISOString() };
-    if (enviada.id) patch.diarioMessageId = enviada.id; // guarda o id p/ o card evoluir depois (Etapa 5)
-    db.atualizar(def.tabela, record.numero, patch);
+    const diarioPublicado = {
+      ...(record.diarioPublicado || {}),
+      [natureza]: { em: new Date().toISOString(), messageId: enviada.id || null }, // messageId p/ o card evoluir (Etapa 5)
+    };
+    db.atualizar(def.tabela, record.numero, { diarioPublicado });
     return true;
   } catch (e) {
     console.error(`[diarioAtos] falha ao publicar ato "${natureza}" (ignorado, não quebra o ato):`, e.message);
