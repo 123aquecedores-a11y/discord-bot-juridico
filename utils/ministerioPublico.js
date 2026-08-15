@@ -121,7 +121,7 @@ async function abrirProcessoDeAto(interaction, numero) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:mp:denunciamodal:${numero}`).setTitle(`Abrir processo — ${numero}`.slice(0, 45));
 
   const campoMotivo = new TextInputBuilder().setCustomId('motivo').setLabel('Motivo/fatos (edite se quiser)')
-    .setStyle(TextInputStyle.Paragraph).setRequired(true).setValue((ato.fundamentacao || '').slice(0, 4000));
+    .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000).setValue((ato.fundamentacao || '').slice(0, 4000));
   const campoReus = new TextInputBuilder().setCustomId('reus').setLabel('Menções @ dos réus, se já identificados')
     .setStyle(TextInputStyle.Short).setRequired(false);
 

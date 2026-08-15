@@ -804,7 +804,7 @@ async function decidir(interaction, numero, acao) {
       // Diligência vira intimação formal (ver finalizarDecisao) — o Juiz precisa apontar
       // exatamente o que falta, não só "está incompleto", pra intimação fazer sentido.
       .setLabel(acao === 'indeferir' ? 'Motivo do indeferimento' : 'O que falta (ex: juntar documento X)')
-      .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(500),
+      .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   return interaction.showModal(modal);
 }

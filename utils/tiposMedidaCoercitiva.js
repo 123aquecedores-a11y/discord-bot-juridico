@@ -41,7 +41,7 @@ function modalTipoDestinatario({ customId, titulo, tipoValue, destinatarioRef, c
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('idTexto').setLabel('RG ou Discord ID').setStyle(TextInputStyle.Short).setRequired(true)),
     );
   }
-  linhas.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId(campoTeor).setLabel(labelTeor).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)));
+  linhas.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId(campoTeor).setLabel(labelTeor).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)));
   modal.addComponents(...linhas);
   return modal;
 }

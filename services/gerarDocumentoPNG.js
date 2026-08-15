@@ -453,6 +453,38 @@ async function gerarCarteirinhaPNG({ nome, rg, oab, data }) {
   return buffer;
 }
 
+// ---- Carteiras funcionais por cargo (Juiz/Desembargador/Promotor/Procurador) ----
+// Mesmo mecanismo da carteirinha da OAB (elemento .card 1013×639 @2x), mas com um template por
+// cargo (cores diferentes) e as variáveis {{CARGO}}/{{NOME}}/{{RG}}/{{NUMERO}}.
+const cacheTemplateCarteira = {};
+function getTemplateCarteira(arquivo) {
+  if (!cacheTemplateCarteira[arquivo]) {
+    cacheTemplateCarteira[arquivo] = fs.readFileSync(path.join(__dirname, '..', 'assets', arquivo), 'utf-8');
+  }
+  return cacheTemplateCarteira[arquivo];
+}
+
+/**
+ * Gera a carteira funcional de um cargo em PNG.
+ * @param {{arquivo:string, cargo:string, nome:string, rg:string, numero:string}} dados
+ * @returns {Promise<Buffer>}
+ */
+async function gerarCarteiraCargoPNG({ arquivo, cargo, nome, rg, numero }) {
+  const html = getTemplateCarteira(arquivo)
+    .replace(/\{\{CARGO\}\}/g, () => escapeHtml(cargo))
+    .replace(/\{\{NOME\}\}/g, () => escapeHtml(nome))
+    .replace(/\{\{RG\}\}/g, () => escapeHtml(rg))
+    .replace(/\{\{NUMERO\}\}/g, () => escapeHtml(numero));
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1013, height: 639, deviceScaleFactor: 2 });
+  await page.setContent(html, { waitUntil: 'networkidle0' });
+  const card = await page.$('.card');
+  const buffer = await card.screenshot({ type: 'png' });
+  await page.close();
+  return buffer;
+}
+
 // ---- Edital (processo seletivo) ----
 // Mesmo pipeline/browser dos documentos. Renderiza o template compartilhado edital_template.html
 // como página A4 e captura fullPage (padrão dos outros documentos).
@@ -489,4 +521,4 @@ async function gerarEditalPNG({ numero, vagasJuiz, vagasPromotor, requisitos, in
   return buffer;
 }
 
-module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarEditalPNG, nomeExibicao, getBrowser };
+module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarCarteiraCargoPNG, gerarEditalPNG, nomeExibicao, getBrowser };

@@ -1,0 +1,63 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+*{margin:0;padding:0;box-sizing:border-box;}
+.card{width:1013px;height:639px;position:relative;overflow:hidden;border-radius:18px;
+  font-family:Arial,Helvetica,sans-serif;color:#10221a;background:#eef4ec;border:1px solid #b9cdb6;}
+.card::before{content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(45deg,rgba(20,90,50,.08) 0 1px,transparent 1px 8px),
+             repeating-linear-gradient(-45deg,rgba(20,90,50,.05) 0 1px,transparent 1px 10px);}
+.band{position:absolute;top:0;left:0;right:0;height:100%;background:linear-gradient(115deg,transparent 0 62%,rgba(240,214,78,.55) 62% 66%,rgba(27,122,58,.75) 66% 72%,transparent 72%);}
+.wrap{position:relative;padding:22px 28px;height:100%;}
+.head{display:flex;align-items:flex-start;gap:16px;}
+.emblem{width:78px;height:78px;flex:0 0 78px;}
+.head .tt{color:#0f5a2c;font-size:25px;font-weight:800;letter-spacing:.3px;line-height:1;}
+.head .tt2{color:#0f5a2c;font-size:22px;font-weight:800;line-height:1.05;}
+.head .s1{font-size:12.5px;font-weight:700;color:#223;margin-top:4px;letter-spacing:.3px;}
+.head .s2{font-size:13px;font-weight:800;color:#0f5a2c;letter-spacing:1px;margin-top:2px;}
+.fields{position:absolute;left:28px;top:180px;right:40px;}
+.f{margin-bottom:16px;}
+.f .lab{font-size:11px;letter-spacing:2px;color:#2f5a3f;font-weight:700;}
+.f .val{font-size:24px;font-weight:800;color:#10221a;}
+.porte{position:absolute;left:28px;right:300px;top:330px;font-size:11px;line-height:1.45;color:#173;text-align:justify;}
+.porte b{color:#0f5a2c;}
+.br{position:absolute;left:28px;bottom:26px;font-size:26px;font-weight:800;color:#0f5a2c;letter-spacing:1px;}
+.num{position:absolute;right:36px;bottom:28px;font-size:18px;font-weight:800;color:#10221a;letter-spacing:1px;}
+.sign{position:absolute;right:44px;bottom:60px;text-align:center;width:300px;}
+.sign .name{font-family:'Segoe Script','Brush Script MT',cursive;font-style:italic;font-size:36px;color:#123;line-height:1;}
+.sign .line{border-top:1.5px solid #444;margin:2px 0 3px;}
+.sign .r{font-size:11px;font-weight:700;letter-spacing:1px;color:#223;}
+.foot{position:absolute;bottom:0;left:0;right:0;height:12px;background:repeating-linear-gradient(90deg,#1b7a3a 0 34px,#eabe73 34px 40px);}
+.side{position:absolute;left:8px;top:120px;transform:rotate(-90deg);transform-origin:left top;
+  font-size:8px;color:#2f5a3f;letter-spacing:1px;width:420px;}
+</style></head><body>
+<div class="card">
+  <div class="band"></div>
+  <div class="wrap">
+    <div class="side">DECRETO FEDERAL Nº 9.279 DE 26 DE OUTUBRO DE 1944 — DOCUMENTO DE IDENTIDADE E VALOR EM TODO O TERRITÓRIO NACIONAL</div>
+    <div class="head">
+      <svg class="emblem" viewBox="0 0 100 100">
+        <g stroke="#1b7a3a" stroke-width="3" fill="none"><path d="M50 8 C30 20 22 44 30 70"/><path d="M50 8 C70 20 78 44 70 70"/><path d="M34 66 q16 12 32 0"/></g>
+        <polygon points="50,20 58,42 82,42 63,56 70,80 50,65 30,80 37,56 18,42 42,42" fill="#f4d64e" stroke="#c9a227" stroke-width="1.5"/>
+        <circle cx="50" cy="50" r="15" fill="#1c4fb0" stroke="#0d2f78" stroke-width="2"/>
+        <circle cx="45" cy="47" r="1.6" fill="#fff"/><circle cx="54" cy="45" r="1.6" fill="#fff"/><circle cx="50" cy="54" r="1.6" fill="#fff"/>
+        <rect x="48.5" y="60" width="3" height="18" fill="#9aa7b5"/>
+      </svg>
+      <div>
+        <div class="tt">REPÚBLICA FEDERATIVA DO BRASIL</div>
+        <div class="tt2">PODER JUDICIÁRIO</div>
+        <div class="s1">TRIBUNAL DE JUSTIÇA DO ESTADO DE SÃO PAULO</div>
+        <div class="s2">CARTEIRA DE IDENTIDADE DE MAGISTRADO</div>
+      </div>
+    </div>
+    <div class="fields">
+      <div class="f"><div class="lab">CARGO</div><div class="val">{{CARGO}}</div></div>
+      <div class="f"><div class="lab">NOME</div><div class="val">{{NOME}}</div></div>
+      <div class="f"><div class="lab">RG</div><div class="val">{{RG}}</div></div>
+    </div>
+    <div class="porte"><b>PORTE DE ARMA.</b> O titular desta tem a prerrogativa de portar arma de defesa pessoal (Lei Complementar nº 35, de 14 de março de 1979 — Lei Orgânica da Magistratura Nacional, art. 33, VI) e deve receber das autoridades civis e militares todo o auxílio que lhes for solicitado, no exercício de suas funções.</div>
+    <div class="sign"><div class="name">{{NOME}}</div><div class="line"></div><div class="r">ASSINATURA DO IDENTIFICADO</div></div>
+    <div class="br">BR</div>
+    <div class="num">{{NUMERO}}</div>
+    <div class="foot"></div>
+  </div>
+</div>
+</body></html>

@@ -53,6 +53,13 @@ function montarEmbed(tipo, d) {
           d.alvo ? { name: 'Alvo', value: String(d.alvo), inline: true } : null,
           d.porQuemId ? { name: 'Expedido por', value: `<@${d.porQuemId}>`, inline: true } : null,
         ].filter(Boolean));
+    case 'comunicado': {
+      // Título + corpo (markdown livre) + links (URLs cruas, uma por linha → o Discord linka na
+      // description). Tudo na description (limite 4096) pra caber corpo longo.
+      let desc = String(d.corpo || '');
+      if (d.linksTexto) desc += `\n\n🔗 **Links**\n${d.linksTexto}`;
+      return e.setColor(0x1f6feb).setTitle(`📢 ${String(d.titulo || 'Comunicado').slice(0, 256)}`).setDescription(desc.slice(0, 4096));
+    }
     default:
       return e.setColor(0x2c3e50).setTitle('📜 Publicação Oficial').setDescription(String(d.texto || 'Ato publicado.'));
   }

@@ -110,7 +110,7 @@ function embedProcesso(p) {
 function modalSentenca(numero, resultado) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:sentenca:${numero}#${resultado}`).setTitle('Sentença');
   modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('texto').setLabel('Fundamentação e decisão').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+    new TextInputBuilder().setCustomId('texto').setLabel('Fundamentação e decisão').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   return modal;
 }
@@ -177,12 +177,12 @@ function modalSentencaPorCrime(numero, processo, condenadosIds) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:sentencapocrime:${numero}`).setTitle('Sentença por crime');
   const condenados = (processo.crimes || []).filter(c => condenadosIds.includes(c.id));
   modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('texto').setLabel('Fundamentação e decisão').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1500),
+    new TextInputBuilder().setCustomId('texto').setLabel('Fundamentação e decisão').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   if (condenados.length) {
     const template = condenados.map(c => `${crimeLabel(c)}: `).join('\n');
     modal.addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('penas').setLabel('Pena de cada crime condenado').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1500).setValue(template.slice(0, 1500))),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('penas').setLabel('Pena de cada crime condenado').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000).setValue(template.slice(0, 4000))),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('regime').setLabel('Regime inicial (ex: semiaberto)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(60)),
     );
   }
@@ -696,7 +696,7 @@ async function processarSelecaoTestemunha(interaction, numero) {
   const parteId = interaction.values[0];
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:depoimento:${numero}#${parteId}`).setTitle('Registrar depoimento');
   modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('texto').setLabel('Depoimento').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+    new TextInputBuilder().setCustomId('texto').setLabel('Depoimento').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   return interaction.showModal(modal);
 }
@@ -1792,7 +1792,7 @@ function modalIntimacao(numero, { destinatarioId, destinatarioNome, teorPadrao }
   const campoDest = new TextInputBuilder().setCustomId('destinatario').setLabel('Menção @ do destinatário (opcional)').setStyle(TextInputStyle.Short).setRequired(false);
   if (destinatarioId) campoDest.setValue(`<@${destinatarioId}>`);
   else if (destinatarioNome) campoDest.setPlaceholder(`${destinatarioNome} — sem Discord, deixe vazio`.slice(0, 100));
-  const campoTeor = new TextInputBuilder().setCustomId('teor').setLabel('Teor da intimação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000);
+  const campoTeor = new TextInputBuilder().setCustomId('teor').setLabel('Teor da intimação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000);
   if (teorPadrao) campoTeor.setValue(teorPadrao);
   modal.addComponents(new ActionRowBuilder().addComponents(campoDest), new ActionRowBuilder().addComponents(campoTeor));
   return modal;
@@ -1883,7 +1883,7 @@ async function processarSelecaoTeorIntimacao(interaction, chaveDestinatario) {
   const [numero, destinatarioRef] = chaveDestinatario.split('#');
   const preset = documentos.TEOR_PRESETS_INTIMACAO[interaction.values[0]];
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:intimargenerico:${numero}#${destinatarioRef}`).setTitle(`Intimação — ${preset.label}`.slice(0, 45));
-  const campoTeor = new TextInputBuilder().setCustomId('teor').setLabel('Teor da intimação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000);
+  const campoTeor = new TextInputBuilder().setCustomId('teor').setLabel('Teor da intimação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000);
   if (preset.texto) campoTeor.setValue(preset.texto);
   modal.addComponents(new ActionRowBuilder().addComponents(campoTeor));
   return interaction.showModal(modal);
@@ -2205,7 +2205,7 @@ function modalAnexarProva(numero) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:anexarprova:${numero}`).setTitle('Anexar prova');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('tipo').setLabel('Tipo (foto / vídeo / link / PDF / doc)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('descricao').setLabel('O que é a prova (descrição)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(500)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('descricao').setLabel('O que é a prova (descrição)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('link').setLabel('Link (só se a prova for um link)').setStyle(TextInputStyle.Short).setRequired(false)),
   );
   return modal;
@@ -2540,7 +2540,7 @@ function botaoVoltarFase(numero) {
 function modalVoltarFase(numero, escolha, paraLabel) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:voltarfase:${numero}${escolha ? `#${escolha}` : ''}`).setTitle('Voltar fase');
   modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('motivo').setLabel(`Motivo (volta p/ "${paraLabel}")`.slice(0, 45)).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(500),
+    new TextInputBuilder().setCustomId('motivo').setLabel(`Motivo (volta p/ "${paraLabel}")`.slice(0, 45)).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   return modal;
 }
@@ -2703,7 +2703,7 @@ async function tratarManifestacaoMp(interaction, numero) {
 function modalManifestacaoLivre(numero) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:manifestacaomplivre:${numero}`).setTitle('Manifestação / Requerimento do MP');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('descricao').setLabel('Teor do ato').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('descricao').setLabel('Teor do ato').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('tipo').setLabel('"manifestacao" ou "requerimento"').setPlaceholder('manifestacao = junta direto | requerimento = decide o Juiz').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(20)),
   );
   return modal;
@@ -2859,7 +2859,7 @@ async function abrirModalRecorrer(interaction, numero) {
 
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:recorrer:${numero}`).setTitle('Recorrer da sentença');
   modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('razoes').setLabel('Razões do recurso').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+    new TextInputBuilder().setCustomId('razoes').setLabel('Razões do recurso').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   return interaction.showModal(modal);
 }
@@ -2997,7 +2997,7 @@ function abrirModalFundamentacaoReforma(interaction, numeroApelacao) {
   const novoResultado = interaction.values[0];
   const modal = new ModalBuilder().setCustomId(`painel:modal:apelacao:reformar:${numeroApelacao}#${novoResultado}`).setTitle('Fundamentação da reforma');
   modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação do relator').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+    new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação do relator').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   return interaction.showModal(modal);
 }
@@ -3011,7 +3011,7 @@ async function abrirModalFundamentacaoDecisao(interaction, numeroApelacao, decis
   if (!apelacao) return;
   const modal = new ModalBuilder().setCustomId(`painel:modal:apelacao:decidir:${numeroApelacao}#${decisao}`).setTitle(TITULO_DECISAO[decisao]);
   modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação do relator').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+    new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação do relator').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   return interaction.showModal(modal);
 }

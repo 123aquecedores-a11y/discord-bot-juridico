@@ -120,7 +120,7 @@ function modalAbrirEdital() {
     row(new TextInputBuilder().setCustomId('numero').setLabel('Número do edital').setPlaceholder('Ex: 001/2026').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(20)),
     row(new TextInputBuilder().setCustomId('vagas_juiz').setLabel('Vagas de Juiz (número)').setPlaceholder('Ex: 2').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3)),
     row(new TextInputBuilder().setCustomId('vagas_promotor').setLabel('Vagas de Promotor (número)').setPlaceholder('Ex: 3').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3)),
-    row(new TextInputBuilder().setCustomId('requisitos').setLabel('Requisitos').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)),
+    row(new TextInputBuilder().setCustomId('requisitos').setLabel('Requisitos').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     // Label ENCURTADO: o texto antigo tinha 46 chars e estourava o limite de 45 do Discord
     // ("Invalid string length" — o modal nem abria). O formato foi pro placeholder (limite 100).
     row(new TextInputBuilder().setCustomId('periodo').setLabel('Período de inscrição').setPlaceholder('Início e fim — ex: 01/09/2026 a 15/09/2026').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40)),
@@ -210,8 +210,8 @@ async function abrirModalInscricao(interaction, slug, editalId) {
   modal.addComponents(
     row(new TextInputBuilder().setCustomId('nome').setLabel('Nome (RP)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(60)),
     row(new TextInputBuilder().setCustomId('rg').setLabel('RG (RP)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(20)),
-    row(new TextInputBuilder().setCustomId('experiencia').setLabel('Experiência anterior em RP jurídico').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(600)),
-    row(new TextInputBuilder().setCustomId('disponibilidade').setLabel('Disponibilidade + motivação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(600)),
+    row(new TextInputBuilder().setCustomId('experiencia').setLabel('Experiência anterior em RP jurídico').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
+    row(new TextInputBuilder().setCustomId('disponibilidade').setLabel('Disponibilidade + motivação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
   );
   return interaction.showModal(modal);
 }

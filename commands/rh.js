@@ -59,13 +59,11 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
     if (roleId) await membro.roles.add(roleId).catch(() => {});
   }
   const apelidoOk = nomePersonagem ? await aplicarApelido(membro, cargo, nomePersonagem) : null;
-  // Advogado: gera a OAB (se ainda não tiver) e emite a carteirinha na DM. Falha de render/DM é
-  // logada dentro de emitirCarteirinha e não interrompe a contratação.
-  let carteira = null;
-  if (cargo === 'Advogado') {
-    carteira = await carteirinha.emitirCarteirinha(guild, usuarioId)
-      .catch(err => { console.error('[rh] falha ao emitir carteirinha:', err.message); return null; });
-  }
+  // Emite a carteira CERTA conforme o cargo (Advogado → OAB; Juiz/Desembargador/Promotor/Procurador
+  // → carteira funcional; demais cargos → nada) e envia na DM. Render/DM que falhar é logado dentro
+  // de emitirCarteirinha e não interrompe a contratação.
+  const carteira = await carteirinha.emitirCarteirinha(guild, usuarioId)
+    .catch(err => { console.error('[rh] falha ao emitir carteira:', err.message); return null; });
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: contratação', executorId, referencia: `<@${usuarioId}> → ${cargo}${nomePersonagem ? ` ("${nomePersonagem}")` : ''}` });
   }
@@ -224,9 +222,9 @@ async function decidirSolicitacao(interaction, id, aprovar) {
     const aviso = apelidoOk === false
       ? '\n⚠️ O cargo foi dado, mas **não consegui trocar o apelido** — verifique se o cargo do bot está **acima** do cargo dado na hierarquia e se ele tem a permissão "Gerenciar Apelidos". Ajuste o apelido na mão.'
       : '';
-    // Advogado: informa a OAB emitida e se a carteirinha chegou na DM.
+    // Informa o número da carteira emitida (OAB p/ advogado, matrícula p/ os demais) e a DM.
     const notaCarteira = (carteira && carteira.ok)
-      ? `\n🪪 OAB **${carteira.oab}** emitida${carteira.dmOk ? ' — carteirinha enviada na DM.' : ' — **DM fechada**, não consegui enviar a carteirinha (use `/gerar-carteirinhas` depois).'}`
+      ? `\n🪪 ${carteira.tipo === 'oab' ? 'OAB' : 'Matrícula'} **${carteira.numero}** emitida${carteira.dmOk ? ' — carteira enviada na DM.' : ' — **DM fechada**, não consegui enviar a carteira (use `/gerar-carteirinhas` depois).'}`
       : '';
     return interaction.followUp({
       content: `✅ <@${sol.discordId}> agora é **${sol.cargo}** — apelido: \`${TITULO[sol.cargo] || sol.cargo} ${sol.nomePersonagem}\`.${aviso}${notaCarteira}`,
@@ -391,11 +389,12 @@ async function salvarGerenciarDados(interaction, usuarioId) {
     ].filter(Boolean).join(' · '),
   });
 
-  // Advogado com mudança que aparece na carteirinha (nome/RG/OAB) → regenera e reenvia na DM.
+  // Cargo com carteira (Advogado/Juiz/Desembargador/Promotor/Procurador) e mudança que aparece
+  // nela (nome/RG) → regenera e reenvia na DM.
   let notaCarteira = '';
-  if (reg.cargo === 'Advogado') {
+  if (carteirinha.CARGOS_COM_CARTEIRA.includes(reg.cargo)) {
     const r = await carteirinha.emitirCarteirinha(interaction.guild, usuarioId).catch(() => null);
-    if (r && r.ok) notaCarteira = `\n🪪 Carteirinha regenerada (OAB ${r.oab})${r.dmOk ? ' e reenviada na DM.' : ' — DM fechada, não consegui enviar.'}`;
+    if (r && r.ok) notaCarteira = `\n🪪 Carteira regenerada (nº ${r.numero})${r.dmOk ? ' e reenviada na DM.' : ' — DM fechada, não consegui enviar.'}`;
   }
 
   return interaction.reply({ content: `✅ Dados de <@${usuarioId}> atualizados.${notaCarteira}`, ephemeral: true });

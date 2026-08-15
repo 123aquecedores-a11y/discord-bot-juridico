@@ -168,7 +168,7 @@ async function processarSelecaoTipoDireta(interaction, numero) {
 function modalFundamentacao(customId, titulo, label) {
   const modal = new ModalBuilder().setCustomId(customId).setTitle(titulo);
   modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('fundamentacao').setLabel(label).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+    new TextInputBuilder().setCustomId('fundamentacao').setLabel(label).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
   return modal;
 }
@@ -947,7 +947,7 @@ module.exports = {
     const modal = new ModalBuilder().setCustomId(`medida:processomodal:${numero}`).setTitle(`Abrir processo — ${numero}`.slice(0, 45));
 
     const campoMotivo = new TextInputBuilder().setCustomId('motivo').setLabel('Motivo/fatos (edite se quiser)')
-      .setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(medida.motivo.slice(0, 4000));
+      .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000).setValue(medida.motivo.slice(0, 4000));
     // Pré-preenche com o alvo já identificado na medida — sem isso, o Promotor precisava saber
     // de cor o ID do alvo pra digitar @menção, já que o alvo nunca entrou no canal da medida
     // (é investigativa) e não aparece na lista de membros pra selecionar.

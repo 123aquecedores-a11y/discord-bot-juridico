@@ -16,6 +16,7 @@ const mandadoCmd = require('./mandado');
 const oficioCmd = require('./oficio');
 const rhCmd = require('./rh');
 const editalCmd = require('./edital');
+const diarioOficialCmd = require('./diarioOficial');
 const crimeCmd = require('./crime');
 const rascunhoCrimes = require('../utils/rascunhoCrimes');
 const crimePicker = require('../utils/crimePicker');
@@ -102,6 +103,9 @@ function botoesMenuPrincipal(interaction) {
       botaoSe(staff, 'painel:menu:rh', '👥 RH', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:acao:dados:gerenciar', '🪪 Gerenciar dados', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:acao:edital:abrir', '📢 Abrir edital', ButtonStyle.Secondary),
+    ),
+    linha(
+      botaoSe(staff, 'painel:acao:comunicado:abrir', '📢 Publicar comunicado', ButtonStyle.Secondary),
     ),
     // Preferência pessoal: quando LIGADA, a IA já revisa e publica a fundamentação sozinha (sem a
     // tela de "Revisar/Publicar"). Rótulo reflete o estado atual de quem abriu o painel.
@@ -364,7 +368,7 @@ function abrirModalProcessoPenal(interaction) {
   // "Menções @"; réu sem Discord entra por nome+RG. Nenhum é obrigatório (pode identificar depois).
   const modal = new ModalBuilder().setCustomId('painel:modal:processo:penal').setTitle('Abrir processo penal');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Descrição objetiva dos fatos').setStyle(TextInputStyle.Paragraph).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Descrição objetiva dos fatos').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_nome').setLabel('Nome do réu (se não tiver Discord)').setStyle(TextInputStyle.Short).setRequired(false)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_rg').setLabel('RG do réu').setStyle(TextInputStyle.Short).setRequired(false)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reus').setLabel('Menções @ dos réus (se tiverem Discord)').setStyle(TextInputStyle.Short).setRequired(false)),
@@ -478,7 +482,7 @@ function abrirModalRequisicaoMp(interaction) {
   const modal = new ModalBuilder().setCustomId('painel:modal:mp:requisicao').setTitle('Requisição do MP');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('destinatario').setLabel('Destinatário (pessoa/órgão)').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação (o que se requisita e por quê)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação (o que se requisita e por quê)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('prazo').setLabel('Prazo para atendimento (opcional)').setStyle(TextInputStyle.Short).setRequired(false)),
   );
   return interaction.showModal(modal);
@@ -488,7 +492,7 @@ function abrirModalRecomendacaoMp(interaction) {
   const modal = new ModalBuilder().setCustomId('painel:modal:mp:recomendacao').setTitle('Recomendação do MP');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('destinatario').setLabel('Destinatário (pessoa/órgão)').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('fundamentacao').setLabel('Razões fáticas e jurídicas').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('fundamentacao').setLabel('Razões fáticas e jurídicas').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
   );
   return interaction.showModal(modal);
 }
@@ -496,8 +500,8 @@ function abrirModalRecomendacaoMp(interaction) {
 function abrirModalInqueritoCivil(interaction) {
   const modal = new ModalBuilder().setCustomId('painel:modal:mp:inqueritocivil').setTitle('Instaurar Inquérito Civil');
   modal.addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('objeto').setLabel('Objeto da apuração').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(600)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(800)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('objeto').setLabel('Objeto da apuração').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
   );
   return interaction.showModal(modal);
 }
@@ -519,7 +523,7 @@ function abrirModalOficio(interaction, processoDetectado, destinatarioPreenchido
     ...(processoDetectado ? [] : [new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('processo').setLabel('Nº do processo (vazio = ofício avulso)').setStyle(TextInputStyle.Short).setRequired(false))]),
     new ActionRowBuilder().addComponents(campoDestinatario),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('assunto').setLabel('Assunto').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('conteudo').setLabel('Conteúdo').setStyle(TextInputStyle.Paragraph).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('conteudo').setLabel('Conteúdo').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
   );
   return interaction.showModal(modal);
 }
@@ -650,6 +654,11 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   // Edital: botão "📢 Abrir edital" do hub de staff → modal (mesma função do slash /abrir-edital).
   if (modulo === 'edital') {
     if (acao === 'abrir') return editalCmd.abrirModalEdital(interaction);
+  }
+
+  // Comunicado: botão "📢 Publicar comunicado" do hub de staff → modal.
+  if (modulo === 'comunicado') {
+    if (acao === 'abrir') return diarioOficialCmd.abrirModalComunicado(interaction);
   }
 
   if (modulo === 'sentenca') {
@@ -910,7 +919,7 @@ async function tratarSelect(interaction, modulo, campo, extra) {
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('alvo').setLabel('Pessoa/local alvo').setStyle(TextInputStyle.Short).setRequired(true)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('alvo_discord').setLabel('Discord do alvo (@menção, se for pessoa)').setStyle(TextInputStyle.Short).setRequired(false)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Motivo/indícios').setStyle(TextInputStyle.Paragraph).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Motivo/indícios').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     );
     return interaction.showModal(modal);
   }
@@ -1186,6 +1195,11 @@ async function tratarModal(interaction, modulo, acao, extra) {
   // Update 3 — submit do modal de edição global de dados (nome/RG/OAB). `extra` = usuarioId.
   if (modulo === 'dados' && acao === 'editar') {
     return rhCmd.salvarGerenciarDados(interaction, extra);
+  }
+
+  // Submit do modal "Publicar comunicado" (staff) → publica no Diário Oficial.
+  if (modulo === 'comunicado' && acao === 'publicar') {
+    return diarioOficialCmd.publicarComunicado(interaction);
   }
 
   if (modulo === 'processo' && acao === 'partetardia') {
