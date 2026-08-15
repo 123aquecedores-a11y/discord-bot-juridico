@@ -410,6 +410,60 @@ function seedProcesso(numero, extra) {
     ok(/Confirma que os documentos/i.test(lastReplyText(it5)), '12g: petição pré-mudança (sem sorteioPromotorEm) não é travada');
   }
 
+  // ============ ITEM 13: Manifestação do MP — fluxo aditivo (Parte 1) ============
+  console.log('\nItem 13 — manifestação do MP (registro, IA-fallback, gates):');
+  {
+    const cartorio = require('../utils/cartorio');
+    const memberFalse = { permissions: { has: () => false }, roles: { cache: { has: () => false } } };
+    const mkProm = (fields) => makeInteraction({ userId: 'promP', guild: fakeGuild(), fields: fields || {}, member: memberFalse });
+    const mkPet = (numero, extra = {}) => db.inserir('peticoes', Object.assign({ numero, tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'cm', sorteioPromotorEm: new Date().toISOString(), manifestacoesMp: [], nomeCliente: 'C', rgCliente: 'r' }, extra));
+    const getPet = (numero) => db.buscarPorNumero('peticoes', numero);
+
+    // 13a: "Nada a opor" registra em 1 clique, sem modal/texto
+    mkPet('9101PA');
+    const it1 = mkProm();
+    await peticaoCmd.registrarNadaAOpor(it1, '9101PA');
+    const m1 = getPet('9101PA').manifestacoesMp;
+    ok(m1.length === 1 && m1[0].posicao === 'Nada a opor' && m1[0].fundamentacao === null, '13a: "Nada a opor" registra em 1 clique (sem texto)');
+
+    // 13b: Favorável com fundamentação registra o texto (modal -> registrar assim, sem IA)
+    mkPet('9102PA');
+    await peticaoCmd.processarModalManifestacao(mkProm({ fundamentacao: 'Parecer favorável fundamentado.' }), '9102PA#favoravel');
+    await peticaoCmd.finalizarManifestacao(mkProm(), '9102PA', false);
+    const m2 = getPet('9102PA').manifestacoesMp;
+    ok(m2.length === 1 && m2[0].posicao === 'Favorável' && /favorável fundamentado/i.test(m2[0].fundamentacao), '13b: Favorável com fundamentação registra o texto');
+
+    // 13c: IA fora do ar → fallback registra o texto ORIGINAL (não congela o fluxo)
+    const revOrig = cartorio.revisarTexto;
+    cartorio.revisarTexto = async () => null; // simula IA indisponível/timeout
+    mkPet('9103PA');
+    await peticaoCmd.processarModalManifestacao(mkProm({ fundamentacao: 'Texto original do promotor.' }), '9103PA#desfavoravel');
+    const itRev = mkProm();
+    await peticaoCmd.revisarManifestacao(itRev, '9103PA');
+    const caiuNoFallback = itRev._replies.some(r => /não está disponível|texto original/i.test(r.content || ''));
+    await peticaoCmd.finalizarManifestacao(mkProm(), '9103PA', false);
+    const m3 = getPet('9103PA').manifestacoesMp;
+    cartorio.revisarTexto = revOrig; // restaura
+    ok(caiuNoFallback && m3.length === 1 && /original do promotor/i.test(m3[0].fundamentacao), '13c: IA fora do ar → fallback registra o texto original (não congela)');
+
+    // 13d: fundamentação vazia em Favorável/Desfavorável é barrada, nada registrado
+    mkPet('9104PA');
+    const it4 = mkProm({ fundamentacao: '   ' });
+    await peticaoCmd.processarModalManifestacao(it4, '9104PA#favoravel');
+    ok(/obrigatória/i.test(lastReplyText(it4)) && getPet('9104PA').manifestacoesMp.length === 0, '13d: fundamentação vazia é barrada');
+
+    // 13e: juiz não pode manifestar (é o MP fiscalizando, não o julgador)
+    mkPet('9105PA');
+    const itJuiz = makeInteraction({ userId: 'juizP', guild: fakeGuild(), member: memberFalse });
+    await peticaoCmd.registrarNadaAOpor(itJuiz, '9105PA');
+    ok(/Só o Promotor/i.test(lastReplyText(itJuiz)) && getPet('9105PA').manifestacoesMp.length === 0, '13e: juiz é barrado de se manifestar');
+
+    // 13f: manifestação DEPOIS do prazo (25h), antes da decisão, ainda é aceita
+    mkPet('9106PA', { sorteioPromotorEm: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() });
+    await peticaoCmd.registrarNadaAOpor(mkProm(), '9106PA');
+    ok(getPet('9106PA').manifestacoesMp.length === 1, '13f: manifestação após o prazo (antes da decisão) é aceita');
+  }
+
   // ---- Resumo ----
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`  ❌ ${f.nome}${f.detalhe ? ` — ${f.detalhe}` : ''}`)); }
