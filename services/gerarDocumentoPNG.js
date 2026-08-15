@@ -171,6 +171,7 @@ function montarBlocoSecoes(tipoDocumento, dados) {
   const destinatario = escapeHtml(dados.destinatario);
   const numeroProcesso = escapeHtml(dados.numeroProcesso);
   const nomeAssinante = escapeHtml(dados.nomeAssinante);
+  const posicao = escapeHtml(dados.posicao);
 
   switch (tipoDocumento) {
     case 'sentenca_penal_condenatoria':
@@ -239,6 +240,17 @@ function montarBlocoSecoes(tipoDocumento, dados) {
         <div class="corpo">Trata-se de inquérito instaurado para apurar, em tese, a prática de ${crimeDescricao}.</div>
         <div class="corpo" style="margin-top:10px;">${corpo}</div>
         <div class="dispositivo">Ante o exposto, o Ministério Público PROMOVE O ARQUIVAMENTO do presente inquérito, por ausência de justa causa para o oferecimento de denúncia, nos termos do artigo 28 do Código de Processo Penal, sem prejuízo de reabertura caso surjam novas provas.</div>
+      `;
+
+    // Parecer do MP sobre petição administrativa (porte de arma, troca de nome, limpeza de ficha,
+    // alvará de evento). Posição: Favorável / Desfavorável / Nada a opor. A fundamentação (corpo) é
+    // obrigatória em Favorável/Desfavorável e ausente em "Nada a opor" — que gera PNG mesmo assim,
+    // por ser ato processual igual.
+    case 'parecer_mp_peticao':
+      return `
+        <div class="corpo">O Ministério Público, na qualidade de fiscal da ordem jurídica, manifesta-se sobre o pedido formulado nos autos em epígrafe.</div>
+        ${corpo ? `<div class="corpo" style="margin-top:10px;">${corpo}</div>` : ''}
+        <div class="dispositivo">Manifestação do Ministério Público: ${posicao}.</div>
       `;
 
     case 'oficio':
@@ -336,7 +348,8 @@ function getLogoImgTag(orgaoEmissor) {
 /**
  * Gera um PNG a partir dos dados do documento.
  * @param {Object} dados
- * @param {'sentenca_penal_condenatoria'|'sentenca_penal_absolutoria'|'sentenca_civel_procedente'|'sentenca_civel_improcedente'|'decisao_indeferimento_inicial'|'parecer_mp_denuncia'|'parecer_mp_arquivamento'|'oficio'|'mandado_citacao'|'mandado_intimacao'|'intimacao'|'mandado_generico'} [dados.tipoDocumento]
+ * @param {'sentenca_penal_condenatoria'|'sentenca_penal_absolutoria'|'sentenca_civel_procedente'|'sentenca_civel_improcedente'|'decisao_indeferimento_inicial'|'parecer_mp_denuncia'|'parecer_mp_arquivamento'|'parecer_mp_peticao'|'oficio'|'mandado_citacao'|'mandado_intimacao'|'intimacao'|'mandado_generico'} [dados.tipoDocumento]
+ * @param {string} [dados.posicao] - só para parecer_mp_peticao: Favorável / Desfavorável / Nada a opor
  * @param {'judiciario'|'ministerio_publico'|'policia_civil'} dados.orgaoEmissor
  * @param {string} dados.subunidade - ex: "Comarca de São Paulo — Vara Criminal"
  * @param {string} dados.tituloDocumento - ex: "SENTENÇA", "MANDADO DE CITAÇÃO"

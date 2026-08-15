@@ -276,14 +276,16 @@ function seedProcesso(numero, extra) {
     ok(vals.includes('Delegado') && vals.includes('Promotor') && vals.includes('Advogado'), '  ...e mantém os cargos autossolicitáveis');
 
     // 11b (handler): solicitar 'Juiz' é rejeitado e NÃO cria solicitação
+    // RG obrigatório no formulário de cargo (Update 2): o mock precisa fornecê-lo, senão a rejeição
+    // viria do check de RG e não da trava de cargo alto (o que este teste quer isolar).
     const antes = db.todos('solicitacoesCargo').length;
-    const itJ = makeInteraction({ userId: 'userY', guild: fakeGuild(), fields: { nome: 'Nome Y' } });
+    const itJ = makeInteraction({ userId: 'userY', guild: fakeGuild(), fields: { nome: 'Nome Y', rg: 'RG-Y' } });
     await rhCmd.solicitarCargo(itJ, 'Juiz');
     ok(/não pode ser solicitad/i.test(lastReplyText(itJ)), '11b: solicitar cargo alto (Juiz) é recusado no handler');
     eq(db.todos('solicitacoesCargo').length, antes, '  ...e nenhuma solicitação foi criada');
 
-    // Controle: solicitar 'Advogado' cria a solicitação normalmente
-    const itAdv = makeInteraction({ userId: 'userZ', guild: fakeGuild(), fields: { nome: 'Nome Z' } });
+    // Controle: solicitar 'Advogado' cria a solicitação normalmente (RG obrigatório — Update 2)
+    const itAdv = makeInteraction({ userId: 'userZ', guild: fakeGuild(), fields: { nome: 'Nome Z', rg: 'RG-Z' } });
     await rhCmd.solicitarCargo(itAdv, 'Advogado');
     const sol = db.todos('solicitacoesCargo', s => s.discordId === 'userZ' && s.cargo === 'Advogado')[0];
     ok(!!sol && sol.status === 'Pendente', 'controle: solicitar Advogado (baixo) cria a solicitação');
@@ -357,6 +359,109 @@ function seedProcesso(numero, extra) {
     await prazos.verificarMedidasAguardandoMP(clienteDummy, guildOk);
     m = db.buscarPorNumero('medidas', '0050MD');
     ok(m.lembreteMpEnviado === true, 'envio ok → lembreteMpEnviado gravado (após o send)');
+  }
+
+  // ============ ITEM 12: Trava de manifestação do MP em petição (Parte 1) ============
+  console.log('\nItem 12 — trava de manifestação do MP (petição): bloqueio/liberação/decurso/lazy:');
+  {
+    const agora = Date.now();
+    const recente = new Date(agora - 2 * 60 * 60 * 1000).toISOString();   // 2h atrás (dentro das 24h)
+    const antigo = new Date(agora - 25 * 60 * 60 * 1000).toISOString();   // 25h atrás (prazo estourado)
+
+    // 12a: sem manifestação, dentro das 24h → deferir travado
+    db.inserir('peticoes', { numero: '9001PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c1', sorteioPromotorEm: recente, manifestacoesMp: [] });
+    const it1 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it1, '9001PA', 'deferir');
+    ok(/Aguardando manifestação do Ministério Público/i.test(lastReplyText(it1)), '12a: deferir travado sem manifestação (dentro das 24h)');
+
+    // 12b: com manifestação → deferir liberado (vai pro diálogo de confirmação)
+    db.inserir('peticoes', { numero: '9002PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c2', sorteioPromotorEm: recente, manifestacoesMp: [{ posicao: 'Nada a opor', autorId: 'promP', data: recente }] });
+    const it2 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it2, '9002PA', 'deferir');
+    ok(/Confirma que os documentos/i.test(lastReplyText(it2)), '12b: com manifestação, deferir é liberado');
+
+    // 12c: decurso — 25h sem manifestação → deferir liberado (sem trava)
+    db.inserir('peticoes', { numero: '9003PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c3', sorteioPromotorEm: antigo, manifestacoesMp: [] });
+    const it3 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it3, '9003PA', 'deferir');
+    ok(/Confirma que os documentos/i.test(lastReplyText(it3)) && !/Aguardando manifest/i.test(lastReplyText(it3)), '12c: decurso das 24h libera a decisão');
+
+    // 12d: diligência NÃO é travada (a trava é só sobre a decisão final)
+    const it4 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it4, '9001PA', 'diligencia');
+    ok(!/Aguardando manifest/i.test(lastReplyText(it4)), '12d: diligência não é bloqueada pela trava');
+
+    // 12e: liberação é LAZY — estadoManifestacaoMp libera após 24h sem rodar job nenhum
+    const petLazy = { sorteioPromotorEm: recente, manifestacoesMp: [] };
+    const bloqAgora = peticaoCmd.estadoManifestacaoMp(petLazy, agora).bloqueado;
+    const bloqFuturo = peticaoCmd.estadoManifestacaoMp(petLazy, agora + 25 * 60 * 60 * 1000).bloqueado;
+    ok(bloqAgora === true && bloqFuturo === false, '12e: liberação lazy (bloqueado agora, liberado após 24h — sem cron/job)');
+
+    // 12f: decidir sem manifestação após o prazo grava o texto de decurso nos autos
+    rec.sends.length = 0;
+    db.inserir('peticoes', { numero: '9004PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c4', sorteioPromotorEm: antigo, manifestacoesMp: [], nomeCliente: 'C', rgCliente: 'r' });
+    await peticaoCmd.finalizarDecisao(fakeGuild(), '9004PA', 'Indeferido', { motivo: 'm' }, 'juizP');
+    ok(rec.sends.some(s => /Decorrido o prazo de 24/i.test(s.content || '')), '12f: decurso grava o texto de prazo decorrido nos autos');
+
+    // 12g: petição sem sorteioPromotorEm (aberta antes da mudança) → sem trava (fluxo antigo)
+    db.inserir('peticoes', { numero: '9005PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'c5', manifestacoesMp: [] });
+    const it5 = makeInteraction({ userId: 'juizP', guild: fakeGuild() });
+    await peticaoCmd.decidir(it5, '9005PA', 'deferir');
+    ok(/Confirma que os documentos/i.test(lastReplyText(it5)), '12g: petição pré-mudança (sem sorteioPromotorEm) não é travada');
+  }
+
+  // ============ ITEM 13: Manifestação do MP — fluxo aditivo (Parte 1) ============
+  console.log('\nItem 13 — manifestação do MP (registro, IA-fallback, gates):');
+  {
+    const cartorio = require('../utils/cartorio');
+    const memberFalse = { permissions: { has: () => false }, roles: { cache: { has: () => false } } };
+    const mkProm = (fields) => makeInteraction({ userId: 'promP', guild: fakeGuild(), fields: fields || {}, member: memberFalse });
+    const mkPet = (numero, extra = {}) => db.inserir('peticoes', Object.assign({ numero, tipo: 'PorteArma', status: 'Pendente', juiz: 'juizP', promotor: 'promP', canalId: 'cm', sorteioPromotorEm: new Date().toISOString(), manifestacoesMp: [], nomeCliente: 'C', rgCliente: 'r' }, extra));
+    const getPet = (numero) => db.buscarPorNumero('peticoes', numero);
+
+    // 13a: "Nada a opor" registra em 1 clique, sem modal/texto
+    mkPet('9101PA');
+    const it1 = mkProm();
+    await peticaoCmd.registrarNadaAOpor(it1, '9101PA');
+    const m1 = getPet('9101PA').manifestacoesMp;
+    ok(m1.length === 1 && m1[0].posicao === 'Nada a opor' && m1[0].fundamentacao === null, '13a: "Nada a opor" registra em 1 clique (sem texto)');
+
+    // 13b: Favorável com fundamentação registra o texto (modal -> registrar assim, sem IA)
+    mkPet('9102PA');
+    await peticaoCmd.processarModalManifestacao(mkProm({ fundamentacao: 'Parecer favorável fundamentado.' }), '9102PA#favoravel');
+    await peticaoCmd.finalizarManifestacao(mkProm(), '9102PA', false);
+    const m2 = getPet('9102PA').manifestacoesMp;
+    ok(m2.length === 1 && m2[0].posicao === 'Favorável' && /favorável fundamentado/i.test(m2[0].fundamentacao), '13b: Favorável com fundamentação registra o texto');
+
+    // 13c: IA fora do ar → fallback registra o texto ORIGINAL (não congela o fluxo)
+    const revOrig = cartorio.revisarTexto;
+    cartorio.revisarTexto = async () => null; // simula IA indisponível/timeout
+    mkPet('9103PA');
+    await peticaoCmd.processarModalManifestacao(mkProm({ fundamentacao: 'Texto original do promotor.' }), '9103PA#desfavoravel');
+    const itRev = mkProm();
+    await peticaoCmd.revisarManifestacao(itRev, '9103PA');
+    const caiuNoFallback = itRev._replies.some(r => /não está disponível|texto original/i.test(r.content || ''));
+    await peticaoCmd.finalizarManifestacao(mkProm(), '9103PA', false);
+    const m3 = getPet('9103PA').manifestacoesMp;
+    cartorio.revisarTexto = revOrig; // restaura
+    ok(caiuNoFallback && m3.length === 1 && /original do promotor/i.test(m3[0].fundamentacao), '13c: IA fora do ar → fallback registra o texto original (não congela)');
+
+    // 13d: fundamentação vazia em Favorável/Desfavorável é barrada, nada registrado
+    mkPet('9104PA');
+    const it4 = mkProm({ fundamentacao: '   ' });
+    await peticaoCmd.processarModalManifestacao(it4, '9104PA#favoravel');
+    ok(/obrigatória/i.test(lastReplyText(it4)) && getPet('9104PA').manifestacoesMp.length === 0, '13d: fundamentação vazia é barrada');
+
+    // 13e: juiz não pode manifestar (é o MP fiscalizando, não o julgador)
+    mkPet('9105PA');
+    const itJuiz = makeInteraction({ userId: 'juizP', guild: fakeGuild(), member: memberFalse });
+    await peticaoCmd.registrarNadaAOpor(itJuiz, '9105PA');
+    ok(/Só o Promotor/i.test(lastReplyText(itJuiz)) && getPet('9105PA').manifestacoesMp.length === 0, '13e: juiz é barrado de se manifestar');
+
+    // 13f: manifestação DEPOIS do prazo (25h), antes da decisão, ainda é aceita
+    mkPet('9106PA', { sorteioPromotorEm: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() });
+    await peticaoCmd.registrarNadaAOpor(mkProm(), '9106PA');
+    ok(getPet('9106PA').manifestacoesMp.length === 1, '13f: manifestação após o prazo (antes da decisão) é aceita');
   }
 
   // ---- Resumo ----
