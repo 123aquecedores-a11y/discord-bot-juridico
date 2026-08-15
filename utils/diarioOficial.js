@@ -80,7 +80,13 @@ async function publicarNoDiario(guild, tipo, dados = {}) {
     if (!canalId || !guild) return false; // Diário não configurado → ignora em silêncio
     const canal = await guild.channels.fetch(canalId).catch(() => null);
     if (!canal || !canal.isTextBased?.()) return false;
+    // TODA publicação do Diário marca @everyone (por decisão do operador). Garante, best-effort,
+    // que o bot possa mencionar @everyone neste canal (canais antigos podem ter nascido sem a perm).
+    const botId = guild.members?.me?.id || guild.client?.user?.id;
+    if (botId) await canal.permissionOverwrites.edit(botId, { MentionEveryone: true }).catch(() => {});
     await canal.send({
+      content: '@everyone',
+      allowedMentions: { parse: ['everyone'] },
       embeds: [montarEmbed(tipo, dados)],
       ...(Array.isArray(dados.files) && dados.files.length ? { files: dados.files } : {}),
     });
