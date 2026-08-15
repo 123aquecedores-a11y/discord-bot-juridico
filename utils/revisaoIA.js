@@ -13,6 +13,8 @@ const FLUXOS = {
   acordao:   { modulo: 'acordao',   acaoRevisar: 'revisar',     acaoPublicar: 'publicar',     acaoUsarRevisado: 'usarrevisado',     verbo: 'publicar' },
   razoes:    { modulo: 'razoes',    acaoRevisar: 'revisar',     acaoPublicar: 'enviar',       acaoUsarRevisado: 'usarrevisado',     verbo: 'protocolar' },
   medida:    { modulo: 'medida',    acaoRevisar: 'revisarfund', acaoPublicar: 'publicarfund', acaoUsarRevisado: 'usarrevisadofund', verbo: 'publicar' },
+  // Manifestação do MP em petição administrativa: mesmo trio de telas, roteado pelo módulo 'peticao'.
+  manifestacaomp: { modulo: 'peticao', acaoRevisar: 'revisarmanif', acaoPublicar: 'enviarmanif', acaoUsarRevisado: 'usarrevisadomanif', verbo: 'registrar' },
 };
 
 const capitaliza = (s) => s.charAt(0).toUpperCase() + s.slice(1);

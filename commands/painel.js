@@ -793,6 +793,12 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'deferir' || acao === 'indeferir' || acao === 'diligencia') {
       return peticaoCmd.decidir(interaction, extra, acao);
     }
+    // Manifestação do MP (Parte 1)
+    if (acao === 'manifestar') return peticaoCmd.abrirSelectPosicao(interaction, extra);
+    if (acao === 'nadaaopor') return peticaoCmd.registrarNadaAOpor(interaction, extra);
+    if (acao === 'revisarmanif') return peticaoCmd.revisarManifestacao(interaction, extra);
+    if (acao === 'enviarmanif') return peticaoCmd.finalizarManifestacao(interaction, extra, false);
+    if (acao === 'usarrevisadomanif') return peticaoCmd.finalizarManifestacao(interaction, extra, true);
     if (acao === 'abrirportearma') return peticaoCmd.abrirModalPorteArma(interaction);
     if (acao === 'abrirtrocanome') return peticaoCmd.abrirModalTrocaNome(interaction);
     if (acao === 'abrirlimpezaficha') return peticaoCmd.abrirModalLimpezaFicha(interaction);
@@ -1029,6 +1035,10 @@ async function tratarSelect(interaction, modulo, campo, extra) {
 
   if (modulo === 'peticao' && campo === 'risco') {
     return peticaoCmd.processarDecisaoRisco(interaction, extra);
+  }
+
+  if (modulo === 'peticao' && campo === 'posicaomanif') {
+    return peticaoCmd.processarSelectPosicao(interaction, extra);
   }
 
   if (modulo === 'processo' && campo === 'resultado') {
@@ -1322,6 +1332,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'peticao' && acao === 'alvara-evento') return peticaoCmd.processarModalAlvaraEvento(interaction);
   if (modulo === 'peticao' && acao === 'maisdados') return peticaoCmd.processarMaisDados(interaction, extra);
   if (modulo === 'peticao' && acao === 'vincularmanual') return peticaoCmd.processarVincularManual(interaction, extra);
+  if (modulo === 'peticao' && acao === 'manifestacao') return peticaoCmd.processarModalManifestacao(interaction, extra);
 
   if (modulo === 'ficha' && acao === 'consultarrg') return fichaCmd.processarModalConsultaRG(interaction);
   if (modulo === 'ficha' && acao === 'consultardiscordid') return fichaCmd.processarModalConsultaDiscordId(interaction);

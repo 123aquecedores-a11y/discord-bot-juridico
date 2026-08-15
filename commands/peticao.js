@@ -18,6 +18,9 @@ const documentoPng = require('../services/gerarDocumentoPNG');
 const { aguardarAnexoPDF } = require('../utils/anexoPdf');
 const anexos = require('../utils/anexos');
 const analiseDocumento = require('../utils/analiseDocumento');
+const ministerioPublico = require('../utils/ministerioPublico');
+const cartorio = require('../utils/cartorio');
+const revisaoIA = require('../utils/revisaoIA');
 
 const TIPO_LABEL = { PorteArma: 'Porte de Arma', TrocaNome: 'Troca de Nome', LimpezaFicha: 'Limpeza de Ficha', AlvaraEvento: 'Alvará de Evento' };
 
@@ -78,6 +81,12 @@ function embedPeticao(p) {
   }
   if (p.juiz) embed.addFields({ name: 'Juiz', value: `<@${p.juiz}>`, inline: true });
   if (p.promotor) embed.addFields({ name: 'Promotor (fiscal)', value: `<@${p.promotor}>`, inline: true });
+  // Manifestações do MP: todas, na ordem, com autor e data (ato não se desfaz — troca de promotor
+  // faz o novo complementar, não apagar). Aparece em qualquer render do card.
+  if (Array.isArray(p.manifestacoesMp) && p.manifestacoesMp.length) {
+    const linhas = p.manifestacoesMp.map(m => `• **${m.posicao}** — <@${m.autorId}> (${new Date(m.data).toLocaleString('pt-BR')})`).join('\n');
+    embed.addFields({ name: '📣 Manifestações do Ministério Público', value: truncar(linhas, 1000) });
+  }
   embed.addFields({ name: '📎 Documentos a anexar nesta conversa', value: DOCUMENTOS_NECESSARIOS[p.tipo] });
   return embed;
 }
@@ -125,6 +134,136 @@ function botoesDecisao(numero) {
     new ButtonBuilder().setCustomId(`painel:acao:peticao:certidao:${numero}`).setLabel('📄 Requisitar certidão').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`painel:acao:peticao:arquivarmanual:${numero}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
   );
+}
+
+// ---- Manifestação do Ministério Público (Parte 1 — aditivo, não bloqueia decisão) ----
+// O promotor atribuído (ou o Procurador) se manifesta: Favorável/Desfavorável (com fundamentação,
+// passando pela revisão-IA opcional do R1 — se a IA cair, segue com o texto original via
+// telaFallbackIA) ou "Nada a opor" (1 clique, sem texto). Cada manifestação é um ato que NÃO se
+// desfaz: entra por append em manifestacoesMp (troca de promotor faz o novo complementar, não apagar).
+const rascunhoManifestacao = new Map(); // numero -> { numero, posicao, autorId, fundamentacao, textoRevisado }
+const POSICOES_MANIFESTACAO = { favoravel: 'Favorável', desfavoravel: 'Desfavorável' };
+
+function botoesManifestacao(numero) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`painel:acao:peticao:manifestar:${numero}`).setLabel('📣 Manifestar-se (MP)').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`painel:acao:peticao:nadaaopor:${numero}`).setLabel('Nada a opor').setStyle(ButtonStyle.Secondary),
+  );
+}
+
+// Só o promotor atribuído à petição, o Procurador (chefia do MP) ou a Staff podem manifestar —
+// nunca o juiz (é o MP fiscalizando, não o julgador).
+function podeManifestar(interaction, peticao) {
+  if (isAdmin(interaction) || isSuperStaff(interaction)) return true;
+  if (temCargo(interaction, 'Procurador')) return true;
+  return interaction.user.id === peticao.promotor;
+}
+
+const RECUSA_MANIFESTAR = 'Só o Promotor atribuído a esta petição (ou o Procurador) pode se manifestar pelo Ministério Público.';
+
+// Petição já decidida/encerrada não recebe manifestação (não faz sentido e só sujaria os autos).
+function peticaoAbertaParaManifestacao(peticao) {
+  return ['Pendente', 'Diligência', 'Aguardando sorteio de juiz'].includes(peticao.status);
+}
+
+async function abrirSelectPosicao(interaction, numero) {
+  const peticao = db.buscarPorNumero('peticoes', numero);
+  if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
+  if (!podeManifestar(interaction, peticao)) return interaction.reply({ content: RECUSA_MANIFESTAR, ephemeral: true });
+  if (!peticaoAbertaParaManifestacao(peticao)) return interaction.reply({ content: 'Esta petição já foi decidida — não cabe mais manifestação.', ephemeral: true });
+  const row = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder().setCustomId(`painel:select:peticao:posicaomanif:${numero}`).setPlaceholder('Posição do Ministério Público')
+      .addOptions(Object.entries(POSICOES_MANIFESTACAO).map(([value, label]) => ({ label, value }))),
+  );
+  return interaction.reply({ content: 'Posição do Ministério Público? Favorável/Desfavorável exigem fundamentação. Para liberar sem oposição, use o botão **Nada a opor**.', components: [row], ephemeral: true });
+}
+
+async function processarSelectPosicao(interaction, numero) {
+  const peticao = db.buscarPorNumero('peticoes', numero);
+  if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
+  if (!podeManifestar(interaction, peticao)) return interaction.reply({ content: RECUSA_MANIFESTAR, ephemeral: true });
+  const posicao = interaction.values[0]; // 'favoravel' | 'desfavoravel'
+  const modal = new ModalBuilder().setCustomId(`painel:modal:peticao:manifestacao:${numero}#${posicao}`).setTitle(`Manifestação — ${POSICOES_MANIFESTACAO[posicao] || ''}`.slice(0, 45));
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('fundamentacao').setLabel('Fundamentação').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1500),
+  ));
+  return interaction.showModal(modal);
+}
+
+async function processarModalManifestacao(interaction, extra) {
+  const [numero, posicao] = extra.split('#');
+  const peticao = db.buscarPorNumero('peticoes', numero);
+  if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
+  if (!podeManifestar(interaction, peticao)) return interaction.reply({ content: RECUSA_MANIFESTAR, ephemeral: true });
+  const fundamentacao = interaction.fields.getTextInputValue('fundamentacao').trim();
+  if (!fundamentacao) return interaction.reply({ content: 'A fundamentação é obrigatória em manifestação Favorável/Desfavorável.', ephemeral: true });
+  rascunhoManifestacao.set(numero, { numero, posicao: POSICOES_MANIFESTACAO[posicao] || posicao, autorId: interaction.user.id, fundamentacao, textoRevisado: null });
+  return interaction.reply(revisaoIA.telaEscolha('manifestacaomp', {
+    extra: numero, titulo: 'Manifestação do Ministério Público', rotulo: POSICOES_MANIFESTACAO[posicao] || posicao, texto: fundamentacao,
+  }));
+}
+
+// Revisão-IA sob demanda. Se a IA falhar (null por qualquer motivo — sem chave, timeout de 25s,
+// erro HTTP), cai no telaFallbackIA: o promotor registra com o texto original. IA é acabamento.
+async function revisarManifestacao(interaction, numero) {
+  const d = rascunhoManifestacao.get(numero);
+  if (!d) return interaction.update({ content: 'Esta manifestação expirou — abra de novo.', components: [] }).catch(() => {});
+  await interaction.deferUpdate();
+  const revisado = await cartorio.revisarTexto(d.fundamentacao).catch(() => null);
+  if (!revisado) return interaction.editReply(revisaoIA.telaFallbackIA('manifestacaomp', numero));
+  d.textoRevisado = revisado;
+  return interaction.editReply(revisaoIA.telaAntesDepois('manifestacaomp', { extra: numero, textoOriginal: d.fundamentacao, textoRevisado: revisado }));
+}
+
+// enviarmanif (manter original) e usarrevisadomanif (usar revisado) caem aqui.
+async function finalizarManifestacao(interaction, numero, usarRevisado) {
+  const d = rascunhoManifestacao.get(numero);
+  if (!d) return interaction.update({ content: 'Esta manifestação expirou — abra de novo.', components: [] }).catch(() => {});
+  const peticao = db.buscarPorNumero('peticoes', numero);
+  if (!peticao) return interaction.update({ content: 'Petição não encontrada.', components: [] }).catch(() => {});
+  await interaction.deferUpdate();
+  const textoFinal = usarRevisado && d.textoRevisado ? d.textoRevisado : d.fundamentacao;
+  rascunhoManifestacao.delete(numero);
+  await gravarManifestacao(interaction.guild, peticao, { posicao: d.posicao, fundamentacao: textoFinal, autorId: d.autorId });
+  return interaction.editReply({ content: `✅ Manifestação do MP registrada na petição ${numero} (${d.posicao}).`, components: [] });
+}
+
+async function registrarNadaAOpor(interaction, numero) {
+  const peticao = db.buscarPorNumero('peticoes', numero);
+  if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
+  if (!podeManifestar(interaction, peticao)) return interaction.reply({ content: RECUSA_MANIFESTAR, ephemeral: true });
+  if (!peticaoAbertaParaManifestacao(peticao)) return interaction.reply({ content: 'Esta petição já foi decidida — não cabe mais manifestação.', ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+  await gravarManifestacao(interaction.guild, peticao, { posicao: 'Nada a opor', fundamentacao: '', autorId: interaction.user.id });
+  return interaction.editReply({ content: `✅ Manifestação "Nada a opor" registrada na petição ${numero}.` });
+}
+
+// Núcleo compartilhado: append na lista (não sobrescreve — relê a petição fresca), gera o PNG do
+// parecer (brasão do MP), posta o andamento nos autos (mensagem no ticket) e registra na auditoria.
+async function gravarManifestacao(guild, peticaoRef, { posicao, fundamentacao, autorId }) {
+  const numero = peticaoRef.numero;
+  const atual = db.buscarPorNumero('peticoes', numero) || peticaoRef;
+  const manifestacao = { posicao, fundamentacao: fundamentacao || null, autorId, data: new Date().toISOString() };
+  db.atualizar('peticoes', numero, { manifestacoesMp: [...(atual.manifestacoesMp || []), manifestacao] });
+
+  const nomeAutor = await documentoPng.nomeExibicao(guild, autorId);
+  const png = await documentoPng.gerarDocumentoPNG({
+    tipoDocumento: 'parecer_mp_peticao', orgaoEmissor: 'ministerio_publico',
+    subunidade: 'Ministério Público — Petições Administrativas',
+    tituloDocumento: 'MANIFESTAÇÃO DO MINISTÉRIO PÚBLICO', numeroProcesso: numero,
+    dataEmissao: documentos.dataExtenso(), destinatario: atual.nomeCliente || 'Requerente',
+    corpoTexto: fundamentacao || '', posicao,
+    nomeAssinante: nomeAutor, cargoAssinante: 'Promotor de Justiça',
+  }).catch(err => { console.error('Falha ao gerar PNG do parecer do MP (petição):', err.message); return null; });
+
+  const canal = await guild.channels.fetch(atual.canalId).catch(() => null);
+  if (canal) {
+    await canal.send({
+      content: `📣 **Manifestação do Ministério Público** — <@${autorId}>: **${posicao}**.${fundamentacao ? `\n> ${truncar(fundamentacao, 900).replace(/\n/g, '\n> ')}` : ''}`,
+      ...(png ? { files: [{ attachment: png, name: `Manifestacao-MP-${numero}.png` }] } : {}),
+    });
+  }
+  await auditoria.registrar(guild, { acao: `Manifestação do MP: ${posicao}`, executorId: autorId, referencia: `Petição ${numero}` });
 }
 
 // Certidão de antecedentes/não constar como investigado — já era exigida informalmente em
@@ -200,6 +339,15 @@ async function protocolarPeticao(guild, numero) {
     });
   } else {
     await canal.send({ content: '⚠️ Petição protocolada, mas não há Juiz ativo disponível pro sorteio no momento — o sistema tenta o sorteio automaticamente a cada poucos minutos assim que houver um Juiz disponível.' });
+  }
+  // Manifestação do MP (Parte 1): dá ao promotor o ponto de ação no ticket e avisa o feed do MP.
+  // Aditivo — não bloqueia a decisão do juiz (a trava lazy é etapa separada).
+  if (promotorId) {
+    await canal.send({
+      content: `<@${promotorId}> — como fiscal, o Ministério Público deve se manifestar sobre esta petição (prazo de 24h a partir de agora).`,
+      components: [botoesManifestacao(numero)],
+    });
+    await ministerioPublico.postarNoCanalMP(`🆕 Petição ${numero} protocolada — <@${promotorId}> designado(a) para manifestação do Ministério Público (prazo de 24h).`);
   }
   await auditoria.registrar(guild, { acao: 'Petição protocolada (vínculo completo)', executorId: peticao.requerenteId, referencia: numero });
 }
@@ -955,6 +1103,9 @@ module.exports = {
   abrirModalVincularManual, processarVincularManual,
   embedPeticao, botoesDecisao, solicitarCertidaoDaPeticao,
   anexarDocumentoPeticao,
+  // Manifestação do MP (Parte 1)
+  abrirSelectPosicao, processarSelectPosicao, processarModalManifestacao,
+  revisarManifestacao, finalizarManifestacao, registrarNadaAOpor, botoesManifestacao,
   botaoReabrirCaso, reabrirCaso,
   // Exportadas pro simulador de demo (scripts/simuladorDemo.js) criar petições sem passar pelo modal.
   criarPeticaoPorteArma, criarPeticaoTrocaNome, criarPeticaoLimpezaFicha, criarPeticaoAlvaraEvento,
