@@ -17,6 +17,7 @@ const oficioCmd = require('./oficio');
 const rhCmd = require('./rh');
 const editalCmd = require('./edital');
 const diarioOficialCmd = require('./diarioOficial');
+const gerarCarteirinhasCmd = require('./gerarCarteirinhas');
 const crimeCmd = require('./crime');
 const rascunhoCrimes = require('../utils/rascunhoCrimes');
 const crimePicker = require('../utils/crimePicker');
@@ -106,6 +107,7 @@ function botoesMenuPrincipal(interaction) {
     ),
     linha(
       botaoSe(staff, 'painel:acao:comunicado:abrir', '📢 Publicar comunicado', ButtonStyle.Secondary),
+      botaoSe(staff, 'painel:acao:carteiras:gerar', '🪪 Gerar carteiras', ButtonStyle.Secondary),
     ),
     // Preferência pessoal: quando LIGADA, a IA já revisa e publica a fundamentação sozinha (sem a
     // tela de "Revisar/Publicar"). Rótulo reflete o estado atual de quem abriu o painel.
@@ -659,6 +661,11 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   // Comunicado: botão "📢 Publicar comunicado" do hub de staff → modal.
   if (modulo === 'comunicado') {
     if (acao === 'abrir') return diarioOficialCmd.abrirModalComunicado(interaction);
+  }
+
+  // Carteiras: botão "🪪 Gerar carteiras" do hub → backfill (mesma função do /gerar-carteirinhas).
+  if (modulo === 'carteiras') {
+    if (acao === 'gerar') return gerarCarteirinhasCmd.rodarBackfill(interaction);
   }
 
   if (modulo === 'sentenca') {
