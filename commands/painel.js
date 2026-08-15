@@ -631,6 +631,9 @@ async function arquivarManual(interaction, modulo, numero) {
   if (!canal) return interaction.reply({ content: 'Canal não encontrado (já pode ter sido apagado).', ephemeral: true });
 
   await canais.arquivarCanal(canal);
+  // Marca o arquivamento manual (independe do status jurídico) pra a varredura de responsável
+  // fantasma NÃO ressuscitar um caso que a Staff fechou de propósito (ver utils/responsaveis.js).
+  db.atualizar(tabela, numero, { arquivadoManual: true });
   await auditoria.registrar(interaction.guild, { acao: `Arquivado manualmente (${modulo})`, executorId: interaction.user.id, referencia: numero });
 
   return interaction.reply({ content: `📦 ${numero} arquivado — canal travado e movido pra categoria Arquivados.`, ephemeral: true });

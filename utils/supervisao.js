@@ -473,6 +473,11 @@ async function filasPendentes(interaction) {
 
   const linha = (lista, chave) => (lista.length ? lista.map(x => x[chave] ?? x).join(', ') : '—');
 
+  // Casos que ficaram SEM responsável (a Parte 3 tirou um fantasma e não havia substituto). Precisam
+  // aparecer aqui, senão um caso zerado ficaria invisível pra todo automatismo (ver responsaveis.js).
+  const semResponsavel = ['processos', 'medidas', 'peticoes', 'apelacoes']
+    .flatMap(t => db.todos(t, r => r.semResponsavelPendente).map(r => `${r.numero}${(r.pendenciaPapeis || []).length ? ` (falta ${r.pendenciaPapeis.join('/')})` : ''}`));
+
   const embed = new EmbedBuilder().setTitle('📋 Filas pendentes').setColor(0x34495e)
     .addFields(
       { name: 'Mandados não cumpridos', value: linha(mandadosPendentes, 'numero') },
@@ -482,6 +487,7 @@ async function filasPendentes(interaction) {
       { name: 'Habilitações pendentes de aprovação', value: truncar(linha(habilitacoesPendentes, null)) },
       { name: 'Revisões de arquivamento pendentes', value: linha(revisoesPendentes, 'numero') },
       { name: 'Apelações pendentes de decisão', value: linha(apelacoesPendentes, 'numero') },
+      { name: '⚠️ Casos sem responsável (pendência)', value: semResponsavel.length ? truncar(semResponsavel.join(', ')) : '—' },
     );
 
   return interaction.reply({ embeds: [embed], ephemeral: true });
