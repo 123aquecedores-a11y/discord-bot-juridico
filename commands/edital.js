@@ -89,6 +89,30 @@ function botoesEdital(edital) {
   ];
 }
 
+// Card do candidato no canal de análise (staff). decisao = null (pendente) | { aprovada, por }.
+function cardInscricao(insc, edital, decisao = null) {
+  const decidido = !!decisao;
+  const status = !decidido ? '🕓 Pendente' : (decisao.aprovada ? `✅ Aprovado por ${decisao.por}` : `❌ Reprovado por ${decisao.por}`);
+  const cor = !decidido ? 0xf1c40f : (decisao.aprovada ? 0x2ecc71 : 0xe74c3c);
+  const dataTxt = insc.inscritoEm ? new Date(insc.inscritoEm).toLocaleString('pt-BR') : '—';
+  const embed = new EmbedBuilder()
+    .setTitle(`🪪 Inscrição #${insc.id} — Edital nº ${edital ? edital.numero : '?'}`)
+    .setColor(cor)
+    .setDescription(`Candidato: <@${insc.userId}>\nCargo pretendido: **${CARGO_LABEL[insc.cargo] || insc.cargo}**\nStatus: **${status}**`)
+    .addFields(
+      { name: 'Nome (RP)', value: insc.nomeRp || '—', inline: true },
+      { name: 'RG (RP)', value: insc.rg || '—', inline: true },
+      { name: 'Experiência anterior', value: truncar(insc.experiencia || '—', 512) },
+      { name: 'Disponibilidade + motivação', value: truncar(insc.disponibilidade || '—', 512) },
+    )
+    .setFooter({ text: `Inscrito em ${dataTxt}` });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`edital:aprovar:${insc.id}`).setLabel('✅ Aprovar').setStyle(ButtonStyle.Success).setDisabled(decidido),
+    new ButtonBuilder().setCustomId(`edital:reprovar:${insc.id}`).setLabel('❌ Reprovar').setStyle(ButtonStyle.Danger).setDisabled(decidido),
+  );
+  return { embeds: [embed], components: [row] };
+}
+
 // ---- 1) Abrir edital (staff) ----
 function modalAbrirEdital() {
   const modal = new ModalBuilder().setCustomId('edital:criar').setTitle('Abrir edital');
@@ -144,7 +168,12 @@ async function criarEdital(interaction) {
   const png = await documentoPng.gerarEditalPNG({ numero, vagasJuiz, vagasPromotor, requisitos, inicio: periodo.inicioStr, fim: periodo.fimStr })
     .catch(err => { console.error('Falha ao gerar PNG do edital:', err.message); return null; });
 
+  // Notifica todo o servidor: @everyone no CONTENT (menção em embed não notifica). Best-effort
+  // garante que o bot possa mencionar @everyone neste canal (canais antigos nasceram sem essa perm).
+  await canal.permissionOverwrites.edit(interaction.client.user.id, { MentionEveryone: true }).catch(() => {});
   const msg = await canal.send({
+    content: '@everyone 📢 **Novo edital de processo seletivo!**',
+    allowedMentions: { parse: ['everyone'] },
     embeds: [embedEdital(edital)],
     components: botoesEdital(edital),
     ...(png ? { files: [{ attachment: png, name: `Edital-${numero.replace(/[^\w.-]/g, '_')}.png` }] } : {}),
@@ -202,11 +231,29 @@ async function salvarInscricao(interaction, slug, editalId) {
   const disponibilidade = interaction.fields.getTextInputValue('disponibilidade').trim();
   if (!nomeRp || !rg || !experiencia || !disponibilidade) return interaction.reply({ content: 'Preencha todos os campos.', ephemeral: true });
 
-  db.inserir('inscricoesEdital', {
+  const insc = db.inserir('inscricoesEdital', {
     editalId: edital.id, userId: interaction.user.id, cargo,
     nomeRp, rg, experiencia, disponibilidade,
     status: 'pendente', inscritoEm: new Date().toISOString(), decididoPor: null, decididoEm: null,
+    analiseCanalId: null, analiseMsgId: null,
   });
+
+  // PUSH automático: posta o ticket no canal de análise (staff) — não depende de "Ver inscrições".
+  // Best-effort: se o canal não existir, a inscrição fica salva mesmo assim (fallback "Ver inscrições").
+  // Nada disso vai pro #editais — a confirmação ao candidato (abaixo) é 100% efêmera.
+  const canalAnaliseId = estado.obter('canalAnaliseId');
+  if (canalAnaliseId) {
+    try {
+      const canalAnalise = await interaction.guild.channels.fetch(canalAnaliseId).catch(() => null);
+      if (canalAnalise && canalAnalise.isTextBased?.()) {
+        const card = await canalAnalise.send(cardInscricao(insc, edital, null));
+        db.atualizarPorFiltro('inscricoesEdital', i => i.id === insc.id, { analiseCanalId: canalAnalise.id, analiseMsgId: card.id });
+      }
+    } catch (e) { console.error('[edital] falha ao postar card de análise (ignorado):', e.message); }
+  } else {
+    console.warn('[edital] canalAnaliseId não configurado — ticket não postado (staff usa "Ver inscrições").');
+  }
+
   return interaction.reply({ content: `✅ Inscrição enviada como **${cargo}** no edital nº **${edital.numero}**! A staff vai avaliar e você recebe a decisão por DM.`, ephemeral: true });
 }
 
@@ -273,6 +320,17 @@ async function decidirInscricao(interaction, inscricaoId, aprovar) {
     executorId: interaction.user.id,
     referencia: `Inscrição #${insc.id} — ${insc.cargo} "${insc.nomeRp}" (edital nº ${edital?.numero}) por ${nomeAprovador}`,
   });
+
+  // Edita o card no canal de análise: reflete a decisão e DESATIVA os botões (funciona tanto quando
+  // clicado no próprio card quanto pelo fallback "Ver inscrições", via os IDs salvos na inscrição).
+  const inscFinal = db.buscarUm('inscricoesEdital', i => i.id === insc.id);
+  if (inscFinal.analiseCanalId && inscFinal.analiseMsgId) {
+    try {
+      const canalAnalise = await interaction.guild.channels.fetch(inscFinal.analiseCanalId).catch(() => null);
+      const cardMsg = canalAnalise ? await canalAnalise.messages.fetch(inscFinal.analiseMsgId).catch(() => null) : null;
+      if (cardMsg) await cardMsg.edit(cardInscricao(inscFinal, edital, { aprovada: aprovar, por: nomeAprovador }));
+    } catch (e) { console.error('[edital] falha ao editar card de análise (ignorado):', e.message); }
+  }
 
   const avisoApelido = (aprovar && apelidoOk === false)
     ? '\n⚠️ Cargo atribuído, mas não consegui trocar o apelido (cheque a hierarquia/permissão do bot).' : '';
