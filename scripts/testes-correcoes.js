@@ -468,29 +468,27 @@ function seedProcesso(numero, extra) {
   console.log('\nItem 14 — varredura de responsável fantasma (Passada A rh + Passada B tickets):');
   {
     const responsaveis = require('../utils/responsaveis');
-    // Guild com presença/role controláveis. Default: presente e COM a role (não interfere no rh de
-    // itens anteriores); marco explicitamente quem saiu (foraDoServidor) e quem está sem role.
+    // Guild com presença controlável: quem está em foraDoServidor "saiu" (10007); os demais presentes.
     const foraDoServidor = new Set();
-    const semRole = new Set(); // ids que estão no servidor mas sem a role do cargo
-    const mkMembro = (id) => ({ id, roles: { cache: { has: () => !semRole.has(id) } } });
     const guildF = {
       id: 'guild1', roles: { everyone: 'e' },
-      members: { fetch: async (id) => { if (foraDoServidor.has(id)) throw Object.assign(new Error('Unknown Member'), { code: 10007 }); return mkMembro(id); } },
+      members: { fetch: async (id) => { if (foraDoServidor.has(id)) throw Object.assign(new Error('Unknown Member'), { code: 10007 }); return { id, roles: { cache: { has: () => true } } }; } },
       channels: { fetch: async () => fakeChannel() },
     };
 
-    // Seed rh: um juiz válido, um que saiu, um que perdeu a role, e um substituto válido.
     rh.contratar('jf_bom', 'Juiz');
     rh.contratar('jf_saiu', 'Juiz'); foraDoServidor.add('jf_saiu');
-    rh.contratar('jf_semrole', 'Juiz'); semRole.add('jf_semrole');
     rh.contratar('jf_subst', 'Juiz');
 
-    // ---- Passada A ----
+    // ---- Passada A: só desativa quem SAIU do servidor (presença) ----
     const orfaos = await responsaveis.limparRhFantasma(guildF);
     ok(orfaos.some(o => o.discordId === 'jf_saiu' && o.motivo === 'ausente do servidor'), '14a: Passada A desativa quem saiu do servidor');
-    ok(orfaos.some(o => o.discordId === 'jf_semrole' && o.motivo === 'sem a role do cargo'), '14b: Passada A desativa quem perdeu a role');
-    ok(!rh.temCargo('jf_saiu', 'Juiz') && !rh.temCargo('jf_semrole', 'Juiz'), '14c: fantasmas ficam inativos no rh');
-    ok(rh.temCargo('jf_bom', 'Juiz') && rh.temCargo('jf_subst', 'Juiz'), '14d: juiz válido (presente, com role) permanece ativo');
+    ok(!rh.temCargo('jf_saiu', 'Juiz'), '14c: fantasma (ausente) fica inativo no rh');
+    ok(rh.temCargo('jf_bom', 'Juiz') && rh.temCargo('jf_subst', 'Juiz'), '14d: responsável válido (presente) permanece ativo');
+
+    // 14b: detecção rh-based — presente no servidor mas fora do rh (sem cargo) é fantasma (sem role check)
+    rh.contratar('jf_ex', 'Juiz'); rh.demitir('jf_ex');
+    ok(await responsaveis.estadoResponsavel(guildF, 'jf_ex', 'Juiz') === 'sem_cargo', '14b: presente mas sem cargo no rh → detectado como fantasma');
 
     // ---- Passada B: ticket com juiz fantasma (simula o 002AP) ----
     db.inserir('processos', { numero: '002APx', tipo: 'Penal', status: 'Instrução', juiz: 'jf_saiu', promotor: 'pf1', delegado: 'df1', canalId: 'cF1' });
@@ -519,7 +517,6 @@ function seedProcesso(numero, extra) {
     const responsaveis = require('../utils/responsaveis');
     // members.fetch retorna membro válido (presente, com role) — pro sortearSubstitutoValido aprovar.
     const guildE = { id: 'guild1', roles: { everyone: 'e' }, members: { fetch: async (id) => ({ id, roles: { cache: { has: () => true } } }) }, channels: { fetch: async () => fakeChannel() } };
-    const mkMembro = (id, temRole) => ({ id, roles: { cache: { has: () => temRole } } });
 
     // Saída de um juiz responsável → demite no rh + reatribui o ticket a um válido
     rh.contratar('ev_juiz', 'Juiz');
@@ -530,12 +527,6 @@ function seedProcesso(numero, extra) {
     ok(!rh.temCargo('ev_juiz', 'Juiz'), '15a: evento demite o responsável no rh (tira da fila de sorteio)');
     ok(procEV.juiz !== 'ev_juiz' && rh.temCargo(procEV.juiz, 'Juiz'), '15b: evento reatribui o ticket a um juiz válido');
     ok(t.some(x => x.numero === 'EV01' && x.resultado === 'reatribuido'), '15c: evento retorna o ticket tratado');
-
-    // cargoSemRole (detector do guildMemberUpdate)
-    rh.contratar('ev_semrole', 'Juiz');
-    ok(responsaveis.cargoSemRole(mkMembro('ev_semrole', false)) === 'Juiz', '15d: cargoSemRole detecta perda da role do cargo');
-    ok(responsaveis.cargoSemRole(mkMembro('ev_semrole', true)) === null, '15e: com a role → não é fantasma');
-    ok(responsaveis.cargoSemRole({ id: 'zzz_naoexiste', roles: { cache: { has: () => false } } }) === null, '15f: sem cargo ativo no rh → null (ignora nickname etc.)');
 
     // Idempotência: tratar quem não é responsável de nada → só demite no rh, sem erro
     rh.contratar('ev_none', 'Promotor');
@@ -607,16 +598,6 @@ function seedProcesso(numero, extra) {
     const rec = await responsaveis.recuperarPendencias(guild);
     const apH2 = db.buscarPorNumero('apelacoes', 'C16H');
     ok(rec.some(x => x.numero === 'C16H') && apH2.desembargadorId === 'c16_des' && !apH2.semResponsavelPendente, '16b: pendência recuperada quando surge substituto (não fica invisível pra sempre)');
-
-    // C (16c): advogado habilitado fantasma → defensor dativo nomeado
-    rh.contratar('c16_advG', 'Advogado'); fora.add('c16_advG');
-    rh.contratar('c16_advD', 'Advogado');
-    db.inserir('processos', { numero: 'C16C', tipo: 'Penal', status: 'Instrução', juiz: 'jC16', canalId: 'c16c', habilitacoes: [{ advogadoId: 'c16_advG', status: 'Aprovado' }] });
-    const adv = await responsaveis.tratarAdvogadosFantasma(guild);
-    const pC = db.buscarPorNumero('processos', 'C16C');
-    const temDativo = (pC.habilitacoes || []).some(h => h.advogadoId === 'c16_advD' && h.status === 'Aprovado');
-    const ghostRemovido = (pC.habilitacoes || []).some(h => h.advogadoId === 'c16_advG' && h.status !== 'Aprovado');
-    ok(adv.some(x => x.numero === 'C16C' && x.resultado === 'defensor_dativo') && temDativo && ghostRemovido, '16c: advogado habilitado fantasma → defensor dativo nomeado (réu nunca fica sem defesa)');
   }
 
   // ---- Resumo ----

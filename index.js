@@ -114,28 +114,16 @@ client.on('guildMemberAdd', async member => {
   if (sincronizado) console.log(`Apelido sincronizado automaticamente pra ${member.id} ao entrar no servidor.`);
 });
 
-// Parte 3 (evento — reação imediata; a varredura diária é a rede de segurança). Quem sai do servidor
+// Parte 3 (evento — reação imediata; a varredura diária é a rede de segurança). Quem SAI do servidor
 // deixa de ser responsável válido: demite no rh e reatribui os tickets abertos onde estava marcado.
-// Sem isso, o fantasma persistiria por até 24h (até a próxima varredura).
+// Só reage a SAÍDA (guildMemberRemove, presença) — reagir a remoção de role foi removido porque
+// gerava reatribuição indevida (o próprio swap de cargo do bot removia/readicionava a role).
 client.on('guildMemberRemove', async member => {
   if (config.guildId && member.guild && member.guild.id !== config.guildId) return;
   try {
     const tratados = await require('./utils/responsaveis').tratarResponsavelInvalido(member.guild, member.id, 'ausente');
     if (tratados.length) console.log(`♻️ [fantasma/evento] Saída de ${member.id}: ${tratados.length} ticket(s) reatribuído(s).`);
   } catch (err) { console.error('Erro ao tratar saída de membro (responsável):', err); }
-});
-
-// Perdeu o cargo (role removida) mas continua no servidor — mesmo tratamento. cargoSemRole filtra:
-// só age se o membro tinha cargo ativo no rh e não tem mais a role (ignora nickname etc., que
-// também disparam guildMemberUpdate).
-client.on('guildMemberUpdate', async (oldMember, newMember) => {
-  if (config.guildId && newMember.guild && newMember.guild.id !== config.guildId) return;
-  try {
-    const resp = require('./utils/responsaveis');
-    if (!resp.cargoSemRole(newMember)) return;
-    const tratados = await resp.tratarResponsavelInvalido(newMember.guild, newMember.id, 'sem_cargo');
-    if (tratados.length) console.log(`♻️ [fantasma/evento] ${newMember.id} perdeu o cargo: ${tratados.length} ticket(s) reatribuído(s).`);
-  } catch (err) { console.error('Erro ao tratar perda de cargo (responsável):', err); }
 });
 
 // Só a integração com a Polícia Civil continua ouvindo mensagens novas — a auto-limpeza do canal
