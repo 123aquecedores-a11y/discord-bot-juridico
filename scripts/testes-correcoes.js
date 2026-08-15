@@ -619,6 +619,57 @@ function seedProcesso(numero, extra) {
     ok(arqRec.desembargadorId === null && arqRec.semResponsavelPendente === true, '16j: recuperarPendencias não ressuscita ticket arquivado por categoria');
   }
 
+  // ============ ITEM 17: Fase 0 — captura de RG na contratação + fail-open ============
+  console.log('\nItem 17 — Fase 0 (captura de RG na contratação + lista fail-open de sem-RG):');
+  {
+    const adminMember = { permissions: { has: () => true }, roles: { cache: { has: () => false } } };
+    const lastEmbedDesc = (it) => {
+      const r = [...it._replies].reverse().find(x => Array.isArray(x.embeds) && x.embeds.length);
+      return r ? (r.embeds[0].data?.description || '') : '';
+    };
+    const mkAdmin = (userId, fields) => makeInteraction({ userId, guild: fakeGuild(), member: adminMember, fields });
+
+    // 17a: precisaRg cobre só a magistratura/MP (quem tem leitura ampla e sofre impedimento)
+    ok(['Juiz', 'Promotor', 'Desembargador', 'Procurador'].every(c => rh.precisaRg(c))
+       && !rh.precisaRg('Advogado') && !rh.precisaRg('Delegado'), '17a: precisaRg = só magistratura/MP');
+
+    // 17b: contratar magistrado SEM RG → entra na lista de sem-RG e avisa (fail-open visível)
+    const itSem = mkAdmin('f0JuizSem', { nome: 'Juiz SemRG', rg: '' });
+    await rhCmd.contratarViaModal(itSem, 'f0JuizSem', 'Juiz');
+    ok(rh.magistradosSemRg().some(r => r.discordId === 'f0JuizSem'), '17b: magistrado sem RG entra na lista de sem-RG');
+    ok(/sem rg/i.test(lastEmbedDesc(itSem)), '  ...e a contratação avisa na hora (falha aberta, não silenciosa)');
+
+    // 17c: contratar magistrado COM RG → fora da lista e sem aviso
+    const itCom = mkAdmin('f0JuizCom', { nome: 'Juiz ComRG', rg: 'RG-777' });
+    await rhCmd.contratarViaModal(itCom, 'f0JuizCom', 'Juiz');
+    ok(!rh.magistradosSemRg().some(r => r.discordId === 'f0JuizCom'), '17c: magistrado com RG não entra na lista');
+    ok(!/sem rg/i.test(lastEmbedDesc(itCom)), '  ...e não dispara o aviso');
+
+    // 17d: Advogado sem RG NÃO conta (não tem leitura ampla → impedimento não se aplica)
+    await rhCmd.contratarViaModal(mkAdmin('f0Adv', { nome: 'Adv', rg: '' }), 'f0Adv', 'Advogado');
+    ok(!rh.magistradosSemRg().some(r => r.discordId === 'f0Adv'), '17d: Advogado sem RG fica fora da lista');
+
+    // 17e: troca de cargo preserva o RG (promover com campo vazio não reabre o buraco)
+    await rhCmd.contratarViaModal(mkAdmin('f0JuizCom', { nome: 'Juiz ComRG', rg: '' }), 'f0JuizCom', 'Desembargador');
+    ok(!rh.magistradosSemRg().some(r => r.discordId === 'f0JuizCom'), '17e: troca de cargo preserva o RG (não reabre buraco)');
+
+    // 17f: só Staff/Admin contrata pelo modal (não-admin barrado, nada é criado)
+    const itNaoAdmin = makeInteraction({ userId: 'f0Ze', guild: fakeGuild(), member: { permissions: { has: () => false }, roles: { cache: { has: () => false } } }, fields: { nome: 'x', rg: 'y' } });
+    await rhCmd.contratarViaModal(itNaoAdmin, 'f0Ze', 'Juiz');
+    ok(/staff/i.test(lastReplyText(itNaoAdmin)) && !rh.getCargo('f0Ze'), '17f: não-Staff é barrado no modal de contratação');
+
+    // 17g: slash — opção rg (opcional) no contratar + subcomando sem-rg
+    const jsonRh = rhCmd.data.toJSON();
+    const subContratar = jsonRh.options.find(o => o.name === 'contratar');
+    ok(subContratar && (subContratar.options || []).some(o => o.name === 'rg' && o.required === false), '17g: /rh contratar tem opção rg opcional');
+    ok(jsonRh.options.some(o => o.name === 'sem-rg'), '  ...e existe o subcomando /rh sem-rg');
+
+    // 17h: modal do painel → customId parseável pelo router (usuarioId#cargo)
+    const cid = rhCmd.modalContratarStaff('998877665544', 'Promotor').toJSON().custom_id;
+    const [uid, cargoP] = String(cid.split(':')[4]).split('#');
+    ok(uid === '998877665544' && cargoP === 'Promotor', '17h: modalContratarStaff → customId parseável (usuarioId#cargo)');
+  }
+
   // ---- Resumo ----
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`  ❌ ${f.nome}${f.detalhe ? ` — ${f.detalhe}` : ''}`)); }

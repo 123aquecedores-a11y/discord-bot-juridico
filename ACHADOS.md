@@ -42,3 +42,20 @@ petição continuou com botões soltos no card (`botoesDecisao`).
 no ticket da petição por ora (combinado com o operador). Quando a petição ganhar hub
 por cargo, esses botões (e os de decisão do juiz) devem migrar pro hub do cargo
 correspondente. Dívida da Fase 4, não desta feature — reforçada no relatório final.
+
+## 4. Segredo de justiça — lacuna conhecida (NÃO implementado, a pedido)
+
+**O quê:** não existe hoje um "segredo de justiça" que esconda um processo/medida
+**inteiro** dos magistrados-leitores. A leitura ampla (Juiz/Promotor/Procurador/
+Desembargador enxergam todos os tickets) só tem **uma** exceção: o impedimento por a
+pessoa ser **parte** (réu/investigado/alvo/autor/testemunha). Não há como um juiz
+decretar sigilo e tirar um caso da vista dos demais magistrados.
+
+**Onde entraria (uma linha):** um campo `segredoJustica: true` no registro do
+processo/medida + guard em dois pontos — (a) na concessão de `ViewChannel` da leitura
+ampla (não concede pros 4 cargos quando em segredo, só pros responsáveis) e (b) nas
+funções de consulta/listagem/autocomplete (o mesmo gate de `podeVerTeor`). Default
+aberto; só quem decreta o segredo restringe.
+
+**Por que não agora:** decisão do operador — é feature separada, não bloqueia a leitura
+ampla nem o impedimento. Registrado pra não sumir.
