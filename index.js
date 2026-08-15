@@ -48,6 +48,7 @@ for (const file of commandFiles) {
 
 client.once('ready', async () => {
   console.log(`✅ Bot online como ${client.user.tag}`);
+  console.log(require('./utils/versao').linhaStartup());
 
   const guild = await client.guilds.fetch(config.guildId).catch(() => null);
   if (!guild) {
