@@ -1078,9 +1078,9 @@ async function tratarSelect(interaction, modulo, campo, extra) {
   if (modulo === 'rh' && campo === 'cargo') {
     const usuarioId = extra;
     const cargo = interaction.values[0];
-    await rhCmd.contratarComRole(interaction.guild, usuarioId, cargo);
-    const embed = new EmbedBuilder().setColor(0x2ecc71).setDescription(`<@${usuarioId}> agora é **${cargo}**.`);
-    return interaction.update({ embeds: [embed], components: [botaoVoltar()] });
+    // Passo novo: em vez de contratar direto, abre o modal que captura nome + RG (o RG alimenta o
+    // impedimento da Fase 1). showModal precisa vir direto da interação do select, sem update antes.
+    return interaction.showModal(rhCmd.modalContratarStaff(usuarioId, cargo));
   }
 
   if (modulo === 'crime' && campo === 'resultado') {
@@ -1153,6 +1153,11 @@ async function tratarUserSelect(interaction, modulo, campo) {
 // ---- Envio dos modais ----
 
 async function tratarModal(interaction, modulo, acao, extra) {
+  if (modulo === 'rh' && acao === 'contratar') {
+    // extra = `${usuarioId}#${cargo}` (o router só entrega partes[4], sem ':' interno — daí o '#').
+    const [usuarioId, cargo] = String(extra || '').split('#');
+    return rhCmd.contratarViaModal(interaction, usuarioId, cargo);
+  }
   if (modulo === 'mandado' && acao === 'emitir') return mandadoCmd.emitirMandado(interaction, extra);
   if (modulo === 'medida' && acao === 'solicitardireta') return medidaCmd.criarSolicitacaoMedidaDireta(interaction, extra);
   if (modulo === 'processo' && acao === 'depoimento') return processoCmd.registrarDepoimentoHandler(interaction, extra);
