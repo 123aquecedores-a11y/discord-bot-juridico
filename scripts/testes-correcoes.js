@@ -486,9 +486,10 @@ function seedProcesso(numero, extra) {
     ok(!rh.temCargo('jf_saiu', 'Juiz'), '14c: fantasma (ausente) fica inativo no rh');
     ok(rh.temCargo('jf_bom', 'Juiz') && rh.temCargo('jf_subst', 'Juiz'), '14d: responsável válido (presente) permanece ativo');
 
-    // 14b: detecção rh-based — presente no servidor mas fora do rh (sem cargo) é fantasma (sem role check)
-    rh.contratar('jf_ex', 'Juiz'); rh.demitir('jf_ex');
-    ok(await responsaveis.estadoResponsavel(guildF, 'jf_ex', 'Juiz') === 'sem_cargo', '14b: presente mas sem cargo no rh → detectado como fantasma');
+    // 14b: detecção é SÓ presença — quem está no servidor é válido, MESMO fora do rh (responsável
+    // externo legítimo, ex.: delegado injetado pela integração da Polícia Civil por @menção). Só
+    // quem SAIU (10007) é fantasma.
+    ok(await responsaveis.estadoResponsavel(guildF, 'del_pc_externo') === 'valido' && await responsaveis.estadoResponsavel(guildF, 'jf_saiu') === 'ausente', '14b: detecção só por presença — presente fora do rh = válido; ausente = fantasma');
 
     // ---- Passada B: ticket com juiz fantasma (simula o 002AP) ----
     db.inserir('processos', { numero: '002APx', tipo: 'Penal', status: 'Instrução', juiz: 'jf_saiu', promotor: 'pf1', delegado: 'df1', canalId: 'cF1' });
@@ -598,6 +599,24 @@ function seedProcesso(numero, extra) {
     const rec = await responsaveis.recuperarPendencias(guild);
     const apH2 = db.buscarPorNumero('apelacoes', 'C16H');
     ok(rec.some(x => x.numero === 'C16H') && apH2.desembargadorId === 'c16_des' && !apH2.semResponsavelPendente, '16b: pendência recuperada quando surge substituto (não fica invisível pra sempre)');
+
+    // FF1 (16i): responsável PRESENTE fora do rh (delegado da PC) NÃO é reatribuído pela varredura
+    rh.contratar('del_rh_pool', 'Delegado');
+    db.inserir('medidas', { numero: 'PC01', status: 'Aguardando MP', delegado: 'del_pc_presente', promotor: 'del_rh_pool', juiz: 'jz_pc', canalId: 'cpc' });
+    await responsaveis.reatribuirTicketsFantasma(guild);
+    ok(db.buscarPorNumero('medidas', 'PC01').delegado === 'del_pc_presente', '16i: responsável presente fora do rh (Polícia Civil) não é expulso pela varredura');
+
+    // FF2 (16j): recuperarPendencias NÃO ressuscita ticket cujo canal está na categoria Arquivados
+    const cfgMod = require('../config');
+    const catAntes = cfgMod.categoriaArquivadosId;
+    cfgMod.categoriaArquivadosId = 'CAT_ARQ';
+    rh.contratar('des_rec', 'Desembargador');
+    db.inserir('apelacoes', { numero: 'ARQREC', status: 'Aguardando decisão', desembargadorId: null, semResponsavelPendente: true, pendenciaPapeis: ['Desembargador'], canalId: 'canalArq' });
+    const guildArq = { ...guild, channels: { fetch: async (id) => (id === 'canalArq' ? { id, parentId: 'CAT_ARQ' } : mkCanal()) } };
+    await responsaveis.recuperarPendencias(guildArq);
+    const arqRec = db.buscarPorNumero('apelacoes', 'ARQREC');
+    cfgMod.categoriaArquivadosId = catAntes;
+    ok(arqRec.desembargadorId === null && arqRec.semResponsavelPendente === true, '16j: recuperarPendencias não ressuscita ticket arquivado por categoria');
   }
 
   // ---- Resumo ----

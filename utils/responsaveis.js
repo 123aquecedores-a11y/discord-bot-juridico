@@ -82,13 +82,16 @@ async function checarMembro(guild, id) {
   }
 }
 
-// É um responsável VÁLIDO daquele papel? 'valido' | 'ausente' | 'sem_cargo' | 'indeterminado'.
-// Presente no servidor E ativo no rh com o cargo. NÃO checa a role do Discord (ver topo).
-async function estadoResponsavel(guild, id, cargo) {
+// É um responsável válido? 'valido' | 'ausente' | 'indeterminado'. Só olha PRESENÇA no servidor —
+// NÃO checa rh.temCargo: nem todo responsável de ticket é um cargo do rh (a integração da Polícia
+// Civil injeta o `delegado` por @menção crua, sem contratar no rh; ele é participante legítimo). Só
+// reatribui quem SAIU do servidor (definitivo). Quem continua presente ainda consegue agir no caso
+// (os gates de ação usam user.id, não o rh); tirá-lo à força expulsaria um responsável legítimo.
+async function estadoResponsavel(guild, id) {
   const res = await checarMembro(guild, id);
   if (res.indeterminado) return 'indeterminado';
   if (res.ausente) return 'ausente';
-  return rh.temCargo(id, cargo) ? 'valido' : 'sem_cargo';
+  return 'valido';
 }
 
 // Sorteio do substituto por papel (Juiz balanceia carga; os outros é sorteio simples).
@@ -244,9 +247,9 @@ async function reatribuirTicketsFantasma(guild) {
       for (const [papel, pcfg] of Object.entries(cfg.papeis)) {
         const id = reg[pcfg.campo];
         if (!id) continue;
-        const estado = await estadoResponsavel(guild, id, papel);
-        if (estado === 'valido' || estado === 'indeterminado') continue;
-        tratados.push(await aplicarReatribuicaoOuPendencia(guild, tabela, cfg, reg, papel, pcfg, estado));
+        const estado = await estadoResponsavel(guild, id);
+        if (estado !== 'ausente') continue; // só reatribui quem SAIU do servidor (presente = mantém)
+        tratados.push(await aplicarReatribuicaoOuPendencia(guild, tabela, cfg, reg, papel, pcfg, 'ausente'));
       }
     }
   }
@@ -259,6 +262,7 @@ async function recuperarPendencias(guild) {
   const recuperados = [];
   for (const [tabela, cfg] of Object.entries(TABELAS_TICKET)) {
     for (const reg of db.todos(tabela).filter(r => r.semResponsavelPendente && ticketAberto(cfg, r))) {
+      if (await canalArquivado(guild, reg[cfg.canalCampo])) continue; // mesmo guard de reatribuirAutomatico: não ressuscita arquivado por categoria
       const pendentes = (reg.pendenciaPapeis || []).filter(papel => cfg.papeis[papel] && !reg[cfg.papeis[papel].campo]);
       const aindaPendentes = [];
       for (const papel of pendentes) {
