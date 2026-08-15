@@ -74,6 +74,9 @@ client.once('ready', async () => {
   const rodarChecagens = () => {
     verificarPrazosJulgamento(client, guild).catch(err => console.error('Erro na checagem diária de prazos:', err));
     verificarRenovacoesPorteArma(client).catch(err => console.error('Erro na checagem diária de porte de arma:', err));
+    // Parte 3: reconcilia rh + reatribui tickets com responsável fantasma (saiu do servidor / perdeu
+    // o cargo). Passada A (rh) antes da B (tickets), dentro da própria função. Sem cron novo.
+    require('./utils/responsaveis').varrerResponsaveisFantasma(guild).catch(err => console.error('Erro na varredura de responsável fantasma:', err));
   };
   rodarChecagens();
   setInterval(rodarChecagens, DIA_MS);

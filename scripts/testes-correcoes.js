@@ -464,6 +464,55 @@ function seedProcesso(numero, extra) {
     ok(getPet('9106PA').manifestacoesMp.length === 1, '13f: manifestação após o prazo (antes da decisão) é aceita');
   }
 
+  // ============ ITEM 14: Varredura de responsável fantasma (Parte 3) ============
+  console.log('\nItem 14 — varredura de responsável fantasma (Passada A rh + Passada B tickets):');
+  {
+    const responsaveis = require('../utils/responsaveis');
+    // Guild com presença/role controláveis. Default: presente e COM a role (não interfere no rh de
+    // itens anteriores); marco explicitamente quem saiu (foraDoServidor) e quem está sem role.
+    const foraDoServidor = new Set();
+    const semRole = new Set(); // ids que estão no servidor mas sem a role do cargo
+    const mkMembro = (id) => ({ id, roles: { cache: { has: () => !semRole.has(id) } } });
+    const guildF = {
+      id: 'guild1', roles: { everyone: 'e' },
+      members: { fetch: async (id) => { if (foraDoServidor.has(id)) throw new Error('unknown member'); return mkMembro(id); } },
+      channels: { fetch: async () => fakeChannel() },
+    };
+
+    // Seed rh: um juiz válido, um que saiu, um que perdeu a role, e um substituto válido.
+    rh.contratar('jf_bom', 'Juiz');
+    rh.contratar('jf_saiu', 'Juiz'); foraDoServidor.add('jf_saiu');
+    rh.contratar('jf_semrole', 'Juiz'); semRole.add('jf_semrole');
+    rh.contratar('jf_subst', 'Juiz');
+
+    // ---- Passada A ----
+    const orfaos = await responsaveis.limparRhFantasma(guildF);
+    ok(orfaos.some(o => o.discordId === 'jf_saiu' && o.motivo === 'ausente do servidor'), '14a: Passada A desativa quem saiu do servidor');
+    ok(orfaos.some(o => o.discordId === 'jf_semrole' && o.motivo === 'sem a role do cargo'), '14b: Passada A desativa quem perdeu a role');
+    ok(!rh.temCargo('jf_saiu', 'Juiz') && !rh.temCargo('jf_semrole', 'Juiz'), '14c: fantasmas ficam inativos no rh');
+    ok(rh.temCargo('jf_bom', 'Juiz') && rh.temCargo('jf_subst', 'Juiz'), '14d: juiz válido (presente, com role) permanece ativo');
+
+    // ---- Passada B: ticket com juiz fantasma (simula o 002AP) ----
+    db.inserir('processos', { numero: '002APx', tipo: 'Penal', status: 'Instrução', juiz: 'jf_saiu', promotor: 'pf1', delegado: 'df1', canalId: 'cF1' });
+    const tickets = await responsaveis.reatribuirTicketsFantasma(guildF);
+    const proc = db.buscarPorNumero('processos', '002APx');
+    ok(tickets.some(t => t.numero === '002APx' && t.papel === 'Juiz' && t.resultado === 'reatribuido'), '14e: ticket com juiz fantasma é reatribuído');
+    ok(proc.juiz && proc.juiz !== 'jf_saiu' && rh.temCargo(proc.juiz, 'Juiz'), '14f: novo juiz é válido (não o fantasma), com juizDesde reiniciado');
+
+    // ---- Sem substituto → tira o fantasma e marca pendência (usa Desembargador, pool vazio) ----
+    db.todos('rh', r => r.cargo === 'Desembargador' && r.ativo).forEach(r => rh.demitir(r.discordId));
+    db.inserir('apelacoes', { numero: 'AP99x', status: 'Aguardando decisão', desembargadorId: 'des_saiu', canalId: 'cA9' });
+    foraDoServidor.add('des_saiu');
+    await responsaveis.reatribuirTicketsFantasma(guildF);
+    const ap = db.buscarPorNumero('apelacoes', 'AP99x');
+    ok(ap.desembargadorId === null && ap.semResponsavelPendente === true, '14g: sem substituto → tira o fantasma e marca pendência (não deixa falsamente atribuído)');
+
+    // ---- Ticket arquivado com fantasma → intocado ----
+    db.inserir('processos', { numero: 'ARQ1x', tipo: 'Penal', status: 'Arquivado', juiz: 'jf_saiu', canalId: 'cAr' });
+    await responsaveis.reatribuirTicketsFantasma(guildF);
+    ok(db.buscarPorNumero('processos', 'ARQ1x').juiz === 'jf_saiu', '14h: ticket arquivado com fantasma é intocado');
+  }
+
   // ---- Resumo ----
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`  ❌ ${f.nome}${f.detalhe ? ` — ${f.detalhe}` : ''}`)); }

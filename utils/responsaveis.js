@@ -7,6 +7,7 @@ const rh = require('./rh');
 const canais = require('./canais');
 const auditoria = require('./auditoria');
 const documentoPng = require('../services/gerarDocumentoPNG');
+const config = require('../config');
 
 // Mapa data-driven: cada tabela declara o campo do canal, o predicado "aberto" e seus papéis
 // (campo onde o responsável mora + como reiniciar o prazo em curso quando esse papel troca).
@@ -130,7 +131,77 @@ function rotuloTabela(tabela) {
   return { processos: 'Processo', medidas: 'Medida', peticoes: 'Petição', apelacoes: 'Apelação' }[tabela] || tabela;
 }
 
+// ---- Varredura de responsável fantasma (Parte 3, camada 2) ----
+// Role do Discord por cargo — usada só na Passada A pra distinguir "perdeu o cargo (role removida)"
+// de "ainda é do quadro". Se a role não estiver configurada (id nulo), a Passada A cai só na
+// presença no servidor pra aquele cargo (não desativa por falta de role que o bot nem conhece).
+const ROLE_POR_CARGO = {
+  Juiz: config.roleJuizId, Promotor: config.rolePromotorId, Delegado: config.roleDelegadoId,
+  Desembargador: config.roleDesembargadorId, Procurador: config.roleProcuradorId, Advogado: config.roleAdvogadoId,
+};
+
+// PASSADA A — reconcilia o `rh` com o Discord. Desativa todo registro ativo cujo dono saiu do
+// servidor OU (se a role do cargo é conhecida) não tem mais a role. Roda ANTES da B: limpa a fila
+// de sorteio, senão a B poderia re-sortear um fantasma pra cobrir outro. Retorna os órfãos achados.
+async function limparRhFantasma(guild) {
+  const orfaos = [];
+  for (const reg of db.todos('rh', r => r.ativo)) {
+    const membro = await guild.members.fetch(reg.discordId).catch(() => null);
+    let motivo = null;
+    if (!membro) motivo = 'ausente do servidor';
+    else {
+      const roleId = ROLE_POR_CARGO[reg.cargo];
+      if (roleId && !membro.roles.cache.has(roleId)) motivo = 'sem a role do cargo';
+    }
+    if (!motivo) continue;
+    rh.demitir(reg.discordId);
+    orfaos.push({ discordId: reg.discordId, cargo: reg.cargo, motivo });
+    await auditoria.registrar(guild, { acao: `RH: desativação automática (${motivo})`, executorId: null, referencia: `<@${reg.discordId}> (era ${reg.cargo})`, motivo });
+  }
+  return orfaos;
+}
+
+// PASSADA B — percorre os tickets ABERTOS; pra cada responsável marcado, é fantasma se saiu do
+// servidor OU não tem mais o cargo (o rh já foi limpo na A, então rh.temCargo agora reflete a
+// realidade). Reatribui; sem substituto, tira o fantasma (campo → null) e marca pendência — nunca
+// deixa falsamente atribuído. Retorna os casos tratados.
+async function reatribuirTicketsFantasma(guild) {
+  const tratados = [];
+  for (const [tabela, cfg] of Object.entries(TABELAS_TICKET)) {
+    for (const reg of db.todos(tabela).filter(r => cfg.aberto(r))) {
+      for (const [papel, pcfg] of Object.entries(cfg.papeis)) {
+        const id = reg[pcfg.campo];
+        if (!id) continue;
+        const membro = await guild.members.fetch(id).catch(() => null);
+        if (membro && rh.temCargo(id, papel)) continue; // responsável válido
+        const motivoTipo = !membro ? 'ausente' : 'sem_cargo';
+        const r = await reatribuirAutomatico(guild, { tabela, numero: reg.numero, papel, motivoTipo });
+        if (r.semSubstituto) {
+          // Não deixa o fantasma: tira do campo e marca pendência (o painel Des/Proc lista isso).
+          db.atualizar(tabela, reg.numero, { [pcfg.campo]: null, semResponsavelPendente: true });
+          const canal = reg[cfg.canalCampo] ? await guild.channels.fetch(reg[cfg.canalCampo]).catch(() => null) : null;
+          if (canal) await canal.send({ content: `⚠️ O(a) ${papel} deste caso saiu do quadro e **não há substituto disponível**. Caso marcado como pendência para a Supervisão — não ficou responsável fantasma.` });
+        }
+        tratados.push({ tabela, numero: reg.numero, papel, antigoId: id, resultado: r.ok ? 'reatribuido' : (r.semSubstituto ? 'pendencia_sem_substituto' : 'falhou'), novoId: r.novoId || null });
+      }
+    }
+  }
+  return tratados;
+}
+
+// Varredura completa: Passada A (limpa rh) → Passada B (conserta tickets). Loga os dois números —
+// é o "relatório do primeiro run". Enganchada no job diário existente (sem cron novo).
+async function varrerResponsaveisFantasma(guild) {
+  const orfaosRh = await limparRhFantasma(guild);
+  const tickets = await reatribuirTicketsFantasma(guild);
+  console.log(`♻️ [fantasma] Varredura: ${orfaosRh.length} registro(s) rh órfão(s) desativado(s); ${tickets.length} ticket(s) com responsável fantasma tratado(s).`);
+  if (orfaosRh.length) console.log(`   rh órfãos: ${orfaosRh.map(o => `${o.discordId}(${o.cargo}: ${o.motivo})`).join(', ')}`);
+  if (tickets.length) console.log(`   tickets: ${tickets.map(t => `${t.numero}/${t.papel}→${t.resultado}`).join(', ')}`);
+  return { orfaosRh, tickets };
+}
+
 module.exports = {
   TABELAS_TICKET, QUEM_TROCA,
   sortearParaPapel, responsaveisAtuais, aplicarTroca, reatribuirAutomatico, rotuloTabela,
+  limparRhFantasma, reatribuirTicketsFantasma, varrerResponsaveisFantasma,
 };
