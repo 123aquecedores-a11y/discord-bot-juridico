@@ -1,0 +1,78 @@
+// Engine de publicação no Diário Oficial POR NATUREZA DO ATO — não uma linha de lógica de publicação
+// em cada handler. Cada natureza DECLARA: nível, um predicado publicavel(record) (o estado ATUAL do
+// registro justifica publicar agora?) e um montador do card. O handler só diz "este ato aconteceu";
+// a engine decide nível/card/idempotência/anexo.
+//
+// publicarAto é:
+//  - IDEMPOTENTE: marca diarioPublicadoEm no registro; nunca republica o mesmo ato.
+//  - BLINDADA: nunca lança — uma falha aqui não pode quebrar o ato principal (decisão/arquivamento).
+//  - REUSÁVEL pela varredura (Etapa 5): a mesma publicarAto faz o backfill e pega transições de
+//    estado (Nível 2 publica no cumprimento) — nada de lógica de publicação espalhada.
+const db = require('../database/db');
+const diario = require('./diarioOficial');
+
+// Rótulo do tipo de petição administrativa no card. O Diário é dono da sua própria apresentação —
+// não importamos TIPO_LABEL de commands/peticao.js pra evitar require circular (peticao ↔ diarioAtos).
+const LABEL_PETICAO = {
+  PorteArma: 'Porte de Arma',
+  TrocaNome: 'Troca de Nome',
+  LimpezaFicha: 'Limpeza de Ficha',
+  AlvaraEvento: 'Alvará de Evento',
+};
+
+// Registro data-driven das naturezas de ato que publicam. Cresce por etapa (arquivamento de
+// inquérito, indeferimento inicial, mandado cumprido...) sem tocar em publicarAto. "Ato novo herda
+// o critério": basta declarar a natureza aqui.
+const NATUREZAS = {
+  // NÍVEL 1 — decisão de pedido administrativo do cidadão (porte de arma, troca de nome, limpeza de
+  // ficha, alvará). Publica NA HORA, deferido OU indeferido. A Diligência (Nível 3) nunca chega aqui:
+  // o handler só chama esta natureza no ramo de decisão final, não no de diligência.
+  peticaoAdministrativa: {
+    tabela: 'peticoes',
+    nivel: 1,
+    publicavel: (p) => !!p && (p.status === 'Deferido' || p.status === 'Indeferido'),
+    montar: (p) => ({
+      tipo: 'peticao_administrativa',
+      dados: {
+        numero: p.numero,
+        tipoPeticao: LABEL_PETICAO[p.tipo] || p.tipo,
+        resultado: p.status,
+        parte: p.nomeCliente || p.nomeNovo || null,
+        validadeAte: p.validadeAte || null,
+        magistradoId: p.juiz || null,
+      },
+    }),
+  },
+};
+
+/**
+ * Publica um ato no Diário Oficial pela sua NATUREZA. Idempotente e blindada.
+ * @param {import('discord.js').Guild} guild
+ * @param {string} natureza  chave de NATUREZAS
+ * @param {Object} record    o registro do ato (peticao/processo/medida...)
+ * @param {Object} [opts]    opts.files: anexos já prontos (ex.: PNG da sentença, PDF do relatório)
+ * @returns {Promise<boolean>} true se publicou agora
+ */
+async function publicarAto(guild, natureza, record, opts = {}) {
+  try {
+    const def = NATUREZAS[natureza];
+    if (!def || !guild || !record) return false;
+    if (record.diarioPublicadoEm) return false;        // já publicado — não republica (idempotente)
+    if (!def.publicavel(record)) return false;         // o estado atual ainda não justifica publicar
+    const { tipo, dados } = def.montar(record, guild);
+    const files = Array.isArray(opts.files) && opts.files.length ? opts.files : undefined;
+    const enviada = await diario.publicarNoDiario(guild, tipo, { ...dados, ...(files ? { files } : {}) });
+    // Diário não configurado / canal sumiu / sem permissão → publicarNoDiario devolve false. NÃO
+    // marca: assim a varredura (Etapa 5) tenta de novo depois, em vez de perder a publicação.
+    if (!enviada) return false;
+    const patch = { diarioPublicadoEm: new Date().toISOString() };
+    if (enviada.id) patch.diarioMessageId = enviada.id; // guarda o id p/ o card evoluir depois (Etapa 5)
+    db.atualizar(def.tabela, record.numero, patch);
+    return true;
+  } catch (e) {
+    console.error(`[diarioAtos] falha ao publicar ato "${natureza}" (ignorado, não quebra o ato):`, e.message);
+    return false;
+  }
+}
+
+module.exports = { publicarAto, NATUREZAS, LABEL_PETICAO };

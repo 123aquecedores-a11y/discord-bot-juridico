@@ -50,6 +50,8 @@ const medidaCmd = require('../commands/medida');
 const peticaoCmd = require('../commands/peticao');
 const rhCmd = require('../commands/rh');
 const painelCmd = require('../commands/painel');
+const diarioAtos = require('../utils/diarioAtos');
+const estado = require('../utils/estado');
 const rh = require('../utils/rh');
 const config = require('../config');
 
@@ -742,6 +744,47 @@ function seedProcesso(numero, extra) {
     const itSlashNaoAdm = makeSlash({ userId: 'zeSlash', member: { permissions: { has: () => false }, roles: { cache: { has: () => false } } }, sub: 'contratar', opts: { usuario: 'f0X', cargo: 'Juiz', rg: '' } });
     await rhCmd.execute(itSlashNaoAdm);
     ok(!rh.getCargo('f0X') && /staff/i.test(contentLast(itSlashNaoAdm)), '17n: /rh execute barra nao-Staff (nada criado)');
+  }
+
+  // ============ ITEM 18: Diário — engine por natureza + petição administrativa (porte de arma) ============
+  console.log('\nItem 18 — Diário (engine publicarAto + petição administrativa / porte de arma):');
+  {
+    estado.definir('diarioOficialId', 'diariochan'); // liga o Diário no teste (senão publicar vira no-op)
+    const acharPub = () => rec.sends.find(s => s.content === '@everyone' && Array.isArray(s.embeds) && s.embeds.length);
+
+    // 18a: engine publica a decisão de petição administrativa (Deferido) com card + tipo + PNG + marcador
+    const pDef = db.inserir('peticoes', { numero: 'DIA-PA1', tipo: 'PorteArma', status: 'Deferido', juiz: 'juizD', nomeCliente: 'Fulano da Silva', validadeAte: new Date(Date.now() + 15 * 864e5).toISOString() });
+    rec.sends.length = 0;
+    const pub1 = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', pDef, { files: [{ attachment: Buffer.from('x'), name: 'Sentenca.png' }] });
+    const emb1 = acharPub();
+    ok(pub1 === true && !!emb1, '18a: publicarAto publica a decisão de petição administrativa');
+    ok(emb1 && /porte de arma/i.test(JSON.stringify(emb1.embeds[0].data)), '  ...com o tipo do pedido no card');
+    ok(emb1 && Array.isArray(emb1.files) && emb1.files.length, '  ...e o PNG anexado');
+    ok((db.buscarPorNumero('peticoes', 'DIA-PA1') || {}).diarioPublicadoEm, '  ...e marca diarioPublicadoEm no registro');
+
+    // 18b: idempotente — segunda chamada não republica
+    rec.sends.length = 0;
+    const pub2 = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', db.buscarPorNumero('peticoes', 'DIA-PA1'));
+    ok(pub2 === false && !acharPub(), '18b: idempotente — não republica ato já publicado');
+
+    // 18c: estado ainda não-decidido não é publicável
+    const pPend = db.inserir('peticoes', { numero: 'DIA-PA2', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD' });
+    rec.sends.length = 0;
+    const pub3 = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', pPend);
+    ok(pub3 === false && !acharPub(), '18c: petição ainda Pendente não publica (publicavel=false)');
+
+    // 18d: END-TO-END — finalizarDecisao(Deferido) publica no Diário = o bug do porte de arma resolvido
+    db.inserir('peticoes', { numero: 'DIA-PA3', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD', canalId: 'cpa3', nomeCliente: 'Beltrano', requerenteId: 'advA', rgCliente: 'RG9' });
+    rec.sends.length = 0;
+    await peticaoCmd.finalizarDecisao(fakeGuild(), 'DIA-PA3', 'Deferido', { motivo: 'Autorizado.', nivelRisco: 'Baixo' }, 'juizD');
+    ok(acharPub(), '18d: finalizarDecisao(Deferido) publica no Diário — porte de arma resolvido');
+    ok((db.buscarPorNumero('peticoes', 'DIA-PA3') || {}).diarioPublicadoEm, '  ...e marca o registro');
+
+    // 18e: Diligência (Nível 3) NÃO publica
+    db.inserir('peticoes', { numero: 'DIA-PA4', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD', canalId: 'cpa4', nomeCliente: 'Ciclano', requerenteId: 'advB' });
+    rec.sends.length = 0;
+    await peticaoCmd.finalizarDecisao(fakeGuild(), 'DIA-PA4', 'Diligência', { motivo: 'Falta comprovante.' }, 'juizD');
+    ok(!acharPub() && !(db.buscarPorNumero('peticoes', 'DIA-PA4') || {}).diarioPublicadoEm, '18e: Diligência (Nível 3) não publica no Diário');
   }
 
   // ---- Resumo ----

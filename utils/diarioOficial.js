@@ -60,6 +60,19 @@ function montarEmbed(tipo, d) {
       if (d.linksTexto) desc += `\n\n🔗 **Links**\n${d.linksTexto}`;
       return e.setColor(0x1f6feb).setTitle(`📢 ${String(d.titulo || 'Comunicado').slice(0, 256)}`).setDescription(desc.slice(0, 4096));
     }
+    case 'peticao_administrativa':
+      // Nível 1 — decisão de pedido administrativo (porte de arma, troca de nome, limpeza de ficha,
+      // alvará), deferido ou indeferido. O corpo íntegro vai no PNG anexo (dados.files); o card é curto.
+      return e.setColor(d.resultado === 'Deferido' ? 0x27ae60 : 0xc0392b)
+        .setTitle(`⚖️ ${d.tipoPeticao || 'Pedido administrativo'} — ${d.resultado || ''}`.trim())
+        .setDescription(`Decisão em pedido administrativo${d.parte ? ` de **${d.parte}**` : ''}.`)
+        .addFields([
+          d.tipoPeticao ? { name: 'Pedido', value: String(d.tipoPeticao), inline: true } : null,
+          d.resultado ? { name: 'Resultado', value: String(d.resultado), inline: true } : null,
+          d.numero ? { name: 'Protocolo', value: String(d.numero), inline: true } : null,
+          d.validadeAte ? { name: 'Validade', value: `<t:${Math.floor(new Date(d.validadeAte).getTime() / 1000)}:D>`, inline: true } : null,
+          d.magistradoId ? { name: 'Magistrado(a)', value: `<@${d.magistradoId}>`, inline: true } : null,
+        ].filter(Boolean));
     default:
       return e.setColor(0x2c3e50).setTitle('📜 Publicação Oficial').setDescription(String(d.texto || 'Ato publicado.'));
   }
@@ -84,13 +97,15 @@ async function publicarNoDiario(guild, tipo, dados = {}) {
     // que o bot possa mencionar @everyone neste canal (canais antigos podem ter nascido sem a perm).
     const botId = guild.members?.me?.id || guild.client?.user?.id;
     if (botId) await canal.permissionOverwrites.edit(botId, { MentionEveryone: true }).catch(() => {});
-    await canal.send({
+    const enviada = await canal.send({
       content: '@everyone',
       allowedMentions: { parse: ['everyone'] },
       embeds: [montarEmbed(tipo, dados)],
       ...(Array.isArray(dados.files) && dados.files.length ? { files: dados.files } : {}),
     });
-    return true;
+    // Devolve a Message (não mais um booleano) pra quem precisa do id — a engine diarioAtos guarda
+    // diarioMessageId p/ o card evoluir depois. Message é truthy, então os `if (publicou)` seguem OK.
+    return enviada;
   } catch (e) {
     console.error(`[diarioOficial] falha ao publicar ato "${tipo}" (ignorado, não quebra o ato):`, e.message);
     return false;
