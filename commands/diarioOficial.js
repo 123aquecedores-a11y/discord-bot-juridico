@@ -8,9 +8,20 @@ function podeStaff(interaction) {
   return isAdmin(interaction) || isSuperStaff(interaction);
 }
 
-// ---- Publicar comunicado no Diário Oficial (staff) — botão do hub ou /comunicado ----
-async function abrirModalComunicado(interaction) {
+// Modais do Discord NÃO aceitam upload de arquivo — o PDF vem da opção de anexo do /comunicado.
+// Guardamos { url, name } por usuário até o submit do modal, aí anexamos na publicação.
+const pdfComunicadoPendente = new Map();
+
+// ---- Publicar comunicado no Diário Oficial (staff) — botão do hub ou /comunicado (com PDF) ----
+async function abrirModalComunicado(interaction, pdf = null) {
   if (!podeStaff(interaction)) return interaction.reply({ content: 'Só Staff/Administração pode publicar comunicados.', ephemeral: true });
+  if (pdf) {
+    const ehPdf = pdf.contentType === 'application/pdf' || (pdf.name || '').toLowerCase().endsWith('.pdf');
+    if (!ehPdf) return interaction.reply({ content: 'O anexo precisa ser um **PDF**.', ephemeral: true });
+    pdfComunicadoPendente.set(interaction.user.id, { url: pdf.url, name: pdf.name || 'anexo.pdf' });
+  } else {
+    pdfComunicadoPendente.delete(interaction.user.id); // esta emissão não tem PDF
+  }
   const modal = new ModalBuilder().setCustomId('painel:modal:comunicado:publicar').setTitle('Publicar comunicado');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('titulo').setLabel('Título').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200)),
@@ -33,15 +44,21 @@ async function publicarComunicado(interaction) {
     ? linksRaw.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => `• ${l}`).join('\n')
     : '';
 
+  // PDF anexado via /comunicado (guardado no abrirModalComunicado) — consome e limpa. O
+  // discord.js baixa a URL do anexo e reenvia como arquivo permanente na mensagem do Diário.
+  const pdf = pdfComunicadoPendente.get(interaction.user.id);
+  pdfComunicadoPendente.delete(interaction.user.id);
+  const files = pdf ? [{ attachment: pdf.url, name: pdf.name }] : undefined;
+
   await interaction.deferReply({ ephemeral: true });
   let publicou = false;
   try {
-    publicou = await diario.publicarNoDiario(interaction.guild, 'comunicado', { titulo, corpo, linksTexto });
+    publicou = await diario.publicarNoDiario(interaction.guild, 'comunicado', { titulo, corpo, linksTexto, files });
   } catch (e) { console.error('[comunicado] falha ao publicar (ignorado):', e.message); }
 
-  await auditoria.registrar(interaction.guild, { acao: 'Comunicado publicado no Diário', executorId: interaction.user.id, referencia: `"${titulo.slice(0, 100)}"` });
+  await auditoria.registrar(interaction.guild, { acao: 'Comunicado publicado no Diário', executorId: interaction.user.id, referencia: `"${titulo.slice(0, 100)}"${pdf ? ' [com PDF]' : ''}` });
   return interaction.editReply(publicou
-    ? '✅ Comunicado publicado no Diário Oficial.'
+    ? `✅ Comunicado publicado no Diário Oficial${pdf ? ' (com PDF anexo)' : ''}.`
     : '⚠️ Não consegui publicar no Diário Oficial (canal ausente ou sem permissão) — a ação foi registrada no log.');
 }
 
