@@ -181,7 +181,14 @@ async function protocolarPeticao(guild, numero) {
   const promotorId = rh.sortearPorCargo('Promotor');
   const juizId = rh.sortearJuiz({ excluirIds: [peticao.requerenteId, peticao.discordIdCliente].filter(Boolean) });
 
-  db.atualizar('peticoes', numero, { promotor: promotorId, juiz: juizId, status: juizId ? 'Pendente' : 'Aguardando sorteio de juiz' });
+  // Manifestação do MP (Parte 1): grava o instante do sorteio do promotor — base do prazo lazy de
+  // 24h — e inicializa a lista de manifestações. É lista (não objeto): cada manifestação é um ato
+  // que não se desfaz; se o promotor for trocado, o novo complementa, não sobrescreve.
+  db.atualizar('peticoes', numero, {
+    promotor: promotorId, juiz: juizId,
+    status: juizId ? 'Pendente' : 'Aguardando sorteio de juiz',
+    ...(promotorId ? { sorteioPromotorEm: new Date().toISOString(), manifestacoesMp: [] } : {}),
+  });
 
   if (promotorId) await canais.adicionarMembro(canal, promotorId);
   if (juizId) await canais.adicionarMembro(canal, juizId);
