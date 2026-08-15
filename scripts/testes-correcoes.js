@@ -276,14 +276,16 @@ function seedProcesso(numero, extra) {
     ok(vals.includes('Delegado') && vals.includes('Promotor') && vals.includes('Advogado'), '  ...e mantém os cargos autossolicitáveis');
 
     // 11b (handler): solicitar 'Juiz' é rejeitado e NÃO cria solicitação
+    // RG obrigatório no formulário de cargo (Update 2): o mock precisa fornecê-lo, senão a rejeição
+    // viria do check de RG e não da trava de cargo alto (o que este teste quer isolar).
     const antes = db.todos('solicitacoesCargo').length;
-    const itJ = makeInteraction({ userId: 'userY', guild: fakeGuild(), fields: { nome: 'Nome Y' } });
+    const itJ = makeInteraction({ userId: 'userY', guild: fakeGuild(), fields: { nome: 'Nome Y', rg: 'RG-Y' } });
     await rhCmd.solicitarCargo(itJ, 'Juiz');
     ok(/não pode ser solicitad/i.test(lastReplyText(itJ)), '11b: solicitar cargo alto (Juiz) é recusado no handler');
     eq(db.todos('solicitacoesCargo').length, antes, '  ...e nenhuma solicitação foi criada');
 
-    // Controle: solicitar 'Advogado' cria a solicitação normalmente
-    const itAdv = makeInteraction({ userId: 'userZ', guild: fakeGuild(), fields: { nome: 'Nome Z' } });
+    // Controle: solicitar 'Advogado' cria a solicitação normalmente (RG obrigatório — Update 2)
+    const itAdv = makeInteraction({ userId: 'userZ', guild: fakeGuild(), fields: { nome: 'Nome Z', rg: 'RG-Z' } });
     await rhCmd.solicitarCargo(itAdv, 'Advogado');
     const sol = db.todos('solicitacoesCargo', s => s.discordId === 'userZ' && s.cargo === 'Advogado')[0];
     ok(!!sol && sol.status === 'Pendente', 'controle: solicitar Advogado (baixo) cria a solicitação');
