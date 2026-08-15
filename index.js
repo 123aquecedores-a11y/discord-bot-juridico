@@ -74,6 +74,9 @@ client.once('ready', async () => {
   const rodarChecagens = () => {
     verificarPrazosJulgamento(client, guild).catch(err => console.error('Erro na checagem diária de prazos:', err));
     verificarRenovacoesPorteArma(client).catch(err => console.error('Erro na checagem diária de porte de arma:', err));
+    // Parte 3: reconcilia rh + reatribui tickets com responsável fantasma (saiu do servidor / perdeu
+    // o cargo). Passada A (rh) antes da B (tickets), dentro da própria função. Sem cron novo.
+    require('./utils/responsaveis').varrerResponsaveisFantasma(guild).catch(err => console.error('Erro na varredura de responsável fantasma:', err));
   };
   rodarChecagens();
   setInterval(rodarChecagens, DIA_MS);
@@ -109,6 +112,18 @@ client.on('guildMemberAdd', async member => {
     return null;
   });
   if (sincronizado) console.log(`Apelido sincronizado automaticamente pra ${member.id} ao entrar no servidor.`);
+});
+
+// Parte 3 (evento — reação imediata; a varredura diária é a rede de segurança). Quem SAI do servidor
+// deixa de ser responsável válido: demite no rh e reatribui os tickets abertos onde estava marcado.
+// Só reage a SAÍDA (guildMemberRemove, presença) — reagir a remoção de role foi removido porque
+// gerava reatribuição indevida (o próprio swap de cargo do bot removia/readicionava a role).
+client.on('guildMemberRemove', async member => {
+  if (config.guildId && member.guild && member.guild.id !== config.guildId) return;
+  try {
+    const tratados = await require('./utils/responsaveis').tratarResponsavelInvalido(member.guild, member.id, 'ausente');
+    if (tratados.length) console.log(`♻️ [fantasma/evento] Saída de ${member.id}: ${tratados.length} ticket(s) reatribuído(s).`);
+  } catch (err) { console.error('Erro ao tratar saída de membro (responsável):', err); }
 });
 
 // Só a integração com a Polícia Civil continua ouvindo mensagens novas — a auto-limpeza do canal

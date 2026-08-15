@@ -464,6 +464,161 @@ function seedProcesso(numero, extra) {
     ok(getPet('9106PA').manifestacoesMp.length === 1, '13f: manifestação após o prazo (antes da decisão) é aceita');
   }
 
+  // ============ ITEM 14: Varredura de responsável fantasma (Parte 3) ============
+  console.log('\nItem 14 — varredura de responsável fantasma (Passada A rh + Passada B tickets):');
+  {
+    const responsaveis = require('../utils/responsaveis');
+    // Guild com presença controlável: quem está em foraDoServidor "saiu" (10007); os demais presentes.
+    const foraDoServidor = new Set();
+    const guildF = {
+      id: 'guild1', roles: { everyone: 'e' },
+      members: { fetch: async (id) => { if (foraDoServidor.has(id)) throw Object.assign(new Error('Unknown Member'), { code: 10007 }); return { id, roles: { cache: { has: () => true } } }; } },
+      channels: { fetch: async () => fakeChannel() },
+    };
+
+    rh.contratar('jf_bom', 'Juiz');
+    rh.contratar('jf_saiu', 'Juiz'); foraDoServidor.add('jf_saiu');
+    rh.contratar('jf_subst', 'Juiz');
+
+    // ---- Passada A: só desativa quem SAIU do servidor (presença) ----
+    const orfaos = await responsaveis.limparRhFantasma(guildF);
+    ok(orfaos.some(o => o.discordId === 'jf_saiu' && o.motivo === 'ausente do servidor'), '14a: Passada A desativa quem saiu do servidor');
+    ok(!rh.temCargo('jf_saiu', 'Juiz'), '14c: fantasma (ausente) fica inativo no rh');
+    ok(rh.temCargo('jf_bom', 'Juiz') && rh.temCargo('jf_subst', 'Juiz'), '14d: responsável válido (presente) permanece ativo');
+
+    // 14b: detecção é SÓ presença — quem está no servidor é válido, MESMO fora do rh (responsável
+    // externo legítimo, ex.: delegado injetado pela integração da Polícia Civil por @menção). Só
+    // quem SAIU (10007) é fantasma.
+    ok(await responsaveis.estadoResponsavel(guildF, 'del_pc_externo') === 'valido' && await responsaveis.estadoResponsavel(guildF, 'jf_saiu') === 'ausente', '14b: detecção só por presença — presente fora do rh = válido; ausente = fantasma');
+
+    // ---- Passada B: ticket com juiz fantasma (simula o 002AP) ----
+    db.inserir('processos', { numero: '002APx', tipo: 'Penal', status: 'Instrução', juiz: 'jf_saiu', promotor: 'pf1', delegado: 'df1', canalId: 'cF1' });
+    const tickets = await responsaveis.reatribuirTicketsFantasma(guildF);
+    const proc = db.buscarPorNumero('processos', '002APx');
+    ok(tickets.some(t => t.numero === '002APx' && t.papel === 'Juiz' && t.resultado === 'reatribuido'), '14e: ticket com juiz fantasma é reatribuído');
+    ok(proc.juiz && proc.juiz !== 'jf_saiu' && rh.temCargo(proc.juiz, 'Juiz'), '14f: novo juiz é válido (não o fantasma), com juizDesde reiniciado');
+
+    // ---- Sem substituto → tira o fantasma e marca pendência (usa Desembargador, pool vazio) ----
+    db.todos('rh', r => r.cargo === 'Desembargador' && r.ativo).forEach(r => rh.demitir(r.discordId));
+    db.inserir('apelacoes', { numero: 'AP99x', status: 'Aguardando decisão', desembargadorId: 'des_saiu', canalId: 'cA9' });
+    foraDoServidor.add('des_saiu');
+    await responsaveis.reatribuirTicketsFantasma(guildF);
+    const ap = db.buscarPorNumero('apelacoes', 'AP99x');
+    ok(ap.desembargadorId === null && ap.semResponsavelPendente === true, '14g: sem substituto → tira o fantasma e marca pendência (não deixa falsamente atribuído)');
+
+    // ---- Ticket arquivado com fantasma → intocado ----
+    db.inserir('processos', { numero: 'ARQ1x', tipo: 'Penal', status: 'Arquivado', juiz: 'jf_saiu', canalId: 'cAr' });
+    await responsaveis.reatribuirTicketsFantasma(guildF);
+    ok(db.buscarPorNumero('processos', 'ARQ1x').juiz === 'jf_saiu', '14h: ticket arquivado com fantasma é intocado');
+  }
+
+  // ============ ITEM 15: Camada de evento (Parte 3) ============
+  console.log('\nItem 15 — evento (guildMemberRemove/Update): tratar responsável inválido:');
+  {
+    const responsaveis = require('../utils/responsaveis');
+    // members.fetch retorna membro válido (presente, com role) — pro sortearSubstitutoValido aprovar.
+    const guildE = { id: 'guild1', roles: { everyone: 'e' }, members: { fetch: async (id) => ({ id, roles: { cache: { has: () => true } } }) }, channels: { fetch: async () => fakeChannel() } };
+
+    // Saída de um juiz responsável → demite no rh + reatribui o ticket a um válido
+    rh.contratar('ev_juiz', 'Juiz');
+    rh.contratar('ev_subst', 'Juiz'); // substituto válido no pool
+    db.inserir('processos', { numero: 'EV01', tipo: 'Penal', status: 'Instrução', juiz: 'ev_juiz', promotor: 'evp', delegado: 'evd', canalId: 'cEV' });
+    const t = await responsaveis.tratarResponsavelInvalido(guildE, 'ev_juiz', 'ausente');
+    const procEV = db.buscarPorNumero('processos', 'EV01');
+    ok(!rh.temCargo('ev_juiz', 'Juiz'), '15a: evento demite o responsável no rh (tira da fila de sorteio)');
+    ok(procEV.juiz !== 'ev_juiz' && rh.temCargo(procEV.juiz, 'Juiz'), '15b: evento reatribui o ticket a um juiz válido');
+    ok(t.some(x => x.numero === 'EV01' && x.resultado === 'reatribuido'), '15c: evento retorna o ticket tratado');
+
+    // Idempotência: tratar quem não é responsável de nada → só demite no rh, sem erro
+    rh.contratar('ev_none', 'Promotor');
+    const t2 = await responsaveis.tratarResponsavelInvalido(guildE, 'ev_none', 'ausente');
+    ok(t2.length === 0 && !rh.temCargo('ev_none', 'Promotor'), '15g: evento sem ticket → só demite no rh, idempotente');
+  }
+
+  // ============ ITEM 16: correções da revisão adversarial da Parte 3 ============
+  console.log('\nItem 16 — fixes da revisão (substituto válido, terminal, MP, arquivo manual, transitório, acesso, recuperação, dativo):');
+  {
+    const responsaveis = require('../utils/responsaveis');
+    const fora = new Set();        // saiu do servidor (10007)
+    const semRoleSet = new Set();  // presente, sem a role
+    const transitorio = new Set(); // falha transitória (sem code 10007)
+    const deletes = [];
+    const mk = (id) => ({ id, roles: { cache: { has: () => !semRoleSet.has(id) } } });
+    const mkCanal = () => { const c = fakeChannel(); c.permissionOverwrites.delete = async (id) => { deletes.push(id); }; return c; };
+    const guild = {
+      id: 'guild1', roles: { everyone: 'e' },
+      members: { fetch: async (id) => {
+        if (transitorio.has(id)) throw new Error('ETIMEDOUT'); // sem code → indeterminado
+        if (fora.has(id)) throw Object.assign(new Error('Unknown Member'), { code: 10007 });
+        return mk(id);
+      } },
+      channels: { fetch: async () => mkCanal() },
+    };
+
+    // A (16a): sorteia substituto VÁLIDO, nunca outro fantasma
+    rh.contratar('c16_ghost', 'Promotor'); fora.add('c16_ghost');
+    rh.contratar('c16_valido', 'Promotor');
+    db.inserir('processos', { numero: 'C16A', tipo: 'Penal', status: 'Instrução', promotor: 'c16old', juiz: 'jx16', canalId: 'c16a' });
+    fora.add('c16old');
+    const rA = await responsaveis.reatribuirAutomatico(guild, { tabela: 'processos', numero: 'C16A', papel: 'Promotor', motivoTipo: 'ausente' });
+    ok(rA.ok && rA.novoId === 'c16_valido', '16a: reatribuição sorteia substituto VÁLIDO (não cobre fantasma com fantasma)');
+
+    // D (16d): medida 'Indeferida pelo Juiz' (terminal) não é reatribuída
+    db.inserir('medidas', { numero: 'C16D', status: 'Indeferida pelo Juiz', juiz: 'fant16D', canalId: 'c16d' });
+    const rD = await responsaveis.reatribuirAutomatico(guild, { tabela: 'medidas', numero: 'C16D', papel: 'Juiz', motivoTipo: 'ausente' });
+    ok(!rD.ok && db.buscarPorNumero('medidas', 'C16D').juiz === 'fant16D', '16d: medida Indeferida pelo Juiz é terminal — não mexe');
+
+    // F (16f): troca de Promotor na medida reinicia o relógio do MP
+    rh.contratar('c16_prom2', 'Promotor');
+    db.inserir('medidas', { numero: 'C16F', status: 'Aguardando MP', promotor: 'fant16F', juiz: 'jF16', canalId: 'c16f', aguardandoMpDesde: '2020-01-01T00:00:00Z', lembreteMpEnviado: true, escalonamentoMpEnviado: true });
+    fora.add('fant16F');
+    await responsaveis.reatribuirAutomatico(guild, { tabela: 'medidas', numero: 'C16F', papel: 'Promotor', motivoTipo: 'ausente' });
+    const mF = db.buscarPorNumero('medidas', 'C16F');
+    ok(mF.aguardandoMpDesde !== '2020-01-01T00:00:00Z' && mF.lembreteMpEnviado === false && mF.escalonamentoMpEnviado === false, '16f: troca de Promotor na medida reinicia as 24h do MP');
+
+    // G (16g): arquivamento manual não é ressuscitado
+    db.inserir('processos', { numero: 'C16G', tipo: 'Penal', status: 'Instrução', arquivadoManual: true, juiz: 'fant16G', canalId: 'c16g' });
+    const rG = await responsaveis.reatribuirAutomatico(guild, { tabela: 'processos', numero: 'C16G', papel: 'Juiz', motivoTipo: 'ausente' });
+    ok(!rG.ok && db.buscarPorNumero('processos', 'C16G').juiz === 'fant16G', '16g: caso arquivado manualmente não é ressuscitado');
+
+    // E (16e): falha transitória de fetch NÃO demite (só 10007)
+    rh.contratar('c16_transit', 'Juiz'); transitorio.add('c16_transit');
+    const orfaos = await responsaveis.limparRhFantasma(guild);
+    ok(rh.temCargo('c16_transit', 'Juiz') && !orfaos.some(o => o.discordId === 'c16_transit'), '16e: falha transitória de fetch NÃO desativa (evita demissão em massa)');
+
+    // H (16h): sem substituto → revoga acesso do inválido + marca pendência (Desembargador, pool vazio)
+    db.todos('rh', r => r.cargo === 'Desembargador' && r.ativo).forEach(r => rh.demitir(r.discordId));
+    db.inserir('apelacoes', { numero: 'C16H', status: 'Aguardando decisão', desembargadorId: 'fant16H', canalId: 'c16h' });
+    fora.add('fant16H');
+    await responsaveis.reatribuirTicketsFantasma(guild);
+    const apH = db.buscarPorNumero('apelacoes', 'C16H');
+    ok(deletes.includes('fant16H') && apH.desembargadorId === null && apH.semResponsavelPendente === true && (apH.pendenciaPapeis || []).includes('Desembargador'), '16h: sem substituto → revoga acesso do antigo + marca pendência com o papel');
+
+    // B (16b): recuperação — surge substituto → recuperarPendencias designa e limpa o flag
+    rh.contratar('c16_des', 'Desembargador');
+    const rec = await responsaveis.recuperarPendencias(guild);
+    const apH2 = db.buscarPorNumero('apelacoes', 'C16H');
+    ok(rec.some(x => x.numero === 'C16H') && apH2.desembargadorId === 'c16_des' && !apH2.semResponsavelPendente, '16b: pendência recuperada quando surge substituto (não fica invisível pra sempre)');
+
+    // FF1 (16i): responsável PRESENTE fora do rh (delegado da PC) NÃO é reatribuído pela varredura
+    rh.contratar('del_rh_pool', 'Delegado');
+    db.inserir('medidas', { numero: 'PC01', status: 'Aguardando MP', delegado: 'del_pc_presente', promotor: 'del_rh_pool', juiz: 'jz_pc', canalId: 'cpc' });
+    await responsaveis.reatribuirTicketsFantasma(guild);
+    ok(db.buscarPorNumero('medidas', 'PC01').delegado === 'del_pc_presente', '16i: responsável presente fora do rh (Polícia Civil) não é expulso pela varredura');
+
+    // FF2 (16j): recuperarPendencias NÃO ressuscita ticket cujo canal está na categoria Arquivados
+    const cfgMod = require('../config');
+    const catAntes = cfgMod.categoriaArquivadosId;
+    cfgMod.categoriaArquivadosId = 'CAT_ARQ';
+    rh.contratar('des_rec', 'Desembargador');
+    db.inserir('apelacoes', { numero: 'ARQREC', status: 'Aguardando decisão', desembargadorId: null, semResponsavelPendente: true, pendenciaPapeis: ['Desembargador'], canalId: 'canalArq' });
+    const guildArq = { ...guild, channels: { fetch: async (id) => (id === 'canalArq' ? { id, parentId: 'CAT_ARQ' } : mkCanal()) } };
+    await responsaveis.recuperarPendencias(guildArq);
+    const arqRec = db.buscarPorNumero('apelacoes', 'ARQREC');
+    cfgMod.categoriaArquivadosId = catAntes;
+    ok(arqRec.desembargadorId === null && arqRec.semResponsavelPendente === true, '16j: recuperarPendencias não ressuscita ticket arquivado por categoria');
+  }
+
   // ---- Resumo ----
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`  ❌ ${f.nome}${f.detalhe ? ` — ${f.detalhe}` : ''}`)); }

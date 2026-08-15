@@ -482,4 +482,6 @@ module.exports = {
   verificarApelacoesPendentes, verificarPrazosContestacao,
   verificarPrazoHabilitacao, verificarPrazoDefesa,
   PRAZO_JULGAMENTO_DIAS, DIA_MS, HORA_MS, dmSeguro,
+  // Reusado pela Parte 3 (utils/responsaveis.js) quando um advogado habilitado vira fantasma.
+  sortearDefensorDativo, nomearDefensorDativo,
 };
