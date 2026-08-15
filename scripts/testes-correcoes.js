@@ -49,6 +49,7 @@ const processoCmd = require('../commands/processo');
 const medidaCmd = require('../commands/medida');
 const peticaoCmd = require('../commands/peticao');
 const rhCmd = require('../commands/rh');
+const painelCmd = require('../commands/painel');
 const rh = require('../utils/rh');
 const config = require('../config');
 
@@ -617,6 +618,130 @@ function seedProcesso(numero, extra) {
     const arqRec = db.buscarPorNumero('apelacoes', 'ARQREC');
     cfgMod.categoriaArquivadosId = catAntes;
     ok(arqRec.desembargadorId === null && arqRec.semResponsavelPendente === true, '16j: recuperarPendencias não ressuscita ticket arquivado por categoria');
+  }
+
+  // ============ ITEM 17: Fase 0 — captura de RG na contratação + fail-open ============
+  console.log('\nItem 17 — Fase 0 (captura de RG na contratação + lista fail-open de sem-RG):');
+  {
+    const adminMember = { permissions: { has: () => true }, roles: { cache: { has: () => false } } };
+    const lastEmbedDesc = (it) => {
+      const r = [...it._replies].reverse().find(x => Array.isArray(x.embeds) && x.embeds.length);
+      return r ? (r.embeds[0].data?.description || '') : '';
+    };
+    const mkAdmin = (userId, fields) => makeInteraction({ userId, guild: fakeGuild(), member: adminMember, fields });
+
+    // 17a: precisaRg cobre só a magistratura/MP (quem tem leitura ampla e sofre impedimento)
+    ok(['Juiz', 'Promotor', 'Desembargador', 'Procurador'].every(c => rh.precisaRg(c))
+       && !rh.precisaRg('Advogado') && !rh.precisaRg('Delegado'), '17a: precisaRg = só magistratura/MP');
+
+    // 17b: contratar magistrado SEM RG → entra na lista de sem-RG e avisa (fail-open visível)
+    const itSem = mkAdmin('f0JuizSem', { nome: 'Juiz SemRG', rg: '' });
+    await rhCmd.contratarViaModal(itSem, 'f0JuizSem', 'Juiz');
+    ok(rh.magistradosSemRg().some(r => r.discordId === 'f0JuizSem'), '17b: magistrado sem RG entra na lista de sem-RG');
+    ok(/sem rg/i.test(lastEmbedDesc(itSem)), '  ...e a contratação avisa na hora (falha aberta, não silenciosa)');
+
+    // 17c: contratar magistrado COM RG → fora da lista e sem aviso
+    const itCom = mkAdmin('f0JuizCom', { nome: 'Juiz ComRG', rg: 'RG-777' });
+    await rhCmd.contratarViaModal(itCom, 'f0JuizCom', 'Juiz');
+    ok(!rh.magistradosSemRg().some(r => r.discordId === 'f0JuizCom'), '17c: magistrado com RG não entra na lista');
+    ok(!/sem rg/i.test(lastEmbedDesc(itCom)), '  ...e não dispara o aviso');
+
+    // 17d: Advogado sem RG NÃO conta (não tem leitura ampla → impedimento não se aplica)
+    await rhCmd.contratarViaModal(mkAdmin('f0Adv', { nome: 'Adv', rg: '' }), 'f0Adv', 'Advogado');
+    ok(!rh.magistradosSemRg().some(r => r.discordId === 'f0Adv'), '17d: Advogado sem RG fica fora da lista');
+
+    // 17e: troca de cargo preserva o RG (promover com campo vazio não reabre o buraco)
+    await rhCmd.contratarViaModal(mkAdmin('f0JuizCom', { nome: 'Juiz ComRG', rg: '' }), 'f0JuizCom', 'Desembargador');
+    ok(!rh.magistradosSemRg().some(r => r.discordId === 'f0JuizCom'), '17e: troca de cargo preserva o RG (não reabre buraco)');
+
+    // 17f: só Staff/Admin contrata pelo modal (não-admin barrado, nada é criado)
+    const itNaoAdmin = makeInteraction({ userId: 'f0Ze', guild: fakeGuild(), member: { permissions: { has: () => false }, roles: { cache: { has: () => false } } }, fields: { nome: 'x', rg: 'y' } });
+    await rhCmd.contratarViaModal(itNaoAdmin, 'f0Ze', 'Juiz');
+    ok(/staff/i.test(lastReplyText(itNaoAdmin)) && !rh.getCargo('f0Ze'), '17f: não-Staff é barrado no modal de contratação');
+
+    // 17g: slash — opção rg (opcional) no contratar + subcomando sem-rg
+    const jsonRh = rhCmd.data.toJSON();
+    const subContratar = jsonRh.options.find(o => o.name === 'contratar');
+    ok(subContratar && (subContratar.options || []).some(o => o.name === 'rg' && o.required === false), '17g: /rh contratar tem opção rg opcional');
+    ok(jsonRh.options.some(o => o.name === 'sem-rg'), '  ...e existe o subcomando /rh sem-rg');
+
+    // 17h: modal do painel → customId parseável pelo router (usuarioId#cargo)
+    const cid = rhCmd.modalContratarStaff('998877665544', 'Promotor').toJSON().custom_id;
+    const [uid, cargoP] = String(cid.split(':')[4]).split('#');
+    ok(uid === '998877665544' && cargoP === 'Promotor', '17h: modalContratarStaff → customId parseável (usuarioId#cargo)');
+
+    // --- Mocks de dispatch REAL (router do painel + execute do slash), pra pegar o que o teste de
+    //     função isolada não pega: parsing do router, handler do slash, e o timeout do Problema A ---
+    const makeModalSubmit = ({ userId, member, customId, fields = {}, replyThrows = false }) => {
+      const it = {
+        user: { id: userId }, member, guild: fakeGuild(), customId,
+        deferred: false, replied: false,
+        fields: { getTextInputValue: (k) => (k in fields ? fields[k] : '') },
+        isButton: () => false, isStringSelectMenu: () => false, isUserSelectMenu: () => false,
+        isChatInputCommand: () => false, isAutocomplete: () => false, isModalSubmit: () => true,
+        _replies: [],
+        // replyThrows simula o token expirado (10062) que o Problema A dispara sem deferReply
+        reply: async (o) => { if (replyThrows) throw new Error('Unknown interaction [10062]'); it.replied = true; it._replies.push({ t: 'reply', ...norm(o) }); return o; },
+        editReply: async (o) => { it._replies.push({ t: 'editReply', ...norm(o) }); return o; },
+        deferReply: async () => { it.deferred = true; },
+        followUp: async (o) => { it._replies.push({ t: 'followUp', ...norm(o) }); return o; },
+      };
+      return it;
+    };
+    const makeSlash = ({ userId, member, sub, opts = {} }) => {
+      const it = {
+        user: { id: userId }, member, guild: fakeGuild(),
+        deferred: false, replied: false,
+        options: {
+          getSubcommand: () => sub,
+          getUser: (k) => (opts[k] ? { id: opts[k], toString: () => `<@${opts[k]}>` } : null),
+          getString: (k) => (k in opts ? opts[k] : null),
+          getBoolean: (k) => (k in opts ? opts[k] : null),
+        },
+        _replies: [],
+        reply: async (o) => { it.replied = true; it._replies.push({ t: 'reply', ...norm(o) }); return o; },
+        editReply: async (o) => { it._replies.push({ t: 'editReply', ...norm(o) }); return o; },
+        deferReply: async () => { it.deferred = true; },
+        followUp: async (o) => { it._replies.push({ t: 'followUp', ...norm(o) }); return o; },
+      };
+      return it;
+    };
+    const contentLast = (it) => (it._replies.map(r => r.content).filter(Boolean).pop() || '');
+
+    // 17i: REGRESSAO do Problema A — o reply inicial expira (10062), mas defer+editReply entregam o
+    // aviso mesmo assim. Falha no codigo antigo (reply sem defer); passa com o defer.
+    const itExp = makeModalSubmit({ userId: 'adm1', member: adminMember, customId: 'painel:modal:rh:contratar:f0Exp#Juiz', fields: { nome: 'Juiz Exp', rg: '' }, replyThrows: true });
+    await rhCmd.contratarViaModal(itExp, 'f0Exp', 'Juiz');
+    ok(itExp.deferred === true, '17i: contratarViaModal defere antes do render (nao usa o reply fragil)');
+    ok(/sem rg/i.test(lastEmbedDesc(itExp)), '  ...e o aviso fail-open chega via editReply mesmo com o token inicial morto');
+
+    // 17j: dispatch REAL do painel (router -> tratarModal -> contratarViaModal) — pega regressao de parse
+    const itRouter = makeModalSubmit({ userId: 'adm1', member: adminMember, customId: 'painel:modal:rh:contratar:f0Router#Promotor', fields: { nome: 'Prom RT', rg: 'RG-RT' } });
+    await painelCmd.router(itRouter);
+    eq((rh.getCargo('f0Router') || {}).cargo, 'Promotor', '17j: dispatch real do painel contrata (router->tratarModal->contratarViaModal)');
+    ok(itRouter.deferred === true, '  ...deferindo antes do render');
+
+    // 17k: cargo invalido via dispatch real e barrado, nada criado (guard de rh.js)
+    const itBad = makeModalSubmit({ userId: 'adm1', member: adminMember, customId: 'painel:modal:rh:contratar:f0Bad#Estagiario', fields: { nome: 'x', rg: 'y' } });
+    await painelCmd.router(itBad);
+    ok(!rh.getCargo('f0Bad') && /inv[aá]lid/i.test(contentLast(itBad)), '17k: cargo invalido barrado no dispatch real (nada criado)');
+
+    // 17l: slash execute contratar roda de verdade + defer + aviso fail-open
+    const itSlash = makeSlash({ userId: 'adm1', member: adminMember, sub: 'contratar', opts: { usuario: 'f0Slash', cargo: 'Juiz', rg: '' } });
+    await rhCmd.execute(itSlash);
+    eq((rh.getCargo('f0Slash') || {}).cargo, 'Juiz', '17l: /rh contratar (execute real) contrata');
+    ok(itSlash.deferred === true && /sem rg/i.test(contentLast(itSlash)), '  ...deferindo antes do render e entregando o aviso fail-open');
+
+    // 17m: slash execute sem-rg roda o handler e lista (ramo cheio — o DB de teste tem magistrado sem RG)
+    const itSemRg = makeSlash({ userId: 'adm1', member: adminMember, sub: 'sem-rg' });
+    await rhCmd.execute(itSemRg);
+    const semRgEmbed = itSemRg._replies.find(r => Array.isArray(r.embeds) && r.embeds.length);
+    ok(semRgEmbed && /sem rg/i.test(semRgEmbed.embeds[0].data?.title || ''), '17m: /rh sem-rg (execute real) lista magistrados sem RG');
+
+    // 17n: execute barra nao-Staff no topo (isAdmin), nada criado
+    const itSlashNaoAdm = makeSlash({ userId: 'zeSlash', member: { permissions: { has: () => false }, roles: { cache: { has: () => false } } }, sub: 'contratar', opts: { usuario: 'f0X', cargo: 'Juiz', rg: '' } });
+    await rhCmd.execute(itSlashNaoAdm);
+    ok(!rh.getCargo('f0X') && /staff/i.test(contentLast(itSlashNaoAdm)), '17n: /rh execute barra nao-Staff (nada criado)');
   }
 
   // ---- Resumo ----

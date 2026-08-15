@@ -2,6 +2,17 @@ const db = require('../database/db');
 
 const CARGOS = ['Delegado', 'Promotor', 'Juiz', 'Advogado', 'Desembargador', 'Procurador'];
 
+// Cargos da magistratura/MP que (Fase 2) ganham leitura ampla de TODOS os tickets e (Fase 1)
+// ficam sujeitos ao impedimento por ser parte. O impedimento casa o RG do operador contra o RG
+// da parte (réu/investigado/alvo/autor/testemunha), então SÓ estes cargos precisam de RG
+// cadastrado pra o impedimento ser verificável. Advogado e Delegado ficam de fora (não têm
+// leitura ampla). Centralizado aqui pra Fase 1/Fase 2 reusarem a MESMA definição.
+const CARGOS_MAGISTRATURA = ['Juiz', 'Promotor', 'Desembargador', 'Procurador'];
+
+// Um cargo precisa de RG cadastrado pra o impedimento pegar? (fail-open: sem RG, o impedimento
+// não é verificável pra essa pessoa — e isso tem que aparecer, nunca falhar em silêncio.)
+function precisaRg(cargo) { return CARGOS_MAGISTRATURA.includes(cargo); }
+
 function getCargo(discordId) {
   const registro = db.buscarUm('rh', r => r.discordId === discordId && r.ativo);
   return registro || null;
@@ -47,6 +58,13 @@ function listarPorCargo(cargo) {
   return db.todos('rh', r => r.cargo === cargo && r.ativo);
 }
 
+// Magistrados/MP ATIVOS sem RG cadastrado — o impedimento (Fase 1) não é verificável pra eles até
+// alguém preencher o RG (via "Gerenciar dados"). Fail-open VISÍVEL: essa lista é o que a Staff usa
+// pra saber onde a trava ainda não pega. Não inventa RG — só aponta o buraco.
+function magistradosSemRg() {
+  return db.todos('rh', r => r.ativo && precisaRg(r.cargo) && !r.rg);
+}
+
 // Sorteia um juiz: ativo, sem licença, priorizando quem tem menos processos/medidas abertos,
 // excluindo impedidos (já atuaram nesse caso como delegado/promotor/advogado)
 function sortearJuiz({ excluirIds = [] } = {}) {
@@ -76,4 +94,4 @@ function sortearPorCargo(cargo, { excluirIds = [] } = {}) {
   return ativos[Math.floor(Math.random() * ativos.length)].discordId;
 }
 
-module.exports = { CARGOS, getCargo, temCargo, contratar, atualizarDados, demitir, setLicenca, listarPorCargo, sortearJuiz, sortearPorCargo };
+module.exports = { CARGOS, CARGOS_MAGISTRATURA, precisaRg, getCargo, temCargo, contratar, atualizarDados, demitir, setLicenca, listarPorCargo, magistradosSemRg, sortearJuiz, sortearPorCargo };

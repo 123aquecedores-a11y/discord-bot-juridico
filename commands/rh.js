@@ -76,6 +76,52 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
   return { apelidoOk, carteira };
 }
 
+// Contratação via PAINEL (Staff) com captura de nome + RG num modal — o painel é o caminho
+// principal da Staff, então ele também passa a capturar RG (igual o /rh contratar slash). Ambos os
+// campos são OPCIONAIS: RG que faltar num cargo de magistratura dispara o aviso fail-open no submit
+// (não bloqueia). Pré-preenche com o cadastro atual (troca de cargo preserva nome/RG).
+function modalContratarStaff(usuarioId, cargo) {
+  const reg = rh.getCargo(usuarioId);
+  const modal = new ModalBuilder().setCustomId(`painel:modal:rh:contratar:${usuarioId}#${cargo}`).setTitle(`Contratar — ${cargo}`.slice(0, 45));
+  const campoNome = new TextInputBuilder().setCustomId('nome').setLabel('Nome do personagem (apelido/carteira)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(30);
+  if (reg && reg.nomePersonagem) campoNome.setValue(reg.nomePersonagem);
+  const campoRg = new TextInputBuilder().setCustomId('rg').setLabel('RG — necessário p/ magistrado/MP').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20);
+  if (reg && reg.rg) campoRg.setValue(reg.rg);
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(campoNome),
+    new ActionRowBuilder().addComponents(campoRg),
+  );
+  return modal;
+}
+
+async function contratarViaModal(interaction, usuarioId, cargo) {
+  // Gate IGUAL ao do slash (/rh execute checa isAdmin): contratação é função de RH/admin, não
+  // decisão de mérito — por isso isAdmin, e NÃO o coringa isSuperStaff (que existe só pras decisões
+  // de mérito com responsável definido). Antes divergia dos dois caminhos; agora bate.
+  if (!isAdmin(interaction)) {
+    return interaction.reply({ content: 'Só Staff/Administração pode contratar.', ephemeral: true });
+  }
+  if (!usuarioId || !cargo || !rh.CARGOS.includes(cargo)) {
+    return interaction.reply({ content: 'Contratação inválida (usuário/cargo).', ephemeral: true });
+  }
+  // deferReply ANTES do contratarComRole: ele renderiza a carteira funcional via Puppeteer (lento
+  // em Chromium frio no host), o que estoura a janela de 3s da interação. Sem o defer, o reply que
+  // carrega o aviso fail-open de RG morre com 10062 e o alerta some CALADO — justo o que a feature
+  // existe pra evitar. Mesmo padrão de decidirSolicitacao/ofício/medida. (guards acima são rápidos,
+  // ficam antes do defer.)
+  await interaction.deferReply({ ephemeral: true });
+  const nome = (interaction.fields.getTextInputValue('nome') || '').trim() || null;
+  const rg = (interaction.fields.getTextInputValue('rg') || '').trim() || null;
+  await contratarComRole(interaction.guild, usuarioId, cargo, interaction.user.id, nome, rg);
+  // Mesmo aviso fail-open do slash: magistrado/MP que ficou sem RG → impedimento não verificável.
+  const reg = rh.getCargo(usuarioId);
+  const aviso = rh.precisaRg(cargo) && !(reg && reg.rg)
+    ? '\n⚠️ **Sem RG cadastrado** — o impedimento não é verificável pra essa pessoa até preencher o RG em **Gerenciar dados**. Veja todos com `/rh sem-rg`.'
+    : '';
+  const embed = new EmbedBuilder().setColor(0x2ecc71).setDescription(`<@${usuarioId}> agora é **${cargo}**.${aviso}`);
+  return interaction.editReply({ embeds: [embed] });
+}
+
 async function demitirComRole(guild, usuarioId, executorId = null) {
   const registro = rh.getCargo(usuarioId);
   rh.demitir(usuarioId);
@@ -407,7 +453,9 @@ module.exports = {
     .addSubcommand(sub => sub.setName('contratar').setDescription('Atribui um cargo jurídico a alguém')
       .addUserOption(o => o.setName('usuario').setDescription('Quem vai receber o cargo').setRequired(true))
       .addStringOption(o => o.setName('cargo').setDescription('Cargo jurídico').setRequired(true)
-        .addChoices(...rh.CARGOS.map(c => ({ name: c, value: c })))))
+        .addChoices(...rh.CARGOS.map(c => ({ name: c, value: c }))))
+      .addStringOption(o => o.setName('rg').setDescription('RG do personagem — necessário p/ magistrado/MP, impedimento casa por RG').setRequired(false)))
+    .addSubcommand(sub => sub.setName('sem-rg').setDescription('Lista magistrados/MP ativos sem RG — impedimento não verificável'))
     .addSubcommand(sub => sub.setName('demitir').setDescription('Remove o cargo jurídico de alguém')
       .addUserOption(o => o.setName('usuario').setDescription('Quem vai perder o cargo').setRequired(true)))
     .addSubcommand(sub => sub.setName('licenca').setDescription('Marca/desmarca alguém como afastado')
@@ -427,8 +475,31 @@ module.exports = {
     if (sub === 'contratar') {
       const usuario = interaction.options.getUser('usuario');
       const cargo = interaction.options.getString('cargo');
-      await contratarComRole(interaction.guild, usuario.id, cargo, interaction.user.id);
-      return interaction.reply({ content: `${usuario} agora é **${cargo}**.` });
+      const rg = (interaction.options.getString('rg') || '').trim() || null;
+      // deferReply antes do contratarComRole (render da carteira via Puppeteer estoura os 3s em
+      // Chromium frio) — senão o reply que carrega o aviso fail-open de RG morre com 10062. Mesmo
+      // motivo do contratarViaModal. editReply depois.
+      await interaction.deferReply();
+      await contratarComRole(interaction.guild, usuario.id, cargo, interaction.user.id, null, rg);
+      // Fail-open VISÍVEL: se é cargo de magistratura/MP e a pessoa segue sem RG (nem informado agora,
+      // nem preservado de um cargo anterior), avisa que o impedimento não vai pegar pra ela.
+      const reg = rh.getCargo(usuario.id);
+      const aviso = rh.precisaRg(cargo) && !(reg && reg.rg)
+        ? '\n⚠️ **Sem RG cadastrado** — o impedimento não é verificável pra essa pessoa até preencher o RG em **Gerenciar dados**. Veja todos com `/rh sem-rg`.'
+        : '';
+      return interaction.editReply({ content: `${usuario} agora é **${cargo}**.${aviso}` });
+    }
+
+    if (sub === 'sem-rg') {
+      const lista = rh.magistradosSemRg();
+      if (!lista.length) {
+        return interaction.reply({ content: '✅ Todos os magistrados/MP ativos têm RG cadastrado — o impedimento é verificável pra todos.', ephemeral: true });
+      }
+      const linhas = lista.map(r => `• <@${r.discordId}>${r.nomePersonagem ? ` **${r.nomePersonagem}**` : ''} — ${r.cargo}`);
+      const embed = new EmbedBuilder().setColor(0xe67e22)
+        .setTitle('⚠️ Magistrados/MP sem RG — impedimento não verificável')
+        .setDescription(truncar(linhas.join('\n'), 3800) + '\n\n*Preencha o RG em **Gerenciar dados** pra a trava de impedimento passar a valer pra essas pessoas.*');
+      return interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
     if (sub === 'demitir') {
@@ -464,6 +535,8 @@ module.exports = {
 
   contratarComRole,
   demitirComRole,
+  modalContratarStaff,
+  contratarViaModal,
   selectCargoDesejado,
   modalSolicitacao,
   solicitarCargo,
