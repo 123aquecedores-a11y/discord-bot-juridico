@@ -165,6 +165,19 @@ async function limparRhFantasma(guild) {
 // servidor OU não tem mais o cargo (o rh já foi limpo na A, então rh.temCargo agora reflete a
 // realidade). Reatribui; sem substituto, tira o fantasma (campo → null) e marca pendência — nunca
 // deixa falsamente atribuído. Retorna os casos tratados.
+// Núcleo compartilhado (varredura E evento): reatribui um papel fantasma de um ticket; sem
+// substituto, tira o fantasma do campo e marca pendência — nunca deixa falsamente atribuído.
+async function aplicarReatribuicaoOuPendencia(guild, tabela, cfg, reg, papel, pcfg, motivoTipo) {
+  const antigoId = reg[pcfg.campo];
+  const r = await reatribuirAutomatico(guild, { tabela, numero: reg.numero, papel, motivoTipo });
+  if (r.semSubstituto) {
+    db.atualizar(tabela, reg.numero, { [pcfg.campo]: null, semResponsavelPendente: true });
+    const canal = reg[cfg.canalCampo] ? await guild.channels.fetch(reg[cfg.canalCampo]).catch(() => null) : null;
+    if (canal) await canal.send({ content: `⚠️ O(a) ${papel} deste caso saiu do quadro e **não há substituto disponível**. Caso marcado como pendência para a Supervisão — não ficou responsável fantasma.` });
+  }
+  return { tabela, numero: reg.numero, papel, antigoId, resultado: r.ok ? 'reatribuido' : (r.semSubstituto ? 'pendencia_sem_substituto' : 'falhou'), novoId: r.novoId || null };
+}
+
 async function reatribuirTicketsFantasma(guild) {
   const tratados = [];
   for (const [tabela, cfg] of Object.entries(TABELAS_TICKET)) {
@@ -173,20 +186,48 @@ async function reatribuirTicketsFantasma(guild) {
         const id = reg[pcfg.campo];
         if (!id) continue;
         const membro = await guild.members.fetch(id).catch(() => null);
-        if (membro && rh.temCargo(id, papel)) continue; // responsável válido
+        if (membro && rh.temCargo(id, papel)) continue; // responsável válido — o rh já foi limpo na Passada A
         const motivoTipo = !membro ? 'ausente' : 'sem_cargo';
-        const r = await reatribuirAutomatico(guild, { tabela, numero: reg.numero, papel, motivoTipo });
-        if (r.semSubstituto) {
-          // Não deixa o fantasma: tira do campo e marca pendência (o painel Des/Proc lista isso).
-          db.atualizar(tabela, reg.numero, { [pcfg.campo]: null, semResponsavelPendente: true });
-          const canal = reg[cfg.canalCampo] ? await guild.channels.fetch(reg[cfg.canalCampo]).catch(() => null) : null;
-          if (canal) await canal.send({ content: `⚠️ O(a) ${papel} deste caso saiu do quadro e **não há substituto disponível**. Caso marcado como pendência para a Supervisão — não ficou responsável fantasma.` });
-        }
-        tratados.push({ tabela, numero: reg.numero, papel, antigoId: id, resultado: r.ok ? 'reatribuido' : (r.semSubstituto ? 'pendencia_sem_substituto' : 'falhou'), novoId: r.novoId || null });
+        tratados.push(await aplicarReatribuicaoOuPendencia(guild, tabela, cfg, reg, papel, pcfg, motivoTipo));
       }
     }
   }
   return tratados;
+}
+
+// ---- Camada 1: evento (reação imediata) ----
+// Uma pessoa específica ficou inválida como responsável (saiu do servidor / perdeu o cargo).
+// Demite no rh (tira da fila de sorteio) e reatribui os tickets abertos onde ela é responsável.
+// A varredura diária é a rede de segurança pro que o evento não pegar (bot offline na hora,
+// casos pré-existentes). Idempotente: se o ticket já não a tem, nada acontece.
+async function tratarResponsavelInvalido(guild, discordId, motivoTipo) {
+  if (rh.getCargo(discordId)) {
+    rh.demitir(discordId);
+    await auditoria.registrar(guild, {
+      acao: `RH: desativação automática (${motivoTipo === 'ausente' ? 'ausente do servidor' : 'sem o cargo'})`,
+      executorId: null, referencia: `<@${discordId}>`,
+    });
+  }
+  const tratados = [];
+  for (const [tabela, cfg] of Object.entries(TABELAS_TICKET)) {
+    for (const reg of db.todos(tabela).filter(r => cfg.aberto(r))) {
+      for (const [papel, pcfg] of Object.entries(cfg.papeis)) {
+        if (reg[pcfg.campo] !== discordId) continue;
+        tratados.push(await aplicarReatribuicaoOuPendencia(guild, tabela, cfg, reg, papel, pcfg, motivoTipo));
+      }
+    }
+  }
+  return tratados;
+}
+
+// Pro guildMemberUpdate: retorna o cargo se o registro rh ativo do membro existe mas ele não tem
+// mais a role correspondente (perdeu o cargo, continua no servidor). Senão null. Só age quando a
+// role do cargo é conhecida (id configurado) — não demite por falta de role que o bot nem conhece.
+function cargoSemRole(membro) {
+  const reg = rh.getCargo(membro.id);
+  if (!reg) return null;
+  const roleId = ROLE_POR_CARGO[reg.cargo];
+  return (roleId && !membro.roles.cache.has(roleId)) ? reg.cargo : null;
 }
 
 // Varredura completa: Passada A (limpa rh) → Passada B (conserta tickets). Loga os dois números —
@@ -204,4 +245,5 @@ module.exports = {
   TABELAS_TICKET, QUEM_TROCA,
   sortearParaPapel, responsaveisAtuais, aplicarTroca, reatribuirAutomatico, rotuloTabela,
   limparRhFantasma, reatribuirTicketsFantasma, varrerResponsaveisFantasma,
+  tratarResponsavelInvalido, cargoSemRole,
 };

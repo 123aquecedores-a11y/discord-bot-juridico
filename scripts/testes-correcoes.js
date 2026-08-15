@@ -513,6 +513,35 @@ function seedProcesso(numero, extra) {
     ok(db.buscarPorNumero('processos', 'ARQ1x').juiz === 'jf_saiu', '14h: ticket arquivado com fantasma é intocado');
   }
 
+  // ============ ITEM 15: Camada de evento (Parte 3) ============
+  console.log('\nItem 15 — evento (guildMemberRemove/Update): tratar responsável inválido:');
+  {
+    const responsaveis = require('../utils/responsaveis');
+    const guildE = { id: 'guild1', roles: { everyone: 'e' }, channels: { fetch: async () => fakeChannel() } };
+    const mkMembro = (id, temRole) => ({ id, roles: { cache: { has: () => temRole } } });
+
+    // Saída de um juiz responsável → demite no rh + reatribui o ticket a um válido
+    rh.contratar('ev_juiz', 'Juiz');
+    rh.contratar('ev_subst', 'Juiz'); // substituto válido no pool
+    db.inserir('processos', { numero: 'EV01', tipo: 'Penal', status: 'Instrução', juiz: 'ev_juiz', promotor: 'evp', delegado: 'evd', canalId: 'cEV' });
+    const t = await responsaveis.tratarResponsavelInvalido(guildE, 'ev_juiz', 'ausente');
+    const procEV = db.buscarPorNumero('processos', 'EV01');
+    ok(!rh.temCargo('ev_juiz', 'Juiz'), '15a: evento demite o responsável no rh (tira da fila de sorteio)');
+    ok(procEV.juiz !== 'ev_juiz' && rh.temCargo(procEV.juiz, 'Juiz'), '15b: evento reatribui o ticket a um juiz válido');
+    ok(t.some(x => x.numero === 'EV01' && x.resultado === 'reatribuido'), '15c: evento retorna o ticket tratado');
+
+    // cargoSemRole (detector do guildMemberUpdate)
+    rh.contratar('ev_semrole', 'Juiz');
+    ok(responsaveis.cargoSemRole(mkMembro('ev_semrole', false)) === 'Juiz', '15d: cargoSemRole detecta perda da role do cargo');
+    ok(responsaveis.cargoSemRole(mkMembro('ev_semrole', true)) === null, '15e: com a role → não é fantasma');
+    ok(responsaveis.cargoSemRole({ id: 'zzz_naoexiste', roles: { cache: { has: () => false } } }) === null, '15f: sem cargo ativo no rh → null (ignora nickname etc.)');
+
+    // Idempotência: tratar quem não é responsável de nada → só demite no rh, sem erro
+    rh.contratar('ev_none', 'Promotor');
+    const t2 = await responsaveis.tratarResponsavelInvalido(guildE, 'ev_none', 'ausente');
+    ok(t2.length === 0 && !rh.temCargo('ev_none', 'Promotor'), '15g: evento sem ticket → só demite no rh, idempotente');
+  }
+
   // ---- Resumo ----
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`  ❌ ${f.nome}${f.detalhe ? ` — ${f.detalhe}` : ''}`)); }
