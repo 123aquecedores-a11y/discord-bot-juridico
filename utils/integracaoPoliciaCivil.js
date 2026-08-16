@@ -9,6 +9,7 @@ const config = require('../config');
 const medidaCmd = require('../commands/medida');
 const processoCmd = require('../commands/processo');
 const auditoria = require('./auditoria');
+const guildGuard = require('./guildGuard');
 const ficha = require('./ficha');
 const dossie = require('./dossie');
 const anexos = require('./anexos');
@@ -166,6 +167,10 @@ let avisouWebhookNaoConfigurado = false;
 
 async function processarRequerimento(message) {
   if (message.channelId !== config.canalRequerimentoPoliciaCivilId) return;
+  // Isolamento entre instalações (utils/guildGuard.js): webhook é entrada de dado EXTERNA que
+  // vira medida cautelar/processo no banco sem ninguém clicar em nada. O index.js já filtra, mas
+  // esta função é chamável direta — a trava fica também aqui, fail-closed.
+  if (!guildGuard.guardarEvento('integracaoPC.processarRequerimento', message.guildId ?? message.guild, `mensagem ${message.id}`)) return;
   if (!message.webhookId || message.embeds.length === 0) return;
 
   // Frente 2.1 — autenticidade além do "tem webhookId". Sem o id do webhook esperado da Polícia

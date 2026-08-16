@@ -6,6 +6,7 @@
 const estado = require('./estado');
 const diario = require('./diarioOficial');
 const { criarCanalReadonly, criarCanalStaff } = require('./canalReadonly');
+const guildGuard = require('./guildGuard');
 
 async function garantirUmCanal(guild, { getId, setId, nome, topic, rotulo, criar, aoCriar }) {
   const idAtual = getId();
@@ -24,6 +25,9 @@ async function garantirUmCanal(guild, { getId, setId, nome, topic, rotulo, criar
 // Garante os canais. Blindada: qualquer erro é logado e engolido (não interrompe o boot).
 async function garantirCanais(guild) {
   if (!guild) return;
+  // Cria canal E grava id no `estado` (banco): num guild errado, a instalação passaria a publicar
+  // o Diário no servidor do outro. Ver utils/guildGuard.js.
+  if (!guildGuard.guardarEvento('garantirCanais', guild)) return;
   try {
     await garantirUmCanal(guild, {
       getId: () => diario.getCanalId(), setId: (id) => diario.setCanalId(id),
