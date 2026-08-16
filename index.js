@@ -77,6 +77,9 @@ client.once('ready', async () => {
     // Parte 3: reconcilia rh + reatribui tickets com responsável fantasma (saiu do servidor / perdeu
     // o cargo). Passada A (rh) antes da B (tickets), dentro da própria função. Sem cron novo.
     require('./utils/responsaveis').varrerResponsaveisFantasma(guild).catch(err => console.error('Erro na varredura de responsável fantasma:', err));
+    // Diário: backfill retroativo dos atos decisórios não publicados + escape do Nível 2 (mandado
+    // nunca cumprido de caso encerrado). Em silêncio (sem @everyone). Idempotente.
+    require('./utils/diarioAtos').varrerDiario(guild).catch(err => console.error('Erro na varredura do Diário:', err));
   };
   rodarChecagens();
   setInterval(rodarChecagens, DIA_MS);

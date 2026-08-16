@@ -14,6 +14,7 @@ const documentos = require('../utils/documentos');
 const { historicoDoProcesso } = require('../utils/historico');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const diario = require('../utils/diarioOficial');
+const diarioAtos = require('../utils/diarioAtos');
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const dossie = require('../utils/dossie');
 const { aguardarAnexoPDF, aguardarAnexos, coletarAnexoPdf } = require('../utils/anexoPdf');
@@ -339,6 +340,8 @@ async function executarParecerMp(interaction, numero, modo) {
     await canal.send({ content: `<@${processo.delegado}>`, components: [botaoPedirRevisao(numero)] });
   }
   await auditoria.registrar(interaction.guild, { acao: 'Processo arquivado (MP)', executorId: interaction.user.id, referencia: `Processo ${numero}` });
+  // NÍVEL 1 — arquivamento de inquérito publica no Diário na hora (efeito automático por natureza).
+  await diarioAtos.publicarAto(interaction.guild, 'arquivamentoInquerito', db.buscarPorNumero('processos', numero));
   return interaction.editReply({ content: `Processo ${numero} arquivado.` });
 }
 
@@ -2007,6 +2010,8 @@ async function arquivarCivil(interaction, numero) {
   }
 
   await auditoria.registrar(interaction.guild, { acao: 'Petição inicial arquivada (civil)', executorId: interaction.user.id, referencia: `Processo ${numero}` });
+  // NÍVEL 1 — indeferimento da petição inicial cível publica no Diário na hora.
+  await diarioAtos.publicarAto(interaction.guild, 'indeferimentoInicial', db.buscarPorNumero('processos', numero));
   await postarOuAtualizarCapaPublica(interaction.guild, numero);
 }
 

@@ -60,6 +60,46 @@ function montarEmbed(tipo, d) {
       if (d.linksTexto) desc += `\n\n🔗 **Links**\n${d.linksTexto}`;
       return e.setColor(0x1f6feb).setTitle(`📢 ${String(d.titulo || 'Comunicado').slice(0, 256)}`).setDescription(desc.slice(0, 4096));
     }
+    case 'peticao_administrativa':
+      // Nível 1 — decisão de pedido administrativo (porte de arma, troca de nome, limpeza de ficha,
+      // alvará), deferido ou indeferido. O corpo íntegro vai no PNG anexo (dados.files); o card é curto.
+      return e.setColor(d.resultado === 'Deferido' ? 0x27ae60 : 0xc0392b)
+        .setTitle(`⚖️ ${d.tipoPeticao || 'Pedido administrativo'} — ${d.resultado || ''}`.trim())
+        .setDescription(`Decisão em pedido administrativo${d.parte ? ` de **${d.parte}**` : ''}.`)
+        .addFields([
+          d.tipoPeticao ? { name: 'Pedido', value: String(d.tipoPeticao), inline: true } : null,
+          d.resultado ? { name: 'Resultado', value: String(d.resultado), inline: true } : null,
+          d.numero ? { name: 'Protocolo', value: String(d.numero), inline: true } : null,
+          d.validadeAte ? { name: 'Validade', value: `<t:${Math.floor(new Date(d.validadeAte).getTime() / 1000)}:D>`, inline: true } : null,
+          d.magistradoId ? { name: 'Magistrado(a)', value: `<@${d.magistradoId}>`, inline: true } : null,
+        ].filter(Boolean));
+    case 'arquivamento_inquerito':
+      return e.setColor(0x7f8c8d).setTitle(`📁 Inquérito arquivado — Processo nº ${d.numero}`)
+        .setDescription('O Ministério Público promoveu o **arquivamento** do inquérito.')
+        .addFields([d.promotorId ? { name: 'Promotor(a)', value: `<@${d.promotorId}>`, inline: true } : null].filter(Boolean));
+    case 'indeferimento_inicial':
+      return e.setColor(0xc0392b).setTitle(`📁 Petição inicial indeferida — Processo nº ${d.numero}`)
+        .setDescription('O Juízo **indeferiu a petição inicial** e arquivou os autos.')
+        .addFields([d.juizId ? { name: 'Magistrado(a)', value: `<@${d.juizId}>`, inline: true } : null].filter(Boolean));
+    case 'desarquivamento':
+      return e.setColor(0x27ae60).setTitle(`📂 Arquivamento revisto — Processo nº ${d.numero}`)
+        .setDescription('Em revisão de arquivamento, a **denúncia foi forçada** e o processo **reaberto para instrução**.')
+        .addFields([d.juizId ? { name: 'Juiz(a) sorteado(a)', value: `<@${d.juizId}>`, inline: true } : null].filter(Boolean));
+    case 'mandado_cumprido':
+      return e.setColor(0xc0392b).setTitle(`📜 Mandado cumprido${d.tipoMandado ? ` — ${d.tipoMandado}` : ''}`)
+        .setDescription(`Mandado cumprido${d.processoNumero ? ` nos autos nº ${d.processoNumero}` : ''}.`)
+        .addFields([
+          d.numero ? { name: 'Mandado', value: String(d.numero), inline: true } : null,
+          d.alvo ? { name: 'Alvo', value: String(d.alvo), inline: true } : null,
+          d.cumpridoPorId ? { name: 'Cumprido por', value: `<@${d.cumpridoPorId}>`, inline: true } : null,
+        ].filter(Boolean));
+    case 'mandado_nao_cumprido':
+      return e.setColor(0x7f8c8d).setTitle(`📜 Mandado não cumprido${d.tipoMandado ? ` — ${d.tipoMandado}` : ''}`)
+        .setDescription(`Mandado expedido${d.processoNumero ? ` nos autos nº ${d.processoNumero}` : ''} e **não cumprido** até o encerramento do caso.`)
+        .addFields([
+          d.numero ? { name: 'Mandado', value: String(d.numero), inline: true } : null,
+          d.alvo ? { name: 'Alvo', value: String(d.alvo), inline: true } : null,
+        ].filter(Boolean));
     default:
       return e.setColor(0x2c3e50).setTitle('📜 Publicação Oficial').setDescription(String(d.texto || 'Ato publicado.'));
   }
@@ -80,17 +120,21 @@ async function publicarNoDiario(guild, tipo, dados = {}) {
     if (!canalId || !guild) return false; // Diário não configurado → ignora em silêncio
     const canal = await guild.channels.fetch(canalId).catch(() => null);
     if (!canal || !canal.isTextBased?.()) return false;
-    // TODA publicação do Diário marca @everyone (por decisão do operador). Garante, best-effort,
-    // que o bot possa mencionar @everyone neste canal (canais antigos podem ter nascido sem a perm).
+    // Publicação em tempo real marca @everyone (decisão do operador). No modo SILENCIOSO
+    // (varredura/backfill) NÃO marca — senão o backlog vira uma enxurrada de pings. Best-effort:
+    // garante a permissão de mencionar @everyone só quando vai usá-la.
+    const silencioso = !!dados.silencioso;
     const botId = guild.members?.me?.id || guild.client?.user?.id;
-    if (botId) await canal.permissionOverwrites.edit(botId, { MentionEveryone: true }).catch(() => {});
-    await canal.send({
-      content: '@everyone',
-      allowedMentions: { parse: ['everyone'] },
+    if (botId && !silencioso) await canal.permissionOverwrites.edit(botId, { MentionEveryone: true }).catch(() => {});
+    const enviada = await canal.send({
+      content: silencioso ? '' : '@everyone',
+      allowedMentions: silencioso ? { parse: [] } : { parse: ['everyone'] },
       embeds: [montarEmbed(tipo, dados)],
       ...(Array.isArray(dados.files) && dados.files.length ? { files: dados.files } : {}),
     });
-    return true;
+    // Devolve a Message (não mais um booleano) pra quem precisa do id — a engine diarioAtos guarda
+    // diarioMessageId p/ o card evoluir depois. Message é truthy, então os `if (publicou)` seguem OK.
+    return enviada;
   } catch (e) {
     console.error(`[diarioOficial] falha ao publicar ato "${tipo}" (ignorado, não quebra o ato):`, e.message);
     return false;

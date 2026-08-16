@@ -9,6 +9,7 @@ const { truncar, extrairMencao } = require('./texto');
 const andamentos = require('./andamentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const documentos = require('./documentos');
+const diarioAtos = require('./diarioAtos');
 const { crimeLabel } = require('./crimesTexto');
 // processoCmd é requerido sob demanda (não no topo do arquivo) de propósito: processo.js -> medida.js
 // -> supervisao.js -> processo.js forma um ciclo, e um require no topo aqui pega o module.exports
@@ -363,6 +364,11 @@ async function executarForcarDenuncia(interaction, numero, motivo) {
     tipo: 'revisao_arquivamento_decidida', titulo: '📋 Denúncia forçada em revisão de arquivamento',
     detalhe: `Procurador <@${interaction.user.id}> forçou a denúncia. Motivo: ${motivo}`,
     executorId: interaction.user.id, metadata: { resultado: 'Denuncia forcada', novoJuiz: juizId },
+  });
+  // NÍVEL 1 — desarquivamento publica no Diário (o caso deixa de constar "arquivado"); anexa o PNG
+  // da decisão de revisão já gerado.
+  await diarioAtos.publicarAto(guild, 'desarquivamento', db.buscarPorNumero('processos', numero), {
+    files: pngDecisao ? [{ attachment: pngDecisao, name: `Decisao-Revisao-${numero}.png` }] : undefined,
   });
   await processoCmd.postarOuAtualizarCapaPublica(guild, numero);
 

@@ -202,12 +202,9 @@ async function emitirMandadoNoProcesso({ guild, processo, tipoRotulo, teor, emit
   // resolve de verdade quando essa função roda, bem depois do boot inicial já ter terminado.
   await require('./processo').repostarPainel(guild, processo.numero);
 
-  // Publica o mandado no Diário Oficial (try/catch — falha aqui não pode quebrar a emissão).
-  try {
-    await diario.publicarNoDiario(guild, 'mandado', {
-      numero: numeroMandado, tipoMandado: tipoRotulo, alvo: alvoTexto, processoNumero: processo.numero, porQuemId: emitidoPorId,
-    });
-  } catch (e) { console.error('[mandado] publicação no Diário falhou (ignorado):', e.message); }
+  // NÍVEL 2 — NÃO publica no Diário na emissão: publicar antes do cumprimento avisaria o alvo e
+  // queimaria a diligência (busca/prisão/quebra). A publicação sai só no cumprimento (cumprirMandado
+  // → mandadoCumprido) ou no escape da varredura, se o caso encerrar sem cumprir.
 
   return { numero: numeroMandado };
 }

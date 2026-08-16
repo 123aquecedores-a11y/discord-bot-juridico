@@ -20,6 +20,7 @@ function resolverGuild(interaction) {
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const diario = require('../utils/diarioOficial');
+const diarioAtos = require('../utils/diarioAtos');
 const { aguardarAnexoPDF, coletarAnexoPdf } = require('../utils/anexoPdf');
 const anexos = require('../utils/anexos');
 const dossie = require('../utils/dossie');
@@ -746,12 +747,9 @@ module.exports = {
     await devolutivaPoliciaCivil.enviarDevolutivaMandado(medidaAtualizada, {
       decisao: 'Deferido', fundamentacao: fundamentacaoJuiz, juizId: medida.juiz, numeroMandado, pngBuffer: pngMandado,
     });
-    // Publica o mandado no Diário Oficial (try/catch — falha aqui não pode quebrar o referendo).
-    try {
-      await diario.publicarNoDiario(interaction.guild, 'mandado', {
-        numero: numeroMandado, tipoMandado: medida.tipo, alvo: medida.alvo, processoNumero: medida.processoVinculado || null, porQuemId: interaction.user.id,
-      });
-    } catch (e) { console.error('[medida] publicação de mandado no Diário falhou (ignorado):', e.message); }
+    // NÍVEL 2 — NÃO publica no Diário aqui (no deferimento/emissão): publicar antes do cumprimento
+    // avisaria o alvo e queimaria a diligência. A publicação acontece só no cumprimento
+    // (cumprirMandado → mandadoCumprido) ou, se o caso encerrar sem cumprir, no escape da varredura.
     return interaction.editReply({ content: `Medida ${numero} referendada. Mandado ${numeroMandado} emitido.` });
   },
 
@@ -874,6 +872,9 @@ module.exports = {
     if (medida?.codigoExterno) dossie.registrarDocumento(medida.codigoExterno, documentoCumprimento.id);
 
     db.atualizar('mandados', numero, { status: 'Cumprido', cumpridoPor: interaction.user.id });
+    // NÍVEL 2 — é AQUI que o mandado publica no Diário (no cumprimento, não no deferimento). Efeito
+    // automático por natureza; blindado. O alvo já foi alcançado, então publicar não vaza mais nada.
+    await diarioAtos.publicarAto(interaction.guild, 'mandadoCumprido', db.buscarPorNumero('mandados', numero));
     if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
     const componentesArquivar = mandado.medidaNumero
       ? [new ActionRowBuilder().addComponents(botaoArquivarManual(mandado.medidaNumero))]

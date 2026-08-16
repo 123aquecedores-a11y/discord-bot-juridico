@@ -50,6 +50,9 @@ const medidaCmd = require('../commands/medida');
 const peticaoCmd = require('../commands/peticao');
 const rhCmd = require('../commands/rh');
 const painelCmd = require('../commands/painel');
+const diarioAtos = require('../utils/diarioAtos');
+const diario = require('../utils/diarioOficial');
+const estado = require('../utils/estado');
 const rh = require('../utils/rh');
 const config = require('../config');
 
@@ -742,6 +745,177 @@ function seedProcesso(numero, extra) {
     const itSlashNaoAdm = makeSlash({ userId: 'zeSlash', member: { permissions: { has: () => false }, roles: { cache: { has: () => false } } }, sub: 'contratar', opts: { usuario: 'f0X', cargo: 'Juiz', rg: '' } });
     await rhCmd.execute(itSlashNaoAdm);
     ok(!rh.getCargo('f0X') && /staff/i.test(contentLast(itSlashNaoAdm)), '17n: /rh execute barra nao-Staff (nada criado)');
+  }
+
+  // ============ ITEM 18: Diário — engine por natureza + petição administrativa (porte de arma) ============
+  console.log('\nItem 18 — Diário (engine publicarAto + petição administrativa / porte de arma):');
+  {
+    estado.definir('diarioOficialId', 'diariochan'); // liga o Diário no teste (senão publicar vira no-op)
+    const acharPub = () => rec.sends.find(s => s.content === '@everyone' && Array.isArray(s.embeds) && s.embeds.length);
+
+    // 18a: engine publica a decisão de petição administrativa (Deferido) com card + tipo + PNG + marcador
+    const pDef = db.inserir('peticoes', { numero: 'DIA-PA1', tipo: 'PorteArma', status: 'Deferido', juiz: 'juizD', nomeCliente: 'Fulano da Silva', validadeAte: new Date(Date.now() + 15 * 864e5).toISOString() });
+    rec.sends.length = 0;
+    const pub1 = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', pDef, { files: [{ attachment: Buffer.from('x'), name: 'Sentenca.png' }] });
+    const emb1 = acharPub();
+    ok(pub1 === true && !!emb1, '18a: publicarAto publica a decisão de petição administrativa');
+    ok(emb1 && /porte de arma/i.test(JSON.stringify(emb1.embeds[0].data)), '  ...com o tipo do pedido no card');
+    ok(emb1 && Array.isArray(emb1.files) && emb1.files.length, '  ...e o PNG anexado');
+    ok((db.buscarPorNumero('peticoes', 'DIA-PA1') || {}).diarioPublicado?.peticaoAdministrativa, '  ...e marca diarioPublicado[peticaoAdministrativa] no registro');
+
+    // 18b: idempotente — segunda chamada não republica
+    rec.sends.length = 0;
+    const pub2 = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', db.buscarPorNumero('peticoes', 'DIA-PA1'));
+    ok(pub2 === false && !acharPub(), '18b: idempotente — não republica ato já publicado');
+
+    // 18c: estado ainda não-decidido não é publicável
+    const pPend = db.inserir('peticoes', { numero: 'DIA-PA2', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD' });
+    rec.sends.length = 0;
+    const pub3 = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', pPend);
+    ok(pub3 === false && !acharPub(), '18c: petição ainda Pendente não publica (publicavel=false)');
+
+    // 18d: END-TO-END — finalizarDecisao(Deferido) publica no Diário = o bug do porte de arma resolvido
+    db.inserir('peticoes', { numero: 'DIA-PA3', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD', canalId: 'cpa3', nomeCliente: 'Beltrano', requerenteId: 'advA', rgCliente: 'RG9' });
+    rec.sends.length = 0;
+    await peticaoCmd.finalizarDecisao(fakeGuild(), 'DIA-PA3', 'Deferido', { motivo: 'Autorizado.', nivelRisco: 'Baixo' }, 'juizD');
+    ok(acharPub(), '18d: finalizarDecisao(Deferido) publica no Diário — porte de arma resolvido');
+    ok((db.buscarPorNumero('peticoes', 'DIA-PA3') || {}).diarioPublicado?.peticaoAdministrativa, '  ...e marca o registro');
+
+    // 18e: Diligência (Nível 3) NÃO publica
+    db.inserir('peticoes', { numero: 'DIA-PA4', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD', canalId: 'cpa4', nomeCliente: 'Ciclano', requerenteId: 'advB' });
+    rec.sends.length = 0;
+    await peticaoCmd.finalizarDecisao(fakeGuild(), 'DIA-PA4', 'Diligência', { motivo: 'Falta comprovante.' }, 'juizD');
+    ok(!acharPub() && !(db.buscarPorNumero('peticoes', 'DIA-PA4') || {}).diarioPublicado?.peticaoAdministrativa, '18e: Diligência (Nível 3) não publica no Diário');
+  }
+
+  // ============ ITEM 19: Diário Etapa 2 — arquivamento inquérito / indeferimento inicial / desarquivamento ============
+  console.log('\nItem 19 — Diário Etapa 2 (arquivamento de inquérito, indeferimento inicial, desarquivamento):');
+  {
+    estado.definir('diarioOficialId', 'diariochan');
+    const acharPub = () => rec.sends.find(s => s.content === '@everyone' && Array.isArray(s.embeds) && s.embeds.length);
+    const dataDe = (pub) => JSON.stringify((pub && pub.embeds && pub.embeds[0] && pub.embeds[0].data) || {});
+
+    // 19a: arquivamento de inquérito (penal) publica + marca a natureza
+    const proc1 = db.inserir('processos', { numero: 'DIA-INQ1', tipo: 'Penal', status: 'Arquivado', promotor: 'promX' });
+    rec.sends.length = 0;
+    const r1 = await diarioAtos.publicarAto(fakeGuild(), 'arquivamentoInquerito', proc1);
+    ok(r1 === true && /inqu[eé]rito arquivado/i.test(dataDe(acharPub())), '19a: arquivamento de inquérito (penal) publica');
+    ok((db.buscarPorNumero('processos', 'DIA-INQ1') || {}).diarioPublicado?.arquivamentoInquerito, '  ...e marca a natureza');
+
+    // 19b: exclusão por tipo — indeferimentoInicial NÃO pega processo penal
+    rec.sends.length = 0;
+    const r1b = await diarioAtos.publicarAto(fakeGuild(), 'indeferimentoInicial', db.buscarPorNumero('processos', 'DIA-INQ1'));
+    ok(r1b === false && !acharPub(), '19b: indeferimentoInicial não pega processo penal (exclusão por tipo)');
+
+    // 19c: indeferimento inicial (cível) publica
+    const proc2 = db.inserir('processos', { numero: 'DIA-INI1', tipo: 'Civel', status: 'Arquivado', juiz: 'juizC' });
+    rec.sends.length = 0;
+    const r2 = await diarioAtos.publicarAto(fakeGuild(), 'indeferimentoInicial', proc2);
+    ok(r2 === true && /inicial indeferida/i.test(dataDe(acharPub())), '19c: indeferimento da inicial (cível) publica');
+
+    // 19d: exclusão por tipo — arquivamentoInquerito NÃO pega processo cível
+    rec.sends.length = 0;
+    const r2b = await diarioAtos.publicarAto(fakeGuild(), 'arquivamentoInquerito', db.buscarPorNumero('processos', 'DIA-INI1'));
+    ok(r2b === false && !acharPub(), '19d: arquivamentoInquerito não pega processo cível');
+
+    // 19e: desarquivamento publica E coexiste com o arquivamento no MESMO registro (mapa por natureza)
+    const proc3 = db.inserir('processos', { numero: 'DIA-DES1', tipo: 'Penal', status: 'Arquivado', promotor: 'promY' });
+    await diarioAtos.publicarAto(fakeGuild(), 'arquivamentoInquerito', proc3);
+    db.atualizar('processos', 'DIA-DES1', { status: 'Instrução', revisaoArquivamento: 'Decidida', juiz: 'juizR' });
+    rec.sends.length = 0;
+    const r3 = await diarioAtos.publicarAto(fakeGuild(), 'desarquivamento', db.buscarPorNumero('processos', 'DIA-DES1'), { files: [{ attachment: Buffer.from('x'), name: 'Dec.png' }] });
+    const pub3 = acharPub();
+    ok(r3 === true && pub3 && /reaberto/i.test(dataDe(pub3)), '19e: desarquivamento publica (processo reaberto)');
+    ok(pub3 && Array.isArray(pub3.files) && pub3.files.length, '  ...com o PNG da decisão anexado');
+    const dp = (db.buscarPorNumero('processos', 'DIA-DES1') || {}).diarioPublicado || {};
+    ok(dp.arquivamentoInquerito && dp.desarquivamento, '  ...e os DOIS atos coexistem no mesmo registro');
+
+    // 19f: END-TO-END — arquivarCivil publica o indeferimento inicial
+    db.inserir('processos', { numero: 'DIA-INI2', tipo: 'Civel', status: 'Distribuído', juiz: 'juizE', canalId: 'cini2', motivo: 'Ação de cobrança', crimes: [], reus: [], partes: [], habilitacoes: [] });
+    rec.sends.length = 0;
+    const itCiv = makeInteraction({ userId: 'juizE', guild: fakeGuild(), member: null });
+    await processoCmd.arquivarCivil(itCiv, 'DIA-INI2');
+    ok(acharPub() && (db.buscarPorNumero('processos', 'DIA-INI2') || {}).diarioPublicado?.indeferimentoInicial, '19f: arquivarCivil publica o indeferimento inicial (end-to-end)');
+  }
+
+  // ============ ITEM 20: Diário Etapa 3 — Nível 2 publica no cumprimento, não no deferimento ============
+  console.log('\nItem 20 — Diário Etapa 3 (mandado publica no cumprimento, não no deferimento):');
+  {
+    estado.definir('diarioOficialId', 'diariochan');
+    const acharPub = () => rec.sends.find(s => s.content === '@everyone' && Array.isArray(s.embeds) && s.embeds.length);
+    const dataDe = (pub) => JSON.stringify((pub && pub.embeds && pub.embeds[0] && pub.embeds[0].data) || {});
+
+    // 20a: mandado só Emitido (deferido, ainda não cumprido) NÃO publica — sem vazamento no deferimento
+    const m1 = db.inserir('mandados', { numero: 'MND-1', tipo: 'Busca e Apreensão', alvo: 'Fulano', status: 'Emitido', processoVinculado: 'P1', cumpridoPor: null });
+    rec.sends.length = 0;
+    const r0 = await diarioAtos.publicarAto(fakeGuild(), 'mandadoCumprido', m1);
+    ok(r0 === false && !acharPub(), '20a: mandado só Emitido NÃO publica (o vazamento do deferimento foi fechado)');
+
+    // 20b: cumprido → publica com card de cumprimento + marca
+    db.atualizar('mandados', 'MND-1', { status: 'Cumprido', cumpridoPor: 'delX' });
+    rec.sends.length = 0;
+    const r1 = await diarioAtos.publicarAto(fakeGuild(), 'mandadoCumprido', db.buscarPorNumero('mandados', 'MND-1'));
+    ok(r1 === true && /cumprido/i.test(dataDe(acharPub())), '20b: mandado cumprido publica no Diário (card de cumprimento)');
+    ok((db.buscarPorNumero('mandados', 'MND-1') || {}).diarioPublicado?.mandadoCumprido, '  ...e marca a natureza');
+  }
+
+  // ============ ITEM 21: Diário Etapa 4 — texto longo do inquérito vai por anexo, não inline ============
+  console.log('\nItem 21 — Diário Etapa 4 (texto longo por anexo, não inline):');
+  {
+    estado.definir('diarioOficialId', 'diariochan');
+    const acharPub = () => rec.sends.find(s => s.content === '@everyone' && Array.isArray(s.embeds) && s.embeds.length);
+    const corpo15k = 'X'.repeat(15000);
+
+    // 21a: arquivamento de inquérito ANEXA o PDF do relatório (documentosAnexados), não inline
+    const proc = db.inserir('processos', { numero: 'INQ-LONG', tipo: 'Penal', status: 'Arquivado', promotor: 'promL' });
+    require('../utils/anexos').criarDocumento({ tipo: 'relatorio_inquerito', url: 'https://cdn.fake/relatorio-15k.pdf', nomeArquivo: 'Relatorio-15k.pdf', autorId: 'del1', protocoloVinculado: 'INQ-LONG' });
+    rec.sends.length = 0;
+    await diarioAtos.publicarAto(fakeGuild(), 'arquivamentoInquerito', proc);
+    const pub = acharPub();
+    ok(pub && Array.isArray(pub.files) && pub.files.some(f => /Relatorio-15k/.test(f.name)), '21a: o PDF do relatório do inquérito é anexado ao card');
+    const desc = (pub && pub.embeds[0].data.description) || '';
+    ok(desc.length < 4096 && !/XXXXXXXXXX/.test(desc), '21b: o card fica curto — o teor de 15k NÃO vai inline (só no anexo)');
+
+    // 21c: texto livre de 15.000 chars (comunicado) é cortado em 4096 — não estoura a publicação
+    rec.sends.length = 0;
+    await diario.publicarNoDiario(fakeGuild(), 'comunicado', { titulo: 'Longo', corpo: corpo15k });
+    const pubC = rec.sends.find(s => (s.embeds || []).length);
+    const descC = (pubC && pubC.embeds[0].data.description) || '';
+    ok(descC.length <= 4096, '21c: texto livre de 15k é cortado em 4096 (não quebra o embed)');
+  }
+
+  // ============ ITEM 22: Diário Etapa 5 — varredura (backfill silencioso + escape Nível 2) ============
+  console.log('\nItem 22 — Diário Etapa 5 (varredura: backfill silencioso + escape):');
+  {
+    estado.definir('diarioOficialId', 'diariochan');
+    const silenciosas = () => rec.sends.filter(s => (s.embeds || []).length && s.content === '');
+    const pings = () => rec.sends.filter(s => s.content === '@everyone');
+
+    // 22a: backfill — petição decidida ANTES da feature (sem marcador) é publicada em SILÊNCIO
+    db.inserir('peticoes', { numero: 'BACK-PA', tipo: 'PorteArma', status: 'Deferido', juiz: 'juizB', nomeCliente: 'Antigo', criadoEm: '2026-01-01T00:00:00.000Z' });
+    rec.sends.length = 0;
+    const r = await diarioAtos.varrerDiario(fakeGuild());
+    ok(r.publicados >= 1 && (db.buscarPorNumero('peticoes', 'BACK-PA') || {}).diarioPublicado?.peticaoAdministrativa, '22a: varredura faz backfill da petição decidida não publicada');
+    ok(silenciosas().length >= 1 && pings().length === 0, '  ...em SILÊNCIO (sem @everyone — não floodou pings)');
+
+    // 22b: idempotente — segunda varredura não republica nada
+    rec.sends.length = 0;
+    const r2 = await diarioAtos.varrerDiario(fakeGuild());
+    ok(r2.publicados === 0 && rec.sends.length === 0, '22b: segunda varredura não republica (idempotente)');
+
+    // 22c: escape — mandado Emitido nunca cumprido, de medida arquivada, publica "não cumprido"
+    db.inserir('medidas', { numero: 'MED-AB', status: 'Deferida', arquivadoManual: true, delegado: 'delA', juiz: 'juizA' });
+    db.inserir('mandados', { numero: 'MND-AB', tipo: 'Busca e Apreensão', alvo: 'Beltrano', status: 'Emitido', medidaNumero: 'MED-AB', cumpridoPor: null });
+    rec.sends.length = 0;
+    await diarioAtos.varrerDiario(fakeGuild());
+    ok((db.buscarPorNumero('mandados', 'MND-AB') || {}).diarioPublicado?.mandadoNaoCumprido, '22c: escape publica o mandado não cumprido de caso encerrado');
+
+    // 22d: mandado Emitido de caso EM CURSO (não arquivado) NÃO publica — sigilo mantido até encerrar
+    db.inserir('medidas', { numero: 'MED-ON', status: 'Deferida', arquivadoManual: false, delegado: 'delB' });
+    db.inserir('mandados', { numero: 'MND-ON', tipo: 'Prisão Preventiva', alvo: 'Ciclano', status: 'Emitido', medidaNumero: 'MED-ON', cumpridoPor: null });
+    rec.sends.length = 0;
+    await diarioAtos.varrerDiario(fakeGuild());
+    ok(!(db.buscarPorNumero('mandados', 'MND-ON') || {}).diarioPublicado, '22d: mandado de caso em curso NÃO publica (sigilo até encerrar)');
   }
 
   // ---- Resumo ----

@@ -21,6 +21,7 @@ const analiseDocumento = require('../utils/analiseDocumento');
 const ministerioPublico = require('../utils/ministerioPublico');
 const cartorio = require('../utils/cartorio');
 const revisaoIA = require('../utils/revisaoIA');
+const diarioAtos = require('../utils/diarioAtos');
 
 const TIPO_LABEL = { PorteArma: 'Porte de Arma', TrocaNome: 'Troca de Nome', LimpezaFicha: 'Limpeza de Ficha', AlvaraEvento: 'Alvará de Evento' };
 
@@ -939,6 +940,14 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
         });
       }
       await canais.arquivarCanal(canal);
+
+      // NÍVEL 1 — decisão de pedido administrativo publica no Diário na hora (deferido ou indeferido).
+      // Efeito automático por natureza do ato: a engine decide nível/card/idempotência; aqui só
+      // declaramos que o ato aconteceu, reaproveitando o PNG da sentença já gerado como anexo. A
+      // Diligência (Nível 3) está no if-branch acima e não passa por aqui. publicarAto é blindada.
+      await diarioAtos.publicarAto(guild, 'peticaoAdministrativa', peticao, {
+        files: pngSentencaPeticao ? [{ attachment: pngSentencaPeticao, name: `Sentenca-${numero}.png` }] : undefined,
+      });
     }
   }
 
