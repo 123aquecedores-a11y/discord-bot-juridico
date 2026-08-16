@@ -46,6 +46,10 @@ function montarEmbed(tipo, d) {
           { name: 'Cargo', value: String(d.cargo), inline: true },
           d.porQuemId ? { name: 'Ato de', value: `<@${d.porQuemId}>`, inline: true } : null,
         ].filter(Boolean));
+    // ⚠️ Card legado, hoje sem nenhum chamador: mandado só entra no Diário pela engine
+    // utils/diarioAtos.js, que aplica a política de sigilo por tipo (allow-list de prisão
+    // preventiva/temporária no cumprimento). Não volte a chamar este tipo direto — passaria por
+    // fora da política e publicaria tipo e alvo de diligência sigilosa.
     case 'mandado':
       return e.setColor(0xc0392b).setTitle(`📜 Mandado${d.tipoMandado ? ` de ${d.tipoMandado}` : ''}`)
         .setDescription(`Expedido mandado${d.processoNumero ? ` nos autos nº ${d.processoNumero}` : ''}.`)

@@ -10,7 +10,6 @@
 //    estado (Nível 2 publica no cumprimento) — nada de lógica de publicação espalhada.
 const db = require('../database/db');
 const diario = require('./diarioOficial');
-const anexos = require('./anexos');
 
 // Rótulo do tipo de petição administrativa no card. O Diário é dono da sua própria apresentação —
 // não importamos TIPO_LABEL de commands/peticao.js pra evitar require circular (peticao ↔ diarioAtos).
@@ -20,6 +19,59 @@ const LABEL_PETICAO = {
   LimpezaFicha: 'Limpeza de Ficha',
   AlvaraEvento: 'Alvará de Evento',
 };
+
+// ============================================================================================
+// POLÍTICA DE SIGILO — QUE TIPO DE MANDADO PODE APARECER NO DIÁRIO
+// ============================================================================================
+// Isto é REGRA DE POLÍTICA (decisão do operador), não detalhe de implementação. Vive num lugar
+// só, com os tipos escritos por extenso, pra que a resposta a "por que isso publicou?" seja
+// sempre esta lista — e não um `if` perdido num handler.
+//
+// A decisão tem duas metades, e as duas estão aqui:
+//
+//   1) DENY-LIST DURA — estes tipos NUNCA publicam, em estado NENHUM (emitido, cumprido ou não
+//      cumprido). Publicar diligência de busca, de sigilo bancário/telemático, de interceptação
+//      ou de condução expõe investigação e pessoa mesmo DEPOIS de cumprida: o card no canal
+//      público vira registro permanente, pesquisável, de quem foi alvo do quê.
+//
+//   2) ALLOW-LIST — só estes publicam, e só no CUMPRIMENTO (natureza mandadoCumprido). Prisão
+//      preventiva/temporária é ato ostensivo por natureza: no momento em que se cumpre, a pessoa
+//      já está presa e o fato é público.
+//
+// QUEM DECIDE É A ALLOW-LIST. Essa é a parte que faz "tipo novo nasce bloqueado por padrão"
+// valer de verdade: se amanhã alguém acrescentar "Interceptação Ambiental" (ou o Promotor
+// escrever qualquer coisa no campo livre do tipo "Outro"), ele NÃO está na allow-list e não
+// publica — sem ninguém precisar lembrar de adicioná-lo à deny-list. A deny-list continua
+// escrita porque é a política declarada: ela documenta a intenção e serve de segunda trava se
+// alguém um dia mexer na allow-list sem pensar.
+const MANDADOS_QUE_NUNCA_PUBLICAM = [
+  'Busca e Apreensão',
+  'Quebra de Sigilo',
+  'Interceptação Telefônica',
+  'Condução Coercitiva',
+];
+const MANDADOS_QUE_PUBLICAM_AO_CUMPRIR = [
+  'Prisão Preventiva',
+  'Prisão Temporária',
+];
+
+// Comparação normalizada (sem acento, minúscula, espaços colapsados) porque o `tipo` do mandado é
+// TEXTO — vem do rótulo do select, mas também do campo livre do tipo "Outro". "PRISAO PREVENTIVA",
+// "Prisão  Preventiva" e "prisao preventiva" são o mesmo tipo; e a deny-list não pode ser furada
+// por uma variação de acento.
+function normalizarTipoMandado(tipo) {
+  return String(tipo || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+const DENY = new Set(MANDADOS_QUE_NUNCA_PUBLICAM.map(normalizarTipoMandado));
+const ALLOW = new Set(MANDADOS_QUE_PUBLICAM_AO_CUMPRIR.map(normalizarTipoMandado));
+
+// Fail-closed: sem tipo, tipo desconhecido ou tipo na deny-list → NÃO publica.
+function mandadoPodePublicar(mandado) {
+  const tipo = normalizarTipoMandado(mandado && mandado.tipo);
+  if (!tipo) return false;      // mandado sem tipo: bloqueado (não dá pra afirmar que é ostensivo)
+  if (DENY.has(tipo)) return false;
+  return ALLOW.has(tipo);
+}
 
 // Registro data-driven das naturezas de ato que publicam. Cresce por etapa (arquivamento de
 // inquérito, indeferimento inicial, mandado cumprido...) sem tocar em publicarAto. "Ato novo herda
@@ -53,14 +105,12 @@ const NATUREZAS = {
     nivel: 1,
     publicavel: (p) => !!p && p.status === 'Arquivado' && p.tipo === 'Penal',
     montar: (p) => ({ tipo: 'arquivamento_inquerito', dados: { numero: p.numero, promotorId: p.promotor || null } }),
-    // TEXTO LONGO: o relatório do inquérito (Polícia Civil) chega a 12-20k chars e NÃO cabe inline
-    // (embed corta em 4096). Vai como ANEXO — o PDF já existe em documentosAnexados (tipo
-    // relatorio_inquerito), buscado pelo número do processo. O card fica curto; o teor íntegro no PDF.
-    files: (p) => {
-      const docs = anexos.listarPorProtocolo(p.numero) || [];
-      const rel = docs.find(d => d.tipo === 'relatorio_inquerito' && d.url);
-      return rel ? [{ attachment: rel.url, name: rel.nomeArquivo || `Relatorio-Inquerito-${p.numero}.pdf` }] : null;
-    },
+    // POLÍTICA: o card publica número, decisão e fundamento resumido — e SÓ. O PDF do relatório da
+    // Polícia Civil NÃO é anexado. Ele traz o inquérito inteiro (indiciado, testemunhas, teor das
+    // diligências); anexá-lo ao canal público transformava "arquivei o inquérito" em publicação
+    // integral dos autos. Quem tem direito ao teor continua acessando pelo ticket do processo, onde
+    // o PDF segue guardado em documentosAnexados. Antes existia aqui um `files:` que buscava o
+    // relatorio_inquerito — removido de propósito; não reintroduza sem decisão explícita.
   },
 
   // NÍVEL 1 — indeferimento/arquivamento da petição inicial cível (Juiz indefere a inicial). Cível.
@@ -85,22 +135,32 @@ const NATUREZAS = {
   // NÍVEL 2 — mandado CUMPRIDO. A cautelar (busca/prisão/quebra) só publica AQUI, no cumprimento,
   // nunca no deferimento (publicar antes avisaria o alvo e queimaria a diligência). O alvo já sabe
   // no momento em que o mandado é cumprido — daí publicar deixa de ser vazamento.
+  // Filtrado pela política de sigilo acima: mesmo cumprido, só publica o que está na allow-list
+  // (prisão preventiva/temporária). Busca, quebra de sigilo, interceptação, condução e qualquer
+  // tipo novo/livre não publicam nunca — ver MANDADOS_QUE_PUBLICAM_AO_CUMPRIR.
   mandadoCumprido: {
     tabela: 'mandados',
     nivel: 2,
-    publicavel: (m) => !!m && m.status === 'Cumprido',
+    publicavel: (m) => !!m && m.status === 'Cumprido' && mandadoPodePublicar(m),
     montar: (m) => ({ tipo: 'mandado_cumprido', dados: { numero: m.numero, tipoMandado: m.tipo, alvo: m.alvo, processoNumero: m.processoVinculado || null, cumpridoPorId: m.cumpridoPor || null } }),
   },
 
-  // NÍVEL 2 (escape) — mandado que NUNCA foi cumprido e cujo caso já encerrou. Publica com resultado
-  // "não cumprido" pra fechar o sigilo (nunca indefinido). Quem decide QUANDO chamar é a varredura
-  // (varrerDiario) — só quando a medida/processo encerra; o predicado aqui só impede republicar um
-  // mandado que na verdade foi cumprido.
+  // NÍVEL 2 (escape) — DESLIGADO POR POLÍTICA. Antes, mandado emitido e nunca cumprido de caso já
+  // encerrado publicava um card "não cumprido" pra o sigilo não ficar indefinido. Não publica mais
+  // NADA — nem o tipo, nem o alvo, nem a existência do mandado.
+  //
+  // Por quê: o card de "não cumprido" era o pior dos dois mundos. Ele não informava nada de útil ao
+  // público e ainda revelava, de forma permanente, que existiu diligência contra aquela pessoa — que
+  // sequer chegou a acontecer. "Fechar o sigilo" nunca foi um bem em si; o silêncio já fecha.
+  //
+  // A natureza continua declarada aqui, e não apagada, pra que a regra fique visível ao lado das
+  // outras: publicavel é SEMPRE false, e a varredura não chama mais o escape. Reativar exige decisão
+  // explícita, não um descuido.
   mandadoNaoCumprido: {
     tabela: 'mandados',
     nivel: 2,
-    publicavel: (m) => !!m && m.status === 'Emitido',
-    montar: (m) => ({ tipo: 'mandado_nao_cumprido', dados: { numero: m.numero, tipoMandado: m.tipo, alvo: m.alvo, processoNumero: m.processoVinculado || null } }),
+    publicavel: () => false,
+    montar: () => ({ tipo: 'mandado_nao_cumprido', dados: {} }), // inalcançável — publicavel é false
   },
 };
 
@@ -147,9 +207,11 @@ async function publicarAto(guild, natureza, record, opts = {}) {
   }
 }
 
-// Um mandado está "abandonado" (escape do Nível 2) quando foi emitido, NUNCA cumprido, e o caso já
-// encerrou — aí publica-se "não cumprido" pra o sigilo nunca ser indefinido. Conservador: na dúvida
-// (caso ainda em curso) NÃO publica; o mandado segue sigiloso até encerrar de verdade.
+// Um mandado está "abandonado" quando foi emitido, NUNCA cumprido, e o caso já encerrou.
+// ATENÇÃO: isto NÃO dispara mais publicação nenhuma — o escape do Nível 2 foi desligado por
+// política (ver a natureza mandadoNaoCumprido). A função continua aqui só como CONSULTA (saber
+// quais mandados ficaram para trás, para conferência interna/diagnóstico). Se voltar a ser usada,
+// que seja para relatório privado — nunca para alimentar o Diário.
 function mandadoAbandonado(m) {
   if (!m || m.status !== 'Emitido') return false;
   if (m.medidaNumero) {
@@ -164,8 +226,8 @@ function mandadoAbandonado(m) {
 }
 
 // Naturezas que a varredura publica automaticamente (backfill + rede de segurança): a decisão já
-// está refletida no estado do registro. mandadoNaoCumprido NÃO entra aqui — o escape tem gatilho
-// próprio (o caso precisa ter encerrado), tratado à parte.
+// está refletida no estado do registro. mandadoNaoCumprido NÃO entra aqui — não publica mais nada,
+// em nenhum gatilho (política de sigilo).
 const NATUREZAS_VARREDURA = ['peticaoAdministrativa', 'arquivamentoInquerito', 'indeferimentoInicial', 'desarquivamento', 'mandadoCumprido'];
 
 function jaPublicou(record, natureza) {
@@ -188,13 +250,15 @@ async function varrerDiario(guild) {
       if (await publicarAto(guild, natureza, r, { silencioso: true })) publicados++;
     }
   }
-  // Escape do Nível 2: mandado emitido, nunca cumprido, de caso já encerrado → publica "não cumprido".
-  const abandonados = db.todos('mandados', (m) => mandadoAbandonado(m) && !jaPublicou(m, 'mandadoNaoCumprido'));
-  for (const m of abandonados) {
-    if (await publicarAto(guild, 'mandadoNaoCumprido', m, { silencioso: true })) publicados++;
-  }
+  // O escape do Nível 2 (publicar "não cumprido" quando o caso encerrava sem cumprimento) foi
+  // REMOVIDO por política — ver a natureza mandadoNaoCumprido acima. Mandado não cumprido não vira
+  // publicação nenhuma; o silêncio é o resultado desejado, não uma lacuna a ser preenchida.
   if (publicados) console.log(`📜 [diario] Varredura: ${publicados} ato(s) publicado(s) em silêncio (backfill/escape).`);
   return { publicados };
 }
 
-module.exports = { publicarAto, varrerDiario, mandadoAbandonado, NATUREZAS, LABEL_PETICAO };
+module.exports = {
+  publicarAto, varrerDiario, mandadoAbandonado, NATUREZAS, LABEL_PETICAO,
+  // Política de sigilo exposta pra ser testada e consultada por nome (não recopie as listas).
+  mandadoPodePublicar, MANDADOS_QUE_NUNCA_PUBLICAM, MANDADOS_QUE_PUBLICAM_AO_CUMPRIR,
+};

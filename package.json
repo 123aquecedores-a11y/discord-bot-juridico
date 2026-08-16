@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node index.js",
     "deploy": "node deploy-commands.js",
-    "test": "node scripts/testes-correcoes.js && node scripts/testes-guard-guild.js && node scripts/testes-skip-boot.js",
+    "test": "node scripts/testes-correcoes.js && node scripts/testes-guard-guild.js && node scripts/testes-skip-boot.js && node scripts/testes-diario-e-prazo-mp.js",
     "test:guard": "node scripts/testes-guard-guild.js",
     "test:manutencao": "node scripts/testes-skip-boot.js"
   },
