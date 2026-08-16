@@ -10,6 +10,7 @@
 //    estado (Nível 2 publica no cumprimento) — nada de lógica de publicação espalhada.
 const db = require('../database/db');
 const diario = require('./diarioOficial');
+const { parseCriadoEm } = require('./data');
 
 // Rótulo do tipo de petição administrativa no card. O Diário é dono da sua própria apresentação —
 // não importamos TIPO_LABEL de commands/peticao.js pra evitar require circular (peticao ↔ diarioAtos).
@@ -44,11 +45,18 @@ const LABEL_PETICAO = {
 // publica — sem ninguém precisar lembrar de adicioná-lo à deny-list. A deny-list continua
 // escrita porque é a política declarada: ela documenta a intenção e serve de segunda trava se
 // alguém um dia mexer na allow-list sem pensar.
+// ATENÇÃO ao manter esta lista: a comparação é por IGUALDADE do tipo normalizado, não por prefixo.
+// 'Quebra de Sigilo Bancário' NÃO é pego por 'Quebra de Sigilo' — são strings diferentes, e por isso
+// os dois estão escritos aqui. Os rótulos abaixo têm que bater EXATAMENTE com o que os catálogos
+// gravam: utils/tiposMedidaCoercitiva.js (fluxo direto do Juiz/Promotor) e commands/medida.js
+// (TIPOS_MEDIDA, fluxo clássico Delegado→MP→referendo). Tipo novo em qualquer um dos dois catálogos
+// que deva ser sigiloso precisa vir para cá — ainda que a allow-list já o bloqueie por padrão.
 const MANDADOS_QUE_NUNCA_PUBLICAM = [
-  'Busca e Apreensão',
-  'Quebra de Sigilo',
-  'Interceptação Telefônica',
-  'Condução Coercitiva',
+  'Busca e Apreensão',        // ambos os catálogos
+  'Quebra de Sigilo',         // catálogo direto
+  'Quebra de Sigilo Bancário',// catálogo clássico (commands/medida.js) — string distinta da de cima
+  'Interceptação Telefônica', // catálogo clássico — é selecionável de verdade, não é declaratório
+  'Condução Coercitiva',      // catálogo direto
 ];
 const MANDADOS_QUE_PUBLICAM_AO_CUMPRIR = [
   'Prisão Preventiva',
@@ -237,15 +245,24 @@ function jaPublicou(record, natureza) {
 // Varredura do Diário — roda no job diário. Publica, EM SILÊNCIO (sem @everyone), todo ato decisório
 // que já deveria ter publicado e não publicou: é o BACKFILL retroativo (ex.: o porte de arma decidido
 // antes desta feature) e a rede de segurança pra qualquer handler que tenha falhado. Idempotente
-// (marcador por natureza). Fecha também o escape do Nível 2 (mandado nunca cumprido de caso encerrado).
+// (marcador por natureza). NÃO publica mandado não cumprido — o escape do Nível 2 foi desligado por
+// política (ver a natureza mandadoNaoCumprido).
 async function varrerDiario(guild) {
   if (!guild) return { publicados: 0 };
   let publicados = 0;
   for (const natureza of NATUREZAS_VARREDURA) {
     const def = NATUREZAS[natureza];
     // Cronológico: publica o backlog na ordem em que os casos nasceram (proxy da ordem dos atos).
+    // As tabelas não são uniformes: 'mandados' só tem `criado_em` (pt-BR, do db.inserir) e nunca
+    // `criadoEm` — ordenar só por criadoEm deixava TODO mandado com chave undefined, ou seja, ordem
+    // indefinida no backfill. Aceita os dois campos e compara por timestamp (parseCriadoEm entende
+    // pt-BR e ISO); sem data, vai para o fim.
+    const quando = (r) => {
+      const d = parseCriadoEm(r.criadoEm || r.criado_em);
+      return d ? d.getTime() : Number.MAX_SAFE_INTEGER;
+    };
     const pendentes = db.todos(def.tabela, (r) => def.publicavel(r) && !jaPublicou(r, natureza))
-      .sort((a, b) => String(a.criadoEm || '').localeCompare(String(b.criadoEm || '')));
+      .sort((a, b) => quando(a) - quando(b));
     for (const r of pendentes) {
       if (await publicarAto(guild, natureza, r, { silencioso: true })) publicados++;
     }
@@ -253,7 +270,7 @@ async function varrerDiario(guild) {
   // O escape do Nível 2 (publicar "não cumprido" quando o caso encerrava sem cumprimento) foi
   // REMOVIDO por política — ver a natureza mandadoNaoCumprido acima. Mandado não cumprido não vira
   // publicação nenhuma; o silêncio é o resultado desejado, não uma lacuna a ser preenchida.
-  if (publicados) console.log(`📜 [diario] Varredura: ${publicados} ato(s) publicado(s) em silêncio (backfill/escape).`);
+  if (publicados) console.log(`📜 [diario] Varredura: ${publicados} ato(s) publicado(s) em silêncio (backfill).`);
   return { publicados };
 }
 

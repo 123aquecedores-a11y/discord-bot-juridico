@@ -145,6 +145,35 @@ const publicacoes = () => rec.sends.filter(s => Array.isArray(s.embeds) && s.emb
     ok((anexos.listarPorProtocolo('INQ-PDF') || []).some(d => d.tipo === 'relatorio_inquerito'),
       '6d: o PDF continua guardado no ticket (só não vai pro canal público)');
 
+    // 6.5) A deny-list cobre os DOIS catálogos que alimentam mandados[].tipo — o do fluxo direto
+    // (utils/tiposMedidaCoercitiva.js) e o do fluxo clássico (TIPOS_MEDIDA em commands/medida.js).
+    // 'Quebra de Sigilo Bancário' é do clássico e NÃO é pego por 'Quebra de Sigilo' (comparação por
+    // igualdade, não por prefixo): tem que estar escrito na lista, e este teste é quem garante isso.
+    const TIPOS_CATALOGO_CLASSICO = require('../commands/medida').TIPOS_MEDIDA || [];
+    const TIPOS_CATALOGO_DIRETO = require('../utils/tiposMedidaCoercitiva').TIPOS_MEDIDA_COERCITIVA.map(t => t.label);
+    ok(TIPOS_CATALOGO_CLASSICO.length > 0, '6.5-pré: o catálogo clássico (TIPOS_MEDIDA) está acessível pro teste');
+    for (const tipo of [...TIPOS_CATALOGO_CLASSICO, ...TIPOS_CATALOGO_DIRETO]) {
+      const esperadoPublica = diarioAtos.MANDADOS_QUE_PUBLICAM_AO_CUMPRIR.includes(tipo);
+      const naDeny = diarioAtos.MANDADOS_QUE_NUNCA_PUBLICAM.includes(tipo);
+      const obtido = diarioAtos.mandadoPodePublicar({ tipo });
+      ok(obtido === esperadoPublica, `6.5-"${tipo}": ${esperadoPublica ? 'publica' : 'NÃO publica'} (catálogo real)`);
+      // Todo tipo sigiloso conhecido tem que estar NOMEADO na deny-list, não só barrado pelo
+      // fail-closed — senão a "segunda trava" prometida no comentário da política não existe.
+      if (!esperadoPublica && !/^Outr[oa]$/.test(tipo)) {
+        ok(naDeny, `  ...e está nomeado na deny-list (segunda trava real, não só fail-closed)`);
+      }
+    }
+
+    // 6.6) Ordenação do backfill: 'mandados' só tem criado_em (pt-BR), nunca criadoEm. Antes, a
+    // varredura ordenava por criadoEm e TODO mandado caía com chave undefined (ordem indefinida).
+    db.inserir('mandados', { numero: 'ORD-B', tipo: 'Prisão Preventiva', alvo: 'Segundo', status: 'Cumprido', cumpridoPor: 'del1', criado_em: '15/08/2026, 10:00:00' });
+    db.inserir('mandados', { numero: 'ORD-A', tipo: 'Prisão Preventiva', alvo: 'Primeiro', status: 'Cumprido', cumpridoPor: 'del1', criado_em: '12/08/2026, 08:00:00' });
+    rec.sends.length = 0;
+    await diarioAtos.varrerDiario(fakeGuild());
+    const ordemPublicada = publicacoes().map(p => JSON.stringify(p.embeds[0].data)).join(' || ');
+    ok(ordemPublicada.indexOf('Primeiro') < ordemPublicada.indexOf('Segundo') && /Primeiro/.test(ordemPublicada),
+      '6.6: backfill sai em ordem cronológica real (lendo criado_em, não só criadoEm)');
+
     // 7) Varredura com mix: só a prisão preventiva cumprida sai.
     db.inserir('mandados', { numero: 'MIX-BA', tipo: 'Busca e Apreensão', alvo: 'MixAlvoBA', status: 'Cumprido', cumpridoPor: 'del1' });
     db.inserir('mandados', { numero: 'MIX-PP', tipo: 'Prisão Preventiva', alvo: 'MixAlvoPP', status: 'Cumprido', cumpridoPor: 'del1' });

@@ -754,7 +754,10 @@ module.exports = {
     });
     // NÍVEL 2 — NÃO publica no Diário aqui (no deferimento/emissão): publicar antes do cumprimento
     // avisaria o alvo e queimaria a diligência. A publicação acontece só no cumprimento
-    // (cumprirMandado → mandadoCumprido) ou, se o caso encerrar sem cumprir, no escape da varredura.
+    // (cumprirMandado → mandadoCumprido), e só para os tipos da allow-list (utils/diarioAtos.js).
+    // Mandado não cumprido não publica em gatilho nenhum.
+    // OBS: a devolutiva acima (enviarDevolutivaMandado) é OUTRA coisa — vai por webhook pro servidor
+    // da Polícia Civil que pediu a diligência, leva Tipo/Alvo e NÃO passa pela política do Diário.
     return interaction.editReply({ content: `Medida ${numero} referendada. Mandado ${numeroMandado} emitido.` });
   },
 
