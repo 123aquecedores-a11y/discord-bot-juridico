@@ -12,6 +12,18 @@ const {
 const ficha = require('./utils/ficha');
 const integracaoPoliciaCivil = require('./utils/integracaoPoliciaCivil');
 const { garantirCanais } = require('./utils/garantirCanais');
+const guildGuard = require('./utils/guildGuard');
+
+// ISOLAMENTO ENTRE INSTALAÇÕES — o mesmo código roda em mais de um servidor, cada instalação com
+// seu token, seu volume e seu banco. Sem GUILD_ID o bot atenderia qualquer servidor onde a
+// aplicação estiver e misturaria os bancos, então o boot morre aqui mesmo (antes do login) em vez
+// de subir "meio funcionando". Ver utils/guildGuard.js.
+try {
+  console.log(`[guard] instalação vinculada ao servidor ${guildGuard.exigirGuildConfigurada()} — só esse guild é atendido.`);
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 // Rede de segurança: no Node moderno, uma promessa rejeitada sem .catch DERRUBA o processo
 // inteiro (unhandledRejection → exit). Num handler solto (ex: um canal.send que falha, uma
@@ -55,6 +67,10 @@ client.once('ready', async () => {
     console.error('Não foi possível carregar o servidor configurado (GUILD_ID) — job diário de prazos não vai rodar.');
     return;
   }
+  // Confirma que o que o Discord devolveu é MESMO o guild configurado antes de qualquer escrita
+  // do boot (garantirCanais cria canal, retroatividade grava no banco). Redundante por construção,
+  // mas é o tipo de redundância que custa uma linha e evita gravar no servidor errado.
+  if (!guildGuard.guardarEvento('ready', guild, 'boot abortado por segurança')) return;
 
   // Auto-cria os canais de publicação (📜│diário-oficial e 📢│editais) se faltarem — idempotente,
   // não duplica, e não derruba o boot se faltar permissão (ver utils/garantirCanais.js).
@@ -76,6 +92,9 @@ client.once('ready', async () => {
   }
 
   const rodarChecagens = () => {
+    // Tarefa agendada também passa pelo guard: ela escreve no banco e manda mensagem sem ninguém
+    // ter clicado em nada. É o caminho que mais silenciosamente escreveria no servidor errado.
+    if (!guildGuard.guardarEvento('checagens-diarias', guild)) return;
     verificarPrazosJulgamento(client, guild).catch(err => console.error('Erro na checagem diária de prazos:', err));
     verificarRenovacoesPorteArma(client).catch(err => console.error('Erro na checagem diária de porte de arma:', err));
     // Parte 3: reconcilia rh + reatribui tickets com responsável fantasma (saiu do servidor / perdeu
@@ -93,6 +112,7 @@ client.once('ready', async () => {
   // Prazos curtos (1h, 24h), retentativas e limpeza do canal do painel não esperam o job
   // diário — rodam a cada 10min.
   const rodarChecagensFrequentes = () => {
+    if (!guildGuard.guardarEvento('checagens-10min', guild)) return;
     verificarProcessosSemJuiz(client, guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (civil):', err));
     verificarProcessosPenaisSemJuiz(client, guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (penal):', err));
     verificarPeticoesSemJuiz(client, guild).catch(err => console.error('Erro na retentativa de sorteio de Juiz (petição):', err));
@@ -114,6 +134,7 @@ client.once('ready', async () => {
 // Alguém vinculado por ID (cliente/réu que ainda não estava no servidor no momento do vínculo)
 // entrou agora — aplica o apelido automaticamente, sem precisar de nenhuma ação manual.
 client.on('guildMemberAdd', async member => {
+  if (!guildGuard.guardarEvento('guildMemberAdd', member.guild, `membro ${member.id}`)) return;
   const sincronizado = await ficha.sincronizarNovoMembro(member).catch(err => {
     console.error(`Erro ao sincronizar novo membro ${member.id}:`, err);
     return null;
@@ -126,7 +147,9 @@ client.on('guildMemberAdd', async member => {
 // Só reage a SAÍDA (guildMemberRemove, presença) — reagir a remoção de role foi removido porque
 // gerava reatribuição indevida (o próprio swap de cargo do bot removia/readicionava a role).
 client.on('guildMemberRemove', async member => {
-  if (config.guildId && member.guild && member.guild.id !== config.guildId) return;
+  // Já filtrava por guild na mão; agora passa pelo guard central (fail-closed também quando
+  // member.guild vem sem id) e o motivo da recusa fica no log.
+  if (!guildGuard.guardarEvento('guildMemberRemove', member.guild, `membro ${member.id}`)) return;
   try {
     const tratados = await require('./utils/responsaveis').tratarResponsavelInvalido(member.guild, member.id, 'ausente');
     if (tratados.length) console.log(`♻️ [fantasma/evento] Saída de ${member.id}: ${tratados.length} ticket(s) reatribuído(s).`);
@@ -137,8 +160,20 @@ client.on('guildMemberRemove', async member => {
 // do painel foi removida a pedido do operador. A única faxina que sobrou é a dedup de painéis
 // duplicados do próprio bot, que roda quando o painel fixo é postado/editado (postarPainelFixo).
 client.on('messageCreate', message => {
+  // Ordem importa: o filtro por canal vem primeiro pra não logar recusa a cada mensagem de
+  // qualquer canal de qualquer servidor. Depois dele, o guard fecha a porta do webhook —
+  // requerimento da Polícia Civil vindo de fora do guild configurado não vira medida cautelar.
   if (message.channelId !== config.canalRequerimentoPoliciaCivilId) return;
+  if (!guildGuard.guardarEvento('webhook/policia-civil', message.guildId ?? message.guild, `mensagem ${message.id}`)) return;
   integracaoPoliciaCivil.processarRequerimento(message).catch(err => console.error('Erro na integração com a Polícia Civil:', err));
+});
+
+// A aplicação nova foi convidada pra um servidor que não é o dela. Não faz nada (não sai do
+// servidor sozinho — isso é decisão do operador), só grita no log: sintoma de token/convite
+// trocado entre as instalações, que é justamente o que o isolamento precisa deixar visível.
+client.on('guildCreate', guild => {
+  if (guildGuard.guildPermitida(guild)) return;
+  console.warn(`[guard] ⚠️ bot ADICIONADO a um servidor fora do escopo: ${guild.name} (${guild.id}). GUILD_ID desta instalação é ${guildGuard.guildAlvo()}. O bot NÃO vai operar ali; remova o convite ou revise o token/GUILD_ID.`);
 });
 
 async function responderErro(interaction, err) {
@@ -150,6 +185,10 @@ async function responderErro(interaction, err) {
 
 client.on('interactionCreate', async interaction => {
   try {
+    // PRIMEIRA coisa, antes de qualquer roteamento: interação de outro servidor (ou de DM) é
+    // recusada em efêmero e não chega em comando nenhum — nenhuma leitura, nenhuma escrita.
+    if (!await guildGuard.guardarInteracao(interaction)) return;
+
     // Slash commands
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);

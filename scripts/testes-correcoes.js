@@ -24,6 +24,10 @@ process.env.CARGO_STAFF_ID = '';
 process.env.ROLE_SUPER_STAFF_ID = '';
 process.env.CATEGORIA_PETICOES_ID = '';
 process.env.CATEGORIA_ARQUIVADOS_ID = '';
+// Guild da "instalação" do teste: os mocks todos usam id 'guild1' (ver fakeGuild), e o guard de
+// isolamento (utils/guildGuard.js) recusa qualquer guild que não seja a de GUILD_ID. Sem isso,
+// auditoria/criação de canal/Diário passariam a recusar tudo aqui dentro.
+process.env.GUILD_ID = 'guild1';
 // Roles configuradas (pro teste de troca de cargo do RH conseguir add/remove role).
 process.env.ROLE_DELEGADO_ID = 'role_delegado';
 process.env.ROLE_PROMOTOR_ID = 'role_promotor';

@@ -3,6 +3,7 @@
 // NÃO em env (o Railway é read-only em runtime). NÃO reutiliza a env legada CANAL_DIARIO_OFICIAL_ID
 // (essa é do canal "advogar-pegar-casos", que é outra coisa).
 const estado = require('./estado');
+const guildGuard = require('./guildGuard');
 const { EmbedBuilder } = require('discord.js');
 
 const CHAVE = 'diarioOficialId';
@@ -118,6 +119,9 @@ async function publicarNoDiario(guild, tipo, dados = {}) {
   try {
     const canalId = getCanalId();
     if (!canalId || !guild) return false; // Diário não configurado → ignora em silêncio
+    // Camada de profundidade do isolamento: o Diário é publicação PÚBLICA com @everyone —
+    // publicar ato de um tribunal no servidor do outro é o pior vazamento possível aqui.
+    if (!guildGuard.guardarEvento('diarioOficial.publicarNoDiario', guild, `ato "${tipo}"`)) return false;
     const canal = await guild.channels.fetch(canalId).catch(() => null);
     if (!canal || !canal.isTextBased?.()) return false;
     // Publicação em tempo real marca @everyone (decisão do operador). No modo SILENCIOSO

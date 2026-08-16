@@ -1,6 +1,7 @@
 const { ChannelType, PermissionFlagsBits, OverwriteType } = require('discord.js');
 const config = require('../config');
 const estado = require('./estado');
+const guildGuard = require('./guildGuard');
 
 function slugCanal(numero) {
   return numero.toLowerCase().replace(/[^a-z0-9-]/g, '-');
@@ -10,6 +11,10 @@ function slugCanal(numero) {
 // da mensagem fixa do painel) — assim novos módulos que precisam de categoria própria não
 // dependem de configuração manual no .env, só nascem organizados sozinhos.
 async function obterOuCriarCategoria(guild, chaveEstado, nome) {
+  // Camada de profundidade do isolamento: criar categoria/canal é a escrita mais visível e mais
+  // chata de desfazer, e ainda grava o id no `estado` (banco) — se vier do guild errado, a
+  // instalação passa a apontar pra uma categoria de outro servidor. Ver utils/guildGuard.js.
+  guildGuard.exigirGuild(guild, 'canais.obterOuCriarCategoria');
   const idSalvo = estado.obter(chaveEstado);
   if (idSalvo) {
     const existente = await guild.channels.fetch(idSalvo).catch(() => null);
@@ -33,6 +38,7 @@ async function obterOuCriarCategoria(guild, chaveEstado, nome) {
 // A única exceção real é aguardarAnexoPDF, que depende de mensagem de verdade pra pegar o
 // anexo — ele mesmo libera SendMessages pontualmente pra quem está anexando (ver anexoPdf.js).
 async function criarCanalTicket(guild, { categoriaId, prefixo, numero, membros = [], bloquearConversa = false }) {
+  guildGuard.exigirGuild(guild, 'canais.criarCanalTicket');
   const permissaoMembro = bloquearConversa
     ? { allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] }
     : { allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] };
