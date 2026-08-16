@@ -236,6 +236,9 @@ function submenuSupervisao(interaction) {
     ),
     // Frente 3.3 — a Ficha do judiciário (funcional) passou a viver aqui, na Supervisão.
     linha(
+      // Parte 2 — caminho universal: qualquer caso (processo, medida, petição, apelação), qualquer
+      // papel. Os quatro botões acima são os atalhos de sempre; este cobre o resto sem enumerar tipo.
+      botaoSe(true, 'painel:acao:supervisao:trocarresponsavel', '🔁 Trocar responsável', ButtonStyle.Primary),
       botaoSe(true, 'painel:acao:supervisao:filas', 'Filas pendentes', ButtonStyle.Secondary),
       botaoSe(true, 'painel:acao:cargo:ficha', '🏅 Ficha do judiciário', ButtonStyle.Secondary),
     ),
@@ -781,6 +784,11 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   }
 
   if (modulo === 'supervisao') {
+    // Parte 2 — troca universal: `ticket` é o botão 🛡️ Supervisão dentro do caso; `trocaresp` é a
+    // escolha do papel (mesma tela vinda do ticket ou do painel central).
+    if (acao === 'ticket') return supervisao.abrirSupervisaoTicket(interaction, extra);
+    if (acao === 'trocarresponsavel') return supervisao.abrirModalTrocaGenerica(interaction);
+    if (acao === 'trocaresp') return supervisao.abrirModalTrocaResponsavel(interaction, extra);
     if (acao === 'trocarjuiz') return supervisao.abrirModalTrocarJuiz(interaction);
     if (acao === 'trocarpromotor') return supervisao.abrirModalTrocarPromotor(interaction);
     if (acao === 'trocardelegado') return supervisao.abrirModalTrocarDelegado(interaction);
@@ -1281,6 +1289,14 @@ async function tratarModal(interaction, modulo, acao, extra) {
 
   if (modulo === 'habilitacao' && acao === 'solicitar') {
     return processoCmd.criarHabilitacao(interaction, extra);
+  }
+
+  if (modulo === 'supervisao' && acao === 'trocaresp0') {
+    return supervisao.trocaGenericaSubmit(interaction);
+  }
+
+  if (modulo === 'supervisao' && acao === 'trocaresp') {
+    return supervisao.trocaResponsavelSubmit(interaction, extra);
   }
 
   if (modulo === 'supervisao' && acao === 'trocarjuiz') {

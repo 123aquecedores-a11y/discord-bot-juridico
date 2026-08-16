@@ -60,6 +60,10 @@ client.once('ready', async () => {
   // não duplica, e não derruba o boot se faltar permissão (ver utils/garantirCanais.js).
   await garantirCanais(guild);
 
+  // Parte 4: faz o que é novo valer pros tickets que já existiam — backfill de uso único do
+  // sorteioPromotorEm (trava das 24h do MP) + relatório de quantos casos abertos há por tipo.
+  require('./utils/retroatividade').aplicarRetroatividade();
+
   // Simulador de alto fluxo (só quando SIMULAR=1) — cria tickets ao vivo pra teste. Ver
   // scripts/simulador.js. Roda em paralelo, sem travar o bot (que segue respondendo normalmente).
   if (process.env.SIMULAR === '1') {

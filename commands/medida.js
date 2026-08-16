@@ -28,6 +28,7 @@ const { selectTipoMedidaCoercitiva, rotuloTipo, modalTipoDestinatario } = requir
 const partesProcesso = require('../utils/partesProcesso');
 const mandadoCmd = require('./mandado');
 const andamentos = require('../utils/andamentos');
+const responsaveis = require('../utils/responsaveis');
 const cartorio = require('../utils/cartorio');
 const preferencias = require('../utils/preferencias');
 const { RascunhoTTL } = require('../utils/rascunhoTtl');
@@ -78,6 +79,8 @@ function botoesAnalise(numero) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`medida:aprovar:${numero}`).setLabel('Aprovar').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`medida:negar:${numero}`).setLabel('Negar').setStyle(ButtonStyle.Danger),
+    // Troca de Juiz/Promotor/Delegado da medida sem sair do ticket (Parte 2) — gate no clique.
+    responsaveis.botaoSupervisaoTicket('medidas', numero),
   );
 }
 
@@ -88,6 +91,7 @@ function botoesJuizMedida(numero) {
     new ButtonBuilder().setCustomId(`medida:referendar:${numero}`).setLabel('Referendar').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`painel:acao:medida:negarjuiz:${numero}`).setLabel('Negar provimento').setStyle(ButtonStyle.Danger),
     botaoArquivarManual(numero),
+    responsaveis.botaoSupervisaoTicket('medidas', numero),
   );
 }
 
@@ -188,6 +192,7 @@ function botoesAnaliseDireta(numero) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`painel:acao:medida:deferirdireta:${numero}`).setLabel('Deferir').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`painel:acao:medida:indeferirdireta:${numero}`).setLabel('Indeferir').setStyle(ButtonStyle.Danger),
+    responsaveis.botaoSupervisaoTicket('medidas', numero),
   );
 }
 

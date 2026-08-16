@@ -29,7 +29,7 @@ async function distribuirJuizAoCaso(guild, { tabela, numero }, juizId, { origem 
       await canal.send({
         content: `⚖️ **Comunicação do Tribunal** — <@${juizId}>, Vossa Senhoria foi ${nota} para esta petição (que aguardava julgador).`,
         embeds: [peticaoCmd.embedPeticao(db.buscarPorNumero('peticoes', numero))],
-        components: [peticaoCmd.botoesDecisao(numero)],
+        components: peticaoCmd.botoesDecisao(numero),
       });
     }
     return true;
