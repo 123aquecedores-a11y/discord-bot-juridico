@@ -1106,6 +1106,83 @@ function seedProcesso(numero, extra) {
     ok(rel.peticoes.comResponsavel >= 1 && rel.peticoes.comResponsavel <= rel.peticoes.abertos, '  ...e quantos deles têm responsável marcado');
   }
 
+  // ============ ITEM 25: reconciliação no boot (fantasma pré-existente: ausente E sem cargo) ============
+  console.log('\nItem 25 — reconciliação no boot (conserta o que o evento nunca pegou):');
+  {
+    const responsaveis = require('../utils/responsaveis');
+    const fora = new Set();
+    const guildR = {
+      id: 'guild1', roles: { everyone: 'e' },
+      members: { fetch: async (id) => { if (fora.has(id)) throw Object.assign(new Error('Unknown Member'), { code: 10007 }); return fakeMember(id); } },
+      channels: { fetch: async () => fakeChannel() },
+    };
+    // O banco do teste já acumulou dezenas de tickets de fixture cujos responsáveis nunca entraram
+    // no rh — na vida real isso dispararia (corretamente) a trava de segurança e abortaria a
+    // reconciliação por cargo. Aqui o limite é afrouxado pra o teste medir o COMPORTAMENTO; a trava
+    // em si é testada no 25h, com o limite de produção.
+    const varrer = () => responsaveis.reatribuirTicketsFantasma(guildR, { limiteSemCargo: 999 });
+
+    rh.contratar('rec_des_ok', 'Desembargador');
+    rh.contratar('rec_juiz_ok', 'Juiz');
+
+    // 25a: o caso real — apelação 002AP com relatora que saiu ANTES da feature existir (nenhum
+    // guildMemberRemove chegou). A varredura do boot conserta sozinha.
+    rh.contratar('rec_sumiu', 'Desembargador'); fora.add('rec_sumiu');
+    db.inserir('apelacoes', { numero: 'REC-002AP', status: 'Aguardando decisão', desembargadorId: 'rec_sumiu', canalId: 'cR1' });
+
+    // 25b: presente no servidor, mas o rh não o registra mais como Juiz (demitido/promovido)
+    db.inserir('processos', { numero: 'REC-SC', tipo: 'Penal', status: 'Instrução', juiz: 'rec_sem_cargo', canalId: 'cR2' });
+
+    // 25c: Delegado fora do rh (injetado pela PC por menção crua) — NÃO pode ser expulso
+    db.inserir('processos', { numero: 'REC-PC', tipo: 'Penal', status: 'Instrução', juiz: 'rec_juiz_ok', delegado: 'rec_del_pc', canalId: 'cR3' });
+
+    // 25d: arquivado com fantasma → intocado (responsável histórico é registro, não atribuição)
+    db.inserir('processos', { numero: 'REC-ARQ', tipo: 'Penal', status: 'Arquivado', juiz: 'rec_sumiu', canalId: 'cR4' });
+
+    const tratados = await varrer();
+    const ap = db.buscarPorNumero('apelacoes', 'REC-002AP');
+    const sc = db.buscarPorNumero('processos', 'REC-SC');
+    ok(ap.desembargadorId !== 'rec_sumiu' && rh.temCargo(ap.desembargadorId, 'Desembargador'), '25a: fantasma pré-existente (saiu antes da feature) é corrigido pela varredura do boot');
+    ok(sc.juiz !== 'rec_sem_cargo' && rh.temCargo(sc.juiz, 'Juiz') && tratados.some(t => t.numero === 'REC-SC' && t.motivoTipo === 'semcargo' && t.resultado === 'reatribuido'), '25b: presente no servidor mas SEM o cargo no rh também é reconciliado');
+    ok(db.buscarPorNumero('processos', 'REC-PC').delegado === 'rec_del_pc', '25c: Delegado fora do rh (integração da PC) NÃO é expulso pela reconciliação');
+    ok(db.buscarPorNumero('processos', 'REC-ARQ').juiz === 'rec_sumiu', '25d: ticket arquivado é intocado');
+
+    // 25e: o motivo automático fica registrado no histórico dos autos
+    const andRec = db.todos('andamentos', a => a.processoNumero === 'REC-SC' && a.tipo === 'troca_responsavel');
+    ok(andRec.some(a => /reconcilia/i.test(a.detalhe || '')), '25e: reconciliação registra o motivo no histórico dos autos (nunca em silêncio)');
+
+    // 25f: idempotente — rodar de novo (todo deploy) não mexe em nada
+    const snap = JSON.stringify([db.buscarPorNumero('apelacoes', 'REC-002AP'), db.buscarPorNumero('processos', 'REC-SC')]);
+    await varrer();
+    ok(snap === JSON.stringify([db.buscarPorNumero('apelacoes', 'REC-002AP'), db.buscarPorNumero('processos', 'REC-SC')]), '25f: idempotente — seguro rodar a cada deploy');
+
+    // 25g: sem substituto, "sem cargo" MANTÉM o responsável (esvaziar pioraria: de alguém presente
+    // que ainda age pra ninguém). Só "ausente" (definitivo) esvazia e marca pendência.
+    db.todos('rh', r => r.cargo === 'Promotor' && r.ativo).forEach(r => rh.demitir(r.discordId));
+    db.inserir('processos', { numero: 'REC-MANT', tipo: 'Penal', status: 'Instrução', promotor: 'rec_prom_presente', canalId: 'cR5' });
+    db.inserir('processos', { numero: 'REC-VAZIO', tipo: 'Penal', status: 'Instrução', promotor: 'rec_prom_sumiu', canalId: 'cR6' });
+    fora.add('rec_prom_sumiu');
+    const t2 = await varrer();
+    ok(db.buscarPorNumero('processos', 'REC-MANT').promotor === 'rec_prom_presente' && t2.some(t => t.numero === 'REC-MANT' && t.resultado === 'mantido_sem_substituto'), '25g: sem substituto, "sem cargo" mantém quem está presente (não esvazia o caso)');
+    ok(db.buscarPorNumero('processos', 'REC-VAZIO').promotor === null && db.buscarPorNumero('processos', 'REC-VAZIO').semResponsavelPendente === true, '  ...mas "ausente do servidor" esvazia e vira pendência (fantasma nunca fica no lugar)');
+
+    // 25h: trava de segurança — muitos "sem cargo" de uma vez (cara de rh zerado) aborta a
+    // reconciliação POR CARGO, sem impedir a correção por ausência. Aqui SEM afrouxar o limite.
+    rh.contratar('rec_juiz_pool', 'Juiz'); // há substituto: a trava é o único motivo pra não mexer
+    const massa = [];
+    for (let i = 0; i < responsaveis.LIMITE_RECONCILIACAO_SEM_CARGO + 2; i++) {
+      const n = `REC-MASSA${i}`;
+      massa.push(n);
+      db.inserir('processos', { numero: n, tipo: 'Penal', status: 'Instrução', juiz: `rec_massa_juiz${i}`, canalId: `cM${i}` });
+    }
+    db.inserir('apelacoes', { numero: 'REC-MASSA-AUS', status: 'Aguardando decisão', desembargadorId: 'rec_massa_sumiu', canalId: 'cMA' });
+    fora.add('rec_massa_sumiu');
+    await responsaveis.reatribuirTicketsFantasma(guildR);
+    const intactos = massa.every((n, i) => db.buscarPorNumero('processos', n).juiz === `rec_massa_juiz${i}`);
+    ok(intactos, '25h: "sem cargo" em massa (cara de rh zerado) NÃO reatribui nada — pede conferência humana');
+    ok(db.buscarPorNumero('apelacoes', 'REC-MASSA-AUS').desembargadorId !== 'rec_massa_sumiu', '  ...e a correção por AUSÊNCIA do servidor segue valendo na mesma rodada');
+  }
+
   // ---- Resumo ----
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`  ❌ ${f.nome}${f.detalhe ? ` — ${f.detalhe}` : ''}`)); }

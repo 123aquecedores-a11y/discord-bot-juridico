@@ -91,6 +91,13 @@ async function checarMembro(guild, id) {
   }
 }
 
+// Trava de segurança da reconciliação por cargo: demissão em massa real não existe: dezenas de
+// responsáveis "sem cargo" de uma vez é sintoma de rh zerado/corrompido (este banco já foi resetado
+// antes), e reatribuir tudo seria destrutivo e difícil de desfazer. Acima deste limite, a
+// reconciliação POR CARGO é abortada e pede conferência humana — a detecção por AUSÊNCIA (que é
+// definitiva) continua valendo normalmente.
+const LIMITE_RECONCILIACAO_SEM_CARGO = 5;
+
 // É um responsável válido? 'valido' | 'ausente' | 'indeterminado'. Só olha PRESENÇA no servidor —
 // NÃO checa rh.temCargo: nem todo responsável de ticket é um cargo do rh (a integração da Polícia
 // Civil injeta o `delegado` por @menção crua, sem contratar no rh; ele é participante legítimo). Só
@@ -101,6 +108,23 @@ async function estadoResponsavel(guild, id) {
   if (res.indeterminado) return 'indeterminado';
   if (res.ausente) return 'ausente';
   return 'valido';
+}
+
+// Por que ESTE responsável é inválido? null = está válido (ou não dá pra afirmar). Dois motivos,
+// em ordem de confiança:
+//  1. 'ausente'  — saiu do servidor (10007). Definitivo, não tem falso positivo.
+//  2. 'semcargo' — continua no servidor, mas o rh não o registra mais naquele cargo (demitido,
+//     promovido, trocado). Conferido no RH, que é a fonte da verdade do bot, NUNCA na role do
+//     Discord: detectar por role já causou reatribuição indevida (o próprio swap de cargo do bot
+//     remove/readiciona a role). Papel que não vem do rh — Delegado, que a integração da Polícia
+//     Civil injeta por @menção crua — fica de fora por declaração (EXIGE_CARGO_RH), senão a
+//     reconciliação expulsaria um responsável legítimo que nunca esteve no quadro.
+async function motivoInvalidez(guild, papel, id) {
+  const estado = await estadoResponsavel(guild, id);
+  if (estado === 'indeterminado') return null; // falha transitória de rede: não arrisca
+  if (estado === 'ausente') return 'ausente';
+  if (EXIGE_CARGO_RH[papel] === false) return null;
+  return rh.temCargo(id, papel) ? null : 'semcargo';
 }
 
 // Sorteio do substituto por papel (Juiz balanceia carga; os outros é sorteio simples).
@@ -176,6 +200,13 @@ async function aplicarTroca(guild, { tabela, numero, papel, novoId, textoAndamen
   return { ok: true, antigoId, novoId };
 }
 
+// Motivo automático que vai pro andamento nos autos e pra auditoria — reatribuição automática
+// nunca acontece em silêncio nem sem justificativa registrada.
+const MOTIVOS_REATRIBUICAO = {
+  ausente: 'responsável ausente do servidor',
+  semcargo: 'responsável sem o cargo (reconciliação automática)',
+};
+
 // Reatribuição AUTOMÁTICA (Parte 3) — sorteia um substituto VÁLIDO e efetiva. Nunca em silêncio.
 async function reatribuirAutomatico(guild, { tabela, numero, papel, motivoTipo }) {
   const cfg = TABELAS_TICKET[tabela];
@@ -189,7 +220,7 @@ async function reatribuirAutomatico(guild, { tabela, numero, papel, motivoTipo }
   const novoId = await sortearSubstitutoValido(guild, papel, excluir);
   if (!novoId) return { ok: false, semSubstituto: true, antigoId, razao: 'sem substituto válido' };
 
-  const motivoTexto = motivoTipo === 'ausente' ? 'responsável ausente do servidor' : 'responsável sem o cargo';
+  const motivoTexto = MOTIVOS_REATRIBUICAO[motivoTipo] || 'responsável inválido';
   const [nomeAntigo, nomeNovo] = await Promise.all([
     documentoPng.nomeExibicao(guild, antigoId),
     documentoPng.nomeExibicao(guild, novoId),
@@ -319,6 +350,17 @@ function componentesPendencia(tabela, numero, papel) {
 async function aplicarReatribuicaoOuPendencia(guild, tabela, cfg, reg, papel, pcfg, motivoTipo) {
   const antigoId = reg[pcfg.campo];
   const r = await reatribuirAutomatico(guild, { tabela, numero: reg.numero, papel, motivoTipo });
+  // Sem substituto, os dois motivos NÃO se equivalem:
+  //  - 'ausente': a pessoa foi embora. Deixar o nome dela ali é atribuição falsa — tira e marca
+  //    pendência (é melhor um caso explicitamente sem responsável do que um fantasma).
+  //  - 'semcargo': a pessoa está NO SERVIDOR e consegue agir (os gates de ação usam user.id, não o
+  //    rh). Esvaziar o campo sem ter por quem trocar PIORA o caso — de alguém que ainda atua pra
+  //    ninguém — e por um sinal fraco (uma linha do rh). Então não mexe; segue candidato na próxima
+  //    varredura, quando talvez já exista substituto.
+  if (r.semSubstituto && motivoTipo === 'semcargo') {
+    console.warn(`♻️ [fantasma] ${rotuloTabela(tabela)} ${reg.numero}: ${papel} <@${antigoId}> está no servidor mas não consta no quadro (rh) — sem substituto disponível, foi MANTIDO (não se esvazia um caso que ainda tem quem aja).`);
+    return { tabela, numero: reg.numero, papel, antigoId, motivoTipo, resultado: 'mantido_sem_substituto', novoId: null };
+  }
   if (r.semSubstituto) {
     const atual = db.buscarPorNumero(tabela, reg.numero) || reg;
     const pendentes = Array.from(new Set([...(atual.pendenciaPapeis || []), papel]));
@@ -332,7 +374,7 @@ async function aplicarReatribuicaoOuPendencia(guild, tabela, cfg, reg, papel, pc
       });
     }
   }
-  return { tabela, numero: reg.numero, papel, antigoId, resultado: r.ok ? 'reatribuido' : (r.semSubstituto ? 'pendencia_sem_substituto' : 'falhou'), novoId: r.novoId || null };
+  return { tabela, numero: reg.numero, papel, antigoId, motivoTipo, resultado: r.ok ? 'reatribuido' : (r.semSubstituto ? 'pendencia_sem_substituto' : 'falhou'), novoId: r.novoId || null };
 }
 
 // PASSADA A — reconcilia o rh com o Discord: desativa todo registro ativo cujo dono saiu do servidor
@@ -349,20 +391,38 @@ async function limparRhFantasma(guild) {
   return orfaos;
 }
 
-// PASSADA B — reatribui os tickets abertos com responsável fantasma (ausente OU !rh.temCargo, o rh já
-// foi limpo na A). Falha transitória de fetch: não arrisca (não reatribui).
-async function reatribuirTicketsFantasma(guild) {
-  const tratados = [];
+// PASSADA B — RECONCILIAÇÃO: percorre todo ticket ABERTO e confere, pra cada responsável marcado,
+// se ele (1) ainda está no servidor e (2) ainda tem o cargo no rh. Falhando qualquer um dos dois,
+// reatribui pelo mesmo motor da troca. É a camada que conserta o que o evento nunca pega: quem saiu
+// (ou foi demitido) ANTES desta feature existir, ou enquanto o bot estava fora do ar — nenhum
+// guildMemberRemove chegou pra esses. Idempotente: numa 2ª passada não há mais o que consertar.
+// Falha transitória de fetch não reatribui ninguém (motivoInvalidez devolve null).
+async function reatribuirTicketsFantasma(guild, { limiteSemCargo = LIMITE_RECONCILIACAO_SEM_CARGO } = {}) {
+  // Levanta TODOS os candidatos antes de mexer em qualquer coisa — é o que permite a trava de
+  // segurança abaixo enxergar o tamanho do estrago antes de causá-lo.
+  const candidatos = [];
   for (const [tabela, cfg] of Object.entries(TABELAS_TICKET)) {
     for (const reg of db.todos(tabela).filter(r => ticketAberto(cfg, r))) {
       for (const [papel, pcfg] of Object.entries(cfg.papeis)) {
         const id = reg[pcfg.campo];
         if (!id) continue;
-        const estado = await estadoResponsavel(guild, id);
-        if (estado !== 'ausente') continue; // só reatribui quem SAIU do servidor (presente = mantém)
-        tratados.push(await aplicarReatribuicaoOuPendencia(guild, tabela, cfg, reg, papel, pcfg, 'ausente'));
+        const motivoTipo = await motivoInvalidez(guild, papel, id);
+        if (motivoTipo) candidatos.push({ tabela, cfg, reg, papel, pcfg, motivoTipo });
       }
     }
+  }
+
+  const semCargo = candidatos.filter(c => c.motivoTipo === 'semcargo');
+  const abortarSemCargo = semCargo.length > limiteSemCargo;
+  if (abortarSemCargo) {
+    console.warn(`⚠️ [fantasma] ${semCargo.length} responsáveis apareceram "sem o cargo" de uma vez (limite ${limiteSemCargo}) — isso tem cara de rh zerado, não de demissão em massa. Reconciliação POR CARGO abortada nesta rodada (confira o quadro no /rh); a correção por AUSÊNCIA do servidor seguiu normalmente.`);
+    console.warn(`   casos que ficaram de fora: ${semCargo.map(c => `${c.reg.numero}/${c.papel}`).join(', ')}`);
+  }
+
+  const tratados = [];
+  for (const c of candidatos) {
+    if (c.motivoTipo === 'semcargo' && abortarSemCargo) continue;
+    tratados.push(await aplicarReatribuicaoOuPendencia(guild, c.tabela, c.cfg, c.reg, c.papel, c.pcfg, c.motivoTipo));
   }
   return tratados;
 }
@@ -419,19 +479,25 @@ async function tratarResponsavelInvalido(guild, discordId, motivoTipo) {
 
 // Varredura completa: Passada A (limpa rh) → Passada B (conserta tickets) → recuperação de
 // pendências. Loga os números — é o "relatório do primeiro run". Sem cron novo.
-async function varrerResponsaveisFantasma(guild) {
+async function varrerResponsaveisFantasma(guild, opts = {}) {
   const orfaosRh = await limparRhFantasma(guild);
-  const tickets = await reatribuirTicketsFantasma(guild);
+  const tickets = await reatribuirTicketsFantasma(guild, opts);
   const recuperados = await recuperarPendencias(guild);
-  console.log(`♻️ [fantasma] Varredura: ${orfaosRh.length} registro(s) rh órfão(s) desativado(s); ${tickets.length} ticket(s) com responsável fantasma tratado(s); ${recuperados.length} pendência(s) recuperada(s).`);
+  // "Mantido" não é conserto — é um candidato que a trava de segurança deixou como estava. Contar
+  // junto faria o log dizer que consertou algo numa varredura que não mexeu em nada.
+  const mexidos = tickets.filter(t => t.resultado !== 'mantido_sem_substituto');
+  const mantidos = tickets.length - mexidos.length;
+  const porAusencia = mexidos.filter(t => t.motivoTipo === 'ausente').length;
+  const porCargo = mexidos.filter(t => t.motivoTipo === 'semcargo').length;
+  console.log(`♻️ [fantasma] Varredura: ${orfaosRh.length} registro(s) rh órfão(s) desativado(s); ${mexidos.length} ticket(s) com responsável fantasma tratado(s) (${porAusencia} por ausência do servidor, ${porCargo} por perda de cargo)${mantidos ? `; ${mantidos} mantido(s) por falta de substituto` : ''}; ${recuperados.length} pendência(s) recuperada(s).`);
   if (orfaosRh.length) console.log(`   rh órfãos: ${orfaosRh.map(o => `${o.discordId}(${o.cargo}: ${o.motivo})`).join(', ')}`);
-  if (tickets.length) console.log(`   tickets: ${tickets.map(t => `${t.numero}/${t.papel}→${t.resultado}`).join(', ')}`);
+  if (tickets.length) console.log(`   tickets: ${tickets.map(t => `${t.numero}/${t.papel}[${t.motivoTipo}]→${t.resultado}`).join(', ')}`);
   return { orfaosRh, tickets, recuperados };
 }
 
 module.exports = {
-  TABELAS_TICKET, QUEM_TROCA, EXIGE_CARGO_RH, ticketAberto,
-  checarMembro, estadoResponsavel, sortearParaPapel, sortearSubstitutoValido, canalArquivado,
+  TABELAS_TICKET, QUEM_TROCA, EXIGE_CARGO_RH, ticketAberto, LIMITE_RECONCILIACAO_SEM_CARGO,
+  checarMembro, estadoResponsavel, motivoInvalidez, sortearParaPapel, sortearSubstitutoValido, canalArquivado,
   responsaveisAtuais, aplicarTroca, reatribuirAutomatico, rotuloTabela,
   resolverTicket, papeisTrocaveis, podeTrocarPapel, botaoSupervisaoTicket, trocarManual,
   limparRhFantasma, reatribuirTicketsFantasma, recuperarPendencias,
