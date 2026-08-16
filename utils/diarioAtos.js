@@ -10,6 +10,7 @@
 //    estado (Nível 2 publica no cumprimento) — nada de lógica de publicação espalhada.
 const db = require('../database/db');
 const diario = require('./diarioOficial');
+const anexos = require('./anexos');
 
 // Rótulo do tipo de petição administrativa no card. O Diário é dono da sua própria apresentação —
 // não importamos TIPO_LABEL de commands/peticao.js pra evitar require circular (peticao ↔ diarioAtos).
@@ -52,6 +53,14 @@ const NATUREZAS = {
     nivel: 1,
     publicavel: (p) => !!p && p.status === 'Arquivado' && p.tipo === 'Penal',
     montar: (p) => ({ tipo: 'arquivamento_inquerito', dados: { numero: p.numero, promotorId: p.promotor || null } }),
+    // TEXTO LONGO: o relatório do inquérito (Polícia Civil) chega a 12-20k chars e NÃO cabe inline
+    // (embed corta em 4096). Vai como ANEXO — o PDF já existe em documentosAnexados (tipo
+    // relatorio_inquerito), buscado pelo número do processo. O card fica curto; o teor íntegro no PDF.
+    files: (p) => {
+      const docs = anexos.listarPorProtocolo(p.numero) || [];
+      const rel = docs.find(d => d.tipo === 'relatorio_inquerito' && d.url);
+      return rel ? [{ attachment: rel.url, name: rel.nomeArquivo || `Relatorio-Inquerito-${p.numero}.pdf` }] : null;
+    },
   },
 
   // NÍVEL 1 — indeferimento/arquivamento da petição inicial cível (Juiz indefere a inicial). Cível.
@@ -71,6 +80,27 @@ const NATUREZAS = {
     nivel: 1,
     publicavel: (p) => !!p && p.status === 'Instrução' && p.revisaoArquivamento === 'Decidida',
     montar: (p) => ({ tipo: 'desarquivamento', dados: { numero: p.numero, juizId: p.juiz || null } }),
+  },
+
+  // NÍVEL 2 — mandado CUMPRIDO. A cautelar (busca/prisão/quebra) só publica AQUI, no cumprimento,
+  // nunca no deferimento (publicar antes avisaria o alvo e queimaria a diligência). O alvo já sabe
+  // no momento em que o mandado é cumprido — daí publicar deixa de ser vazamento.
+  mandadoCumprido: {
+    tabela: 'mandados',
+    nivel: 2,
+    publicavel: (m) => !!m && m.status === 'Cumprido',
+    montar: (m) => ({ tipo: 'mandado_cumprido', dados: { numero: m.numero, tipoMandado: m.tipo, alvo: m.alvo, processoNumero: m.processoVinculado || null, cumpridoPorId: m.cumpridoPor || null } }),
+  },
+
+  // NÍVEL 2 (escape) — mandado que NUNCA foi cumprido e cujo caso já encerrou. Publica com resultado
+  // "não cumprido" pra fechar o sigilo (nunca indefinido). Quem decide QUANDO chamar é a varredura
+  // (varrerDiario) — só quando a medida/processo encerra; o predicado aqui só impede republicar um
+  // mandado que na verdade foi cumprido.
+  mandadoNaoCumprido: {
+    tabela: 'mandados',
+    nivel: 2,
+    publicavel: (m) => !!m && m.status === 'Emitido',
+    montar: (m) => ({ tipo: 'mandado_nao_cumprido', dados: { numero: m.numero, tipoMandado: m.tipo, alvo: m.alvo, processoNumero: m.processoVinculado || null } }),
   },
 };
 
@@ -92,8 +122,16 @@ async function publicarAto(guild, natureza, record, opts = {}) {
     if (record.diarioPublicado && record.diarioPublicado[natureza]) return false;
     if (!def.publicavel(record)) return false;         // o estado atual ainda não justifica publicar
     const { tipo, dados } = def.montar(record, guild);
-    const files = Array.isArray(opts.files) && opts.files.length ? opts.files : undefined;
-    const enviada = await diario.publicarNoDiario(guild, tipo, { ...dados, ...(files ? { files } : {}) });
+    // Anexo: usa o que o handler passou; senão deixa a natureza buscar (ex.: PDF do relatório do
+    // inquérito). Blindado — anexo que falhe não impede a publicação do card.
+    let files = Array.isArray(opts.files) && opts.files.length ? opts.files : null;
+    if (!files && typeof def.files === 'function') {
+      files = await Promise.resolve(def.files(record, guild)).catch(() => null);
+    }
+    files = Array.isArray(files) && files.length ? files : undefined;
+    // silencioso: a varredura/backfill publica SEM @everyone (senão o backlog floodaria pings); o
+    // ato em tempo real (chamado do handler) mantém o ping.
+    const enviada = await diario.publicarNoDiario(guild, tipo, { ...dados, ...(files ? { files } : {}), silencioso: !!opts.silencioso });
     // Diário não configurado / canal sumiu / sem permissão → publicarNoDiario devolve false. NÃO
     // marca: assim a varredura (Etapa 5) tenta de novo depois, em vez de perder a publicação.
     if (!enviada) return false;
@@ -109,4 +147,54 @@ async function publicarAto(guild, natureza, record, opts = {}) {
   }
 }
 
-module.exports = { publicarAto, NATUREZAS, LABEL_PETICAO };
+// Um mandado está "abandonado" (escape do Nível 2) quando foi emitido, NUNCA cumprido, e o caso já
+// encerrou — aí publica-se "não cumprido" pra o sigilo nunca ser indefinido. Conservador: na dúvida
+// (caso ainda em curso) NÃO publica; o mandado segue sigiloso até encerrar de verdade.
+function mandadoAbandonado(m) {
+  if (!m || m.status !== 'Emitido') return false;
+  if (m.medidaNumero) {
+    const med = db.buscarPorNumero('medidas', m.medidaNumero);
+    if (med && (med.arquivadoManual || ['Negada', 'Indeferida', 'Indeferida pelo Juiz'].includes(med.status))) return true;
+  }
+  if (m.processoVinculado) {
+    const proc = db.buscarPorNumero('processos', m.processoVinculado);
+    if (proc && (proc.arquivadoManual || ['Arquivado', 'Encerrado'].includes(proc.status))) return true;
+  }
+  return false;
+}
+
+// Naturezas que a varredura publica automaticamente (backfill + rede de segurança): a decisão já
+// está refletida no estado do registro. mandadoNaoCumprido NÃO entra aqui — o escape tem gatilho
+// próprio (o caso precisa ter encerrado), tratado à parte.
+const NATUREZAS_VARREDURA = ['peticaoAdministrativa', 'arquivamentoInquerito', 'indeferimentoInicial', 'desarquivamento', 'mandadoCumprido'];
+
+function jaPublicou(record, natureza) {
+  return !!(record && record.diarioPublicado && record.diarioPublicado[natureza]);
+}
+
+// Varredura do Diário — roda no job diário. Publica, EM SILÊNCIO (sem @everyone), todo ato decisório
+// que já deveria ter publicado e não publicou: é o BACKFILL retroativo (ex.: o porte de arma decidido
+// antes desta feature) e a rede de segurança pra qualquer handler que tenha falhado. Idempotente
+// (marcador por natureza). Fecha também o escape do Nível 2 (mandado nunca cumprido de caso encerrado).
+async function varrerDiario(guild) {
+  if (!guild) return { publicados: 0 };
+  let publicados = 0;
+  for (const natureza of NATUREZAS_VARREDURA) {
+    const def = NATUREZAS[natureza];
+    // Cronológico: publica o backlog na ordem em que os casos nasceram (proxy da ordem dos atos).
+    const pendentes = db.todos(def.tabela, (r) => def.publicavel(r) && !jaPublicou(r, natureza))
+      .sort((a, b) => String(a.criadoEm || '').localeCompare(String(b.criadoEm || '')));
+    for (const r of pendentes) {
+      if (await publicarAto(guild, natureza, r, { silencioso: true })) publicados++;
+    }
+  }
+  // Escape do Nível 2: mandado emitido, nunca cumprido, de caso já encerrado → publica "não cumprido".
+  const abandonados = db.todos('mandados', (m) => mandadoAbandonado(m) && !jaPublicou(m, 'mandadoNaoCumprido'));
+  for (const m of abandonados) {
+    if (await publicarAto(guild, 'mandadoNaoCumprido', m, { silencioso: true })) publicados++;
+  }
+  if (publicados) console.log(`📜 [diario] Varredura: ${publicados} ato(s) publicado(s) em silêncio (backfill/escape).`);
+  return { publicados };
+}
+
+module.exports = { publicarAto, varrerDiario, mandadoAbandonado, NATUREZAS, LABEL_PETICAO };

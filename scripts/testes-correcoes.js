@@ -51,6 +51,7 @@ const peticaoCmd = require('../commands/peticao');
 const rhCmd = require('../commands/rh');
 const painelCmd = require('../commands/painel');
 const diarioAtos = require('../utils/diarioAtos');
+const diario = require('../utils/diarioOficial');
 const estado = require('../utils/estado');
 const rh = require('../utils/rh');
 const config = require('../config');
@@ -835,6 +836,86 @@ function seedProcesso(numero, extra) {
     const itCiv = makeInteraction({ userId: 'juizE', guild: fakeGuild(), member: null });
     await processoCmd.arquivarCivil(itCiv, 'DIA-INI2');
     ok(acharPub() && (db.buscarPorNumero('processos', 'DIA-INI2') || {}).diarioPublicado?.indeferimentoInicial, '19f: arquivarCivil publica o indeferimento inicial (end-to-end)');
+  }
+
+  // ============ ITEM 20: Diário Etapa 3 — Nível 2 publica no cumprimento, não no deferimento ============
+  console.log('\nItem 20 — Diário Etapa 3 (mandado publica no cumprimento, não no deferimento):');
+  {
+    estado.definir('diarioOficialId', 'diariochan');
+    const acharPub = () => rec.sends.find(s => s.content === '@everyone' && Array.isArray(s.embeds) && s.embeds.length);
+    const dataDe = (pub) => JSON.stringify((pub && pub.embeds && pub.embeds[0] && pub.embeds[0].data) || {});
+
+    // 20a: mandado só Emitido (deferido, ainda não cumprido) NÃO publica — sem vazamento no deferimento
+    const m1 = db.inserir('mandados', { numero: 'MND-1', tipo: 'Busca e Apreensão', alvo: 'Fulano', status: 'Emitido', processoVinculado: 'P1', cumpridoPor: null });
+    rec.sends.length = 0;
+    const r0 = await diarioAtos.publicarAto(fakeGuild(), 'mandadoCumprido', m1);
+    ok(r0 === false && !acharPub(), '20a: mandado só Emitido NÃO publica (o vazamento do deferimento foi fechado)');
+
+    // 20b: cumprido → publica com card de cumprimento + marca
+    db.atualizar('mandados', 'MND-1', { status: 'Cumprido', cumpridoPor: 'delX' });
+    rec.sends.length = 0;
+    const r1 = await diarioAtos.publicarAto(fakeGuild(), 'mandadoCumprido', db.buscarPorNumero('mandados', 'MND-1'));
+    ok(r1 === true && /cumprido/i.test(dataDe(acharPub())), '20b: mandado cumprido publica no Diário (card de cumprimento)');
+    ok((db.buscarPorNumero('mandados', 'MND-1') || {}).diarioPublicado?.mandadoCumprido, '  ...e marca a natureza');
+  }
+
+  // ============ ITEM 21: Diário Etapa 4 — texto longo do inquérito vai por anexo, não inline ============
+  console.log('\nItem 21 — Diário Etapa 4 (texto longo por anexo, não inline):');
+  {
+    estado.definir('diarioOficialId', 'diariochan');
+    const acharPub = () => rec.sends.find(s => s.content === '@everyone' && Array.isArray(s.embeds) && s.embeds.length);
+    const corpo15k = 'X'.repeat(15000);
+
+    // 21a: arquivamento de inquérito ANEXA o PDF do relatório (documentosAnexados), não inline
+    const proc = db.inserir('processos', { numero: 'INQ-LONG', tipo: 'Penal', status: 'Arquivado', promotor: 'promL' });
+    require('../utils/anexos').criarDocumento({ tipo: 'relatorio_inquerito', url: 'https://cdn.fake/relatorio-15k.pdf', nomeArquivo: 'Relatorio-15k.pdf', autorId: 'del1', protocoloVinculado: 'INQ-LONG' });
+    rec.sends.length = 0;
+    await diarioAtos.publicarAto(fakeGuild(), 'arquivamentoInquerito', proc);
+    const pub = acharPub();
+    ok(pub && Array.isArray(pub.files) && pub.files.some(f => /Relatorio-15k/.test(f.name)), '21a: o PDF do relatório do inquérito é anexado ao card');
+    const desc = (pub && pub.embeds[0].data.description) || '';
+    ok(desc.length < 4096 && !/XXXXXXXXXX/.test(desc), '21b: o card fica curto — o teor de 15k NÃO vai inline (só no anexo)');
+
+    // 21c: texto livre de 15.000 chars (comunicado) é cortado em 4096 — não estoura a publicação
+    rec.sends.length = 0;
+    await diario.publicarNoDiario(fakeGuild(), 'comunicado', { titulo: 'Longo', corpo: corpo15k });
+    const pubC = rec.sends.find(s => (s.embeds || []).length);
+    const descC = (pubC && pubC.embeds[0].data.description) || '';
+    ok(descC.length <= 4096, '21c: texto livre de 15k é cortado em 4096 (não quebra o embed)');
+  }
+
+  // ============ ITEM 22: Diário Etapa 5 — varredura (backfill silencioso + escape Nível 2) ============
+  console.log('\nItem 22 — Diário Etapa 5 (varredura: backfill silencioso + escape):');
+  {
+    estado.definir('diarioOficialId', 'diariochan');
+    const silenciosas = () => rec.sends.filter(s => (s.embeds || []).length && s.content === '');
+    const pings = () => rec.sends.filter(s => s.content === '@everyone');
+
+    // 22a: backfill — petição decidida ANTES da feature (sem marcador) é publicada em SILÊNCIO
+    db.inserir('peticoes', { numero: 'BACK-PA', tipo: 'PorteArma', status: 'Deferido', juiz: 'juizB', nomeCliente: 'Antigo', criadoEm: '2026-01-01T00:00:00.000Z' });
+    rec.sends.length = 0;
+    const r = await diarioAtos.varrerDiario(fakeGuild());
+    ok(r.publicados >= 1 && (db.buscarPorNumero('peticoes', 'BACK-PA') || {}).diarioPublicado?.peticaoAdministrativa, '22a: varredura faz backfill da petição decidida não publicada');
+    ok(silenciosas().length >= 1 && pings().length === 0, '  ...em SILÊNCIO (sem @everyone — não floodou pings)');
+
+    // 22b: idempotente — segunda varredura não republica nada
+    rec.sends.length = 0;
+    const r2 = await diarioAtos.varrerDiario(fakeGuild());
+    ok(r2.publicados === 0 && rec.sends.length === 0, '22b: segunda varredura não republica (idempotente)');
+
+    // 22c: escape — mandado Emitido nunca cumprido, de medida arquivada, publica "não cumprido"
+    db.inserir('medidas', { numero: 'MED-AB', status: 'Deferida', arquivadoManual: true, delegado: 'delA', juiz: 'juizA' });
+    db.inserir('mandados', { numero: 'MND-AB', tipo: 'Busca e Apreensão', alvo: 'Beltrano', status: 'Emitido', medidaNumero: 'MED-AB', cumpridoPor: null });
+    rec.sends.length = 0;
+    await diarioAtos.varrerDiario(fakeGuild());
+    ok((db.buscarPorNumero('mandados', 'MND-AB') || {}).diarioPublicado?.mandadoNaoCumprido, '22c: escape publica o mandado não cumprido de caso encerrado');
+
+    // 22d: mandado Emitido de caso EM CURSO (não arquivado) NÃO publica — sigilo mantido até encerrar
+    db.inserir('medidas', { numero: 'MED-ON', status: 'Deferida', arquivadoManual: false, delegado: 'delB' });
+    db.inserir('mandados', { numero: 'MND-ON', tipo: 'Prisão Preventiva', alvo: 'Ciclano', status: 'Emitido', medidaNumero: 'MED-ON', cumpridoPor: null });
+    rec.sends.length = 0;
+    await diarioAtos.varrerDiario(fakeGuild());
+    ok(!(db.buscarPorNumero('mandados', 'MND-ON') || {}).diarioPublicado, '22d: mandado de caso em curso NÃO publica (sigilo até encerrar)');
   }
 
   // ---- Resumo ----

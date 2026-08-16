@@ -85,6 +85,21 @@ function montarEmbed(tipo, d) {
       return e.setColor(0x27ae60).setTitle(`📂 Arquivamento revisto — Processo nº ${d.numero}`)
         .setDescription('Em revisão de arquivamento, a **denúncia foi forçada** e o processo **reaberto para instrução**.')
         .addFields([d.juizId ? { name: 'Juiz(a) sorteado(a)', value: `<@${d.juizId}>`, inline: true } : null].filter(Boolean));
+    case 'mandado_cumprido':
+      return e.setColor(0xc0392b).setTitle(`📜 Mandado cumprido${d.tipoMandado ? ` — ${d.tipoMandado}` : ''}`)
+        .setDescription(`Mandado cumprido${d.processoNumero ? ` nos autos nº ${d.processoNumero}` : ''}.`)
+        .addFields([
+          d.numero ? { name: 'Mandado', value: String(d.numero), inline: true } : null,
+          d.alvo ? { name: 'Alvo', value: String(d.alvo), inline: true } : null,
+          d.cumpridoPorId ? { name: 'Cumprido por', value: `<@${d.cumpridoPorId}>`, inline: true } : null,
+        ].filter(Boolean));
+    case 'mandado_nao_cumprido':
+      return e.setColor(0x7f8c8d).setTitle(`📜 Mandado não cumprido${d.tipoMandado ? ` — ${d.tipoMandado}` : ''}`)
+        .setDescription(`Mandado expedido${d.processoNumero ? ` nos autos nº ${d.processoNumero}` : ''} e **não cumprido** até o encerramento do caso.`)
+        .addFields([
+          d.numero ? { name: 'Mandado', value: String(d.numero), inline: true } : null,
+          d.alvo ? { name: 'Alvo', value: String(d.alvo), inline: true } : null,
+        ].filter(Boolean));
     default:
       return e.setColor(0x2c3e50).setTitle('📜 Publicação Oficial').setDescription(String(d.texto || 'Ato publicado.'));
   }
@@ -105,13 +120,15 @@ async function publicarNoDiario(guild, tipo, dados = {}) {
     if (!canalId || !guild) return false; // Diário não configurado → ignora em silêncio
     const canal = await guild.channels.fetch(canalId).catch(() => null);
     if (!canal || !canal.isTextBased?.()) return false;
-    // TODA publicação do Diário marca @everyone (por decisão do operador). Garante, best-effort,
-    // que o bot possa mencionar @everyone neste canal (canais antigos podem ter nascido sem a perm).
+    // Publicação em tempo real marca @everyone (decisão do operador). No modo SILENCIOSO
+    // (varredura/backfill) NÃO marca — senão o backlog vira uma enxurrada de pings. Best-effort:
+    // garante a permissão de mencionar @everyone só quando vai usá-la.
+    const silencioso = !!dados.silencioso;
     const botId = guild.members?.me?.id || guild.client?.user?.id;
-    if (botId) await canal.permissionOverwrites.edit(botId, { MentionEveryone: true }).catch(() => {});
+    if (botId && !silencioso) await canal.permissionOverwrites.edit(botId, { MentionEveryone: true }).catch(() => {});
     const enviada = await canal.send({
-      content: '@everyone',
-      allowedMentions: { parse: ['everyone'] },
+      content: silencioso ? '' : '@everyone',
+      allowedMentions: silencioso ? { parse: [] } : { parse: ['everyone'] },
       embeds: [montarEmbed(tipo, dados)],
       ...(Array.isArray(dados.files) && dados.files.length ? { files: dados.files } : {}),
     });
