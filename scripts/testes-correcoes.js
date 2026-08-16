@@ -918,6 +918,194 @@ function seedProcesso(numero, extra) {
     ok(!(db.buscarPorNumero('mandados', 'MND-ON') || {}).diarioPublicado, '22d: mandado de caso em curso NÃO publica (sigilo até encerrar)');
   }
 
+  // ============ ITEM 23: Parte 2 — troca manual de responsável (universal) ============
+  console.log('\nItem 23 — Parte 2 (troca de responsável: universal, validada, dentro do ticket):');
+  {
+    const responsaveis = require('../utils/responsaveis');
+    const supervisao = require('../utils/supervisao');
+
+    const fora = new Set();          // saiu do servidor (10007)
+    const deletes = [];              // ids que perderam acesso ao canal
+    const edits = [];                // ids que ganharam acesso ao canal
+    const canaisEnviados = [];       // mensagens postadas no canal do ticket
+    const mkCanal = () => {
+      const c = fakeChannel();
+      c.permissionOverwrites.delete = async (id) => { deletes.push(id); };
+      c.permissionOverwrites.edit = async (id) => { edits.push(id); };
+      c.send = async (o) => { canaisEnviados.push(norm(o)); return { id: 'm1', attachments: { first: () => null } }; };
+      return c;
+    };
+    const guild = {
+      id: 'guild1', roles: { everyone: 'e' },
+      members: { fetch: async (id) => { if (fora.has(id)) throw Object.assign(new Error('Unknown Member'), { code: 10007 }); return fakeMember(id); } },
+      channels: { fetch: async () => mkCanal() },
+    };
+    const memberFalse = { permissions: { has: () => false }, roles: { cache: { has: () => false } } };
+    const trocar = (args) => responsaveis.trocarManual(guild, Object.assign({ motivo: 'reorganização de pauta', executorId: 'sup1' }, args));
+
+    rh.contratar('p2_juizA', 'Juiz'); rh.contratar('p2_juizB', 'Juiz');
+    rh.contratar('p2_promA', 'Promotor'); rh.contratar('p2_promB', 'Promotor');
+    rh.contratar('p2_desA', 'Desembargador'); rh.contratar('p2_desB', 'Desembargador');
+    rh.contratar('p2_semcargo', 'Advogado');
+
+    // 23a: MESMO núcleo troca nos quatro tipos de ticket — sem switch por tipo
+    db.inserir('processos', { numero: 'P2-PN', tipo: 'Penal', status: 'Instrução', juiz: 'p2_juizA', promotor: 'p2_promA', delegado: 'p2_delPC', canalId: 'cP2a' });
+    db.inserir('processos', { numero: 'P2-CV', tipo: 'Civil', status: 'Instrução', juiz: 'p2_juizA', canalId: 'cP2b' });
+    db.inserir('medidas', { numero: 'P2-MD', status: 'Aprovada - aguardando juiz', juiz: 'p2_juizA', promotor: 'p2_promA', delegado: 'p2_delPC', canalId: 'cP2c' });
+    db.inserir('peticoes', { numero: 'P2-PA', tipo: 'PorteArma', status: 'Pendente', juiz: 'p2_juizA', promotor: 'p2_promA', canalId: 'cP2d', sorteioPromotorEm: '2026-01-01T00:00:00.000Z', manifestacoesMp: [{ posicao: 'Favorável' }] });
+    db.inserir('apelacoes', { numero: 'P2-AP', status: 'Aguardando decisão', desembargadorId: 'p2_desA', canalId: 'cP2e' });
+
+    const r1 = await trocar({ tabela: 'processos', numero: 'P2-PN', papel: 'Juiz', novoId: 'p2_juizB' });
+    const r2 = await trocar({ tabela: 'processos', numero: 'P2-CV', papel: 'Juiz', novoId: 'p2_juizB' });
+    const r3 = await trocar({ tabela: 'medidas', numero: 'P2-MD', papel: 'Promotor', novoId: 'p2_promB' });
+    const r4 = await trocar({ tabela: 'peticoes', numero: 'P2-PA', papel: 'Promotor', novoId: 'p2_promB' });
+    const r5 = await trocar({ tabela: 'apelacoes', numero: 'P2-AP', papel: 'Desembargador', novoId: 'p2_desB' });
+    ok([r1, r2, r3, r4, r5].every(r => r.ok), '23a: a mesma troca funciona em processo penal, civil, medida, petição e apelação');
+    ok(db.buscarPorNumero('processos', 'P2-PN').juiz === 'p2_juizB' && db.buscarPorNumero('apelacoes', 'P2-AP').desembargadorId === 'p2_desB', '  ...e grava o substituto no campo certo de cada tabela');
+
+    // 23b: acesso ao canal migra (novo entra, antigo sai) e o andamento narrativo é postado
+    ok(edits.includes('p2_juizB') && deletes.includes('p2_juizA'), '23b: acesso ao canal migra na hora (novo entra, antigo sai)');
+    ok(canaisEnviados.some(m => /Troca de responsável/.test(m.content || '') && /reorganização de pauta/.test(m.content || '')), '  ...com andamento narrativo e motivo no canal');
+    const andamentoTroca = db.todos('andamentos', a => a.processoNumero === 'P2-PN' && a.tipo === 'troca_responsavel');
+    ok(andamentoTroca.some(a => a.metadata && a.metadata.antigoId === 'p2_juizA' && a.metadata.novoId === 'p2_juizB' && /reorganização de pauta/.test(a.detalhe || '')), '  ...e fica registrado no histórico dos autos (quem saiu, quem entrou, motivo)');
+
+    // 23c: prazo reinicia pro substituto — as 24h do MP na petição (e os atos anteriores ficam)
+    const petTrocada = db.buscarPorNumero('peticoes', 'P2-PA');
+    ok(petTrocada.sorteioPromotorEm !== '2026-01-01T00:00:00.000Z' && petTrocada.manifestacoesMp.length === 1, '23c: troca de promotor reinicia as 24h e mantém a manifestação anterior nos autos');
+
+    // 23d: validações — substituto sem cargo, igual ao atual, sem motivo, papel inexistente no tipo
+    const semCargo = await trocar({ tabela: 'processos', numero: 'P2-PN', papel: 'Juiz', novoId: 'p2_semcargo' });
+    const mesmo = await trocar({ tabela: 'processos', numero: 'P2-PN', papel: 'Juiz', novoId: 'p2_juizB' });
+    const semMotivo = await responsaveis.trocarManual(guild, { tabela: 'processos', numero: 'P2-PN', papel: 'Juiz', novoId: 'p2_juizA', motivo: '   ', executorId: 'sup1' });
+    const papelInexistente = await trocar({ tabela: 'apelacoes', numero: 'P2-AP', papel: 'Delegado', novoId: 'p2_delPC2' });
+    ok(!semCargo.ok && /quadro \(RH\)/.test(semCargo.erro), '23d: substituto sem o cargo é rejeitado');
+    ok(!mesmo.ok && /já é/.test(mesmo.erro), '  ...substituto igual ao atual é rejeitado');
+    ok(!semMotivo.ok && /motivo/i.test(semMotivo.erro), '  ...sem motivo é rejeitado');
+    ok(!papelInexistente.ok && db.buscarPorNumero('processos', 'P2-PN').juiz === 'p2_juizB', '  ...papel que não existe no tipo é rejeitado, estado inalterado');
+
+    // 23e: substituto que saiu do servidor é rejeitado (não troca fantasma por fantasma)
+    rh.contratar('p2_juizC', 'Juiz'); fora.add('p2_juizC');
+    const ausente = await trocar({ tabela: 'processos', numero: 'P2-CV', papel: 'Juiz', novoId: 'p2_juizC' });
+    ok(!ausente.ok && /não está no servidor/.test(ausente.erro), '23e: substituto ausente do servidor é rejeitado');
+
+    // 23f: ninguém acumula dois papéis no mesmo caso
+    const acumulo = await trocar({ tabela: 'processos', numero: 'P2-PN', papel: 'Promotor', novoId: 'p2_juizB' });
+    ok(!acumulo.ok && /já atua neste caso/.test(acumulo.erro), '23f: quem já atua no caso não assume um segundo papel');
+
+    // 23g: Delegado é a exceção declarada — substituto fora do rh (delegado da PC) é aceito
+    const del = await trocar({ tabela: 'processos', numero: 'P2-PN', papel: 'Delegado', novoId: 'p2_delPC_novo' });
+    ok(del.ok && db.buscarPorNumero('processos', 'P2-PN').delegado === 'p2_delPC_novo', '23g: Delegado fora do rh (injetado pela PC) pode ser trocado');
+
+    // 23h: ticket encerrado — nada a trocar (o botão some) e a troca é recusada
+    db.inserir('processos', { numero: 'P2-FIM', tipo: 'Penal', status: 'Encerrado', juiz: 'p2_juizA', canalId: 'cP2f' });
+    const fim = db.buscarPorNumero('processos', 'P2-FIM');
+    const recusaFim = await trocar({ tabela: 'processos', numero: 'P2-FIM', papel: 'Juiz', novoId: 'p2_juizB' });
+    ok(responsaveis.papeisTrocaveis('processos', fim).length === 0 && !recusaFim.ok, '23h: caso encerrado não lista papéis (botão some) nem aceita troca');
+
+    // 23i: quem pode trocar o quê — Desembargador troca Juiz, Procurador troca Promotor, Staff tudo
+    const comCargo = (cargo) => ({ staff: false, temCargo: (c) => c === cargo });
+    ok(responsaveis.podeTrocarPapel('Juiz', comCargo('Desembargador')) && !responsaveis.podeTrocarPapel('Juiz', comCargo('Procurador')), '23i: Juiz só por Desembargador (Procurador não troca Juiz)');
+    ok(responsaveis.podeTrocarPapel('Promotor', comCargo('Procurador')) && !responsaveis.podeTrocarPapel('Promotor', comCargo('Desembargador')), '  ...Promotor só por Procurador (Desembargador não troca Promotor)');
+    ok(['Juiz', 'Promotor', 'Delegado', 'Desembargador'].every(p => responsaveis.podeTrocarPapel(p, { staff: true })), '  ...Staff troca todos os papéis');
+
+    // 23j: resolve o caso pelo número OU pelo ID do canal (a Supervisão age de dentro do ticket)
+    const porNumero = responsaveis.resolverTicket('P2-MD');
+    db.inserir('medidas', { numero: 'P2-MD2', status: 'Aprovada - aguardando juiz', juiz: 'p2_juizA', canalId: '123456789012345678' });
+    const porSnowflake = responsaveis.resolverTicket('123456789012345678');
+    ok(porNumero && porNumero.tabela === 'medidas', '23j: resolve o caso pelo número');
+    ok(porSnowflake && porSnowflake.registro.numero === 'P2-MD2', '  ...e pelo ID do canal (snowflake)');
+
+    // 23k: tipo de ticket NOVO só declarado no mapa já nasce trocável (prova de que não virou switch)
+    responsaveis.TABELAS_TICKET.oficios = {
+      canalCampo: 'canalId', aberto: (r) => r.status !== 'Encerrado',
+      papeis: { Juiz: { campo: 'juiz', resetPrazo: () => ({}) } },
+    };
+    db.inserir('oficios', { numero: 'P2-OF', status: 'Aberto', juiz: 'p2_juizA', canalId: 'cP2g' });
+    const novoTipo = await trocar({ tabela: 'oficios', numero: 'P2-OF', papel: 'Juiz', novoId: 'p2_juizB' });
+    ok(novoTipo.ok && db.buscarPorNumero('oficios', 'P2-OF').juiz === 'p2_juizB', '23k: tipo de ticket novo (só declarado no mapa) já é trocável, sem código novo');
+    delete responsaveis.TABELAS_TICKET.oficios;
+
+    // 23l: entrada no ticket — quem não é Supervisão nem vê o menu; quem é, vê os papéis que pode trocar
+    const itQualquer = makeInteraction({ userId: 'p2_semcargo', guild, member: memberFalse, channel: { id: 'cP2a' } });
+    itQualquer.channelId = 'cP2a';
+    await supervisao.abrirSupervisaoTicket(itQualquer, 'processos#P2-PN');
+    ok(/Só Desembargador, Procurador ou Staff/.test(lastReplyText(itQualquer)), '23l: quem não é Supervisão é barrado no botão do ticket');
+
+    const itDes = makeInteraction({ userId: 'p2_desA', guild, member: memberFalse, channel: { id: 'cP2a' } });
+    itDes.channelId = 'cP2a';
+    await supervisao.abrirSupervisaoTicket(itDes, 'processos#P2-PN');
+    const menu = itDes._replies.pop() || {};
+    const labels = (menu.components || []).flatMap(l => (l.components || []).map(b => b.data && b.data.label));
+    ok(/Supervisão — Processo P2-PN/.test(menu.content || ''), '  ...Desembargador abre o menu do caso pelo ticket');
+    ok(labels.includes('Trocar Juiz') && labels.includes('Trocar Delegado') && !labels.includes('Trocar Promotor'), '  ...e só enxerga os papéis que o cargo dele pode trocar');
+
+    // 23m: o botão 🛡️ Supervisão nasce no painel do processo e some quando o caso encerra
+    const comResp = db.buscarPorNumero('processos', 'P2-CV');
+    const custom = (rows) => rows.flatMap(l => (l.components || []).map(b => b.data && b.data.custom_id));
+    ok(custom(processoCmd.montarPainelAcoes(comResp)).some(id => id === 'painel:acao:supervisao:ticket:processos#P2-CV'), '23m: painel do processo traz o botão 🛡️ Supervisão enquanto há responsável');
+    ok(processoCmd.montarPainelAcoes(db.buscarPorNumero('processos', 'P2-FIM')).length === 0, '  ...e o painel some por inteiro em status terminal');
+
+    // 23n: caminho real do usuário — submit do modal (menção + motivo) efetiva a troca.
+    // Aqui o id precisa ser um snowflake de verdade: quem lê o campo é o parser de @menção.
+    const JUIZ_MENCIONAVEL = '900000000000000002';
+    rh.contratar(JUIZ_MENCIONAVEL, 'Juiz');
+    db.inserir('processos', { numero: 'P2-SUB', tipo: 'Penal', status: 'Instrução', juiz: 'p2_juizA', promotor: 'p2_promA', canalId: 'cP2h' });
+    const itSub = makeInteraction({ userId: 'p2_desA', guild, member: memberFalse, fields: { novo: `<@${JUIZ_MENCIONAVEL}>`, motivo: 'juiz de férias' } });
+    await supervisao.trocaResponsavelSubmit(itSub, 'processos#P2-SUB#Juiz');
+    ok(db.buscarPorNumero('processos', 'P2-SUB').juiz === JUIZ_MENCIONAVEL && /✅/.test(lastReplyText(itSub)), '23n: submit do modal (menção + motivo) troca de verdade');
+
+    // ...e o mesmo submit é barrado pra quem não tem o cargo daquele papel (Desembargador ≠ Promotor)
+    const itSub2 = makeInteraction({ userId: 'p2_desA', guild, member: memberFalse, fields: { novo: '<@900000000000000003>', motivo: 'x' } });
+    await supervisao.trocaResponsavelSubmit(itSub2, 'processos#P2-SUB#Promotor');
+    ok(/não tem cargo/.test(lastReplyText(itSub2)) && db.buscarPorNumero('processos', 'P2-SUB').promotor === 'p2_promA', '  ...e é barrado no papel que o cargo não alcança');
+
+    // 23o: o botão antigo do painel central passa pelo MESMO núcleo (uma implementação só) e
+    // preserva o que era só dele: reabrir o processo arquivado sem julgamento de mérito.
+    db.inserir('processos', { numero: 'P2-REAB', tipo: 'Penal', status: 'Arquivado sem julgamento de mérito', juiz: 'p2_juizA', promotor: 'p2_promA', canalId: 'cP2i' });
+    const itLegado = makeInteraction({ userId: 'p2_desA', guild, member: memberFalse, fields: { numero: 'P2-REAB', novo: `<@${JUIZ_MENCIONAVEL}>`, motivo: 'reativar o caso' } });
+    await supervisao.trocarJuiz(itLegado);
+    const reab = db.buscarPorNumero('processos', 'P2-REAB');
+    ok(reab.juiz === JUIZ_MENCIONAVEL && reab.status === 'Instrução', '23o: botão antigo "Trocar Juiz" delega ao núcleo e reabre o arquivado sem mérito');
+
+    // ...e se a troca é recusada, o caso NÃO fica reaberto pela metade
+    db.inserir('processos', { numero: 'P2-REAB2', tipo: 'Penal', status: 'Arquivado sem julgamento de mérito', juiz: 'p2_juizA', canalId: 'cP2j' });
+    const itLegado2 = makeInteraction({ userId: 'p2_desA', guild, member: memberFalse, fields: { numero: 'P2-REAB2', novo: '<@900000000000000009>', motivo: 'tentativa inválida' } });
+    await supervisao.trocarJuiz(itLegado2);
+    const naoReab = db.buscarPorNumero('processos', 'P2-REAB2');
+    ok(naoReab.juiz === 'p2_juizA' && naoReab.status === 'Arquivado sem julgamento de mérito', '  ...e troca recusada não deixa o caso reaberto pela metade');
+  }
+
+  // ============ ITEM 24: Parte 4 — retroatividade (backfill + relatório) ============
+  console.log('\nItem 24 — Parte 4 (as funções novas valem pros tickets que já existiam):');
+  {
+    const retro = require('../utils/retroatividade');
+
+    // Petição antiga (aberta antes da trava existir): tem promotor, não tem sorteioPromotorEm
+    db.inserir('peticoes', { numero: 'P4-ANT', tipo: 'PorteArma', status: 'Pendente', juiz: 'p4j', promotor: 'p4p', canalId: 'cP4a' });
+    // Sem promotor: carimbar criaria trava sem dono → fica de fora
+    db.inserir('peticoes', { numero: 'P4-SEMP', tipo: 'TrocaNome', status: 'Pendente', juiz: 'p4j', canalId: 'cP4b' });
+    // Já decidida: não é ticket aberto → fica de fora
+    db.inserir('peticoes', { numero: 'P4-FIM', tipo: 'PorteArma', status: 'Deferido', promotor: 'p4p', canalId: 'cP4c' });
+
+    const alvos = retro.peticoesParaBackfill().map(p => p.numero);
+    ok(alvos.includes('P4-ANT') && !alvos.includes('P4-SEMP') && !alvos.includes('P4-FIM'), '24a: só petição ABERTA, com promotor e sem o campo entra no backfill');
+
+    const r1 = retro.backfillSorteioPromotor({ forcar: true });
+    const carimbada = db.buscarPorNumero('peticoes', 'P4-ANT');
+    ok(r1.backfilladas >= 1 && !!carimbada.sorteioPromotorEm, '24b: backfill carimba sorteioPromotorEm (24h contando de agora, ninguém trava retroativamente)');
+    ok(!db.buscarPorNumero('peticoes', 'P4-SEMP').sorteioPromotorEm, '  ...e não carimba petição sem promotor');
+
+    // Uso único: redeploy não recarimba (senão reiniciaria o prazo de quem já está correndo)
+    const antes = carimbada.sorteioPromotorEm;
+    const r2 = retro.backfillSorteioPromotor();
+    ok(r2.jaRodou && db.buscarPorNumero('peticoes', 'P4-ANT').sorteioPromotorEm === antes, '24c: backfill é de uso único — redeploy não reinicia prazo de ninguém');
+
+    // Relatório da subida: conta os casos abertos por tipo (o número que a spec exige)
+    const rel = retro.relatorioTicketsAbertos();
+    ok(rel.processos && rel.medidas && rel.peticoes && rel.apelacoes && rel.peticoes.abertos >= 2, '24d: relatório conta tickets abertos por tipo (processos/medidas/petições/apelações)');
+    ok(rel.peticoes.comResponsavel >= 1 && rel.peticoes.comResponsavel <= rel.peticoes.abertos, '  ...e quantos deles têm responsável marcado');
+  }
+
   // ---- Resumo ----
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`  ❌ ${f.nome}${f.detalhe ? ` — ${f.detalhe}` : ''}`)); }

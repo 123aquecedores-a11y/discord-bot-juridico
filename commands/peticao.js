@@ -22,6 +22,7 @@ const ministerioPublico = require('../utils/ministerioPublico');
 const cartorio = require('../utils/cartorio');
 const revisaoIA = require('../utils/revisaoIA');
 const diarioAtos = require('../utils/diarioAtos');
+const responsaveis = require('../utils/responsaveis');
 
 const TIPO_LABEL = { PorteArma: 'Porte de Arma', TrocaNome: 'Troca de Nome', LimpezaFicha: 'Limpeza de Ficha', AlvaraEvento: 'Alvará de Evento' };
 
@@ -134,14 +135,19 @@ async function anexarDocumentoPeticao(interaction, numero) {
   await interaction.followUp({ content: `📎 [${anexo.nomeArquivo}](${anexo.url}) juntado à petição ${numero}.`, embeds: embedAnalise ? [embedAnalise] : [] });
 }
 
+// Devolve ARRAY de linhas (a primeira já está cheia — 5 é o limite do Discord): a 2ª carrega a
+// entrada de Supervisão (Parte 2), pra trocar Juiz/Promotor da petição sem sair do ticket.
 function botoesDecisao(numero) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`painel:acao:peticao:deferir:${numero}`).setLabel('Deferir').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`painel:acao:peticao:indeferir:${numero}`).setLabel('Indeferir').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`painel:acao:peticao:diligencia:${numero}`).setLabel('Converter em diligência').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`painel:acao:peticao:certidao:${numero}`).setLabel('📄 Requisitar certidão').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`painel:acao:peticao:arquivarmanual:${numero}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
-  );
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`painel:acao:peticao:deferir:${numero}`).setLabel('Deferir').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`painel:acao:peticao:indeferir:${numero}`).setLabel('Indeferir').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`painel:acao:peticao:diligencia:${numero}`).setLabel('Converter em diligência').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`painel:acao:peticao:certidao:${numero}`).setLabel('📄 Requisitar certidão').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`painel:acao:peticao:arquivarmanual:${numero}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder().addComponents(responsaveis.botaoSupervisaoTicket('peticoes', numero)),
+  ];
 }
 
 // ---- Manifestação do Ministério Público (Parte 1 — aditivo, não bloqueia decisão) ----
@@ -356,7 +362,7 @@ async function protocolarPeticao(guild, numero) {
   if (juizId) {
     await canal.send({
       content: `<@${juizId}> petição protocolada e pronta pra decidir.${promotorId ? ` <@${promotorId}> entra como fiscal.` : ''}`,
-      embeds: [embedPeticao(db.buscarPorNumero('peticoes', numero))], components: [botoesDecisao(numero)],
+      embeds: [embedPeticao(db.buscarPorNumero('peticoes', numero))], components: botoesDecisao(numero),
     });
   } else {
     await canal.send({ content: '⚠️ Petição protocolada, mas não há Juiz ativo disponível pro sorteio no momento — o sistema tenta o sorteio automaticamente a cada poucos minutos assim que houver um Juiz disponível.' });
@@ -532,7 +538,7 @@ async function reabrirCaso(interaction, numero) {
       await canais.reabrirCanal(canal, [p.requerenteId, p.juiz].filter(Boolean));
       await canal.send({
         content: `♻️ **Petição reaberta** por <@${interaction.user.id}> (Supervisão/Staff). Diligência retomada — <@${p.requerenteId}>, cumpra a diligência (anexe o documento solicitado); ${p.juiz ? `<@${p.juiz}> ` : 'o Juízo '}decide em seguida. Novo prazo de 24 (vinte e quatro) horas.`,
-        components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero)), botoesDecisao(numero)],
+        components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero)), ...botoesDecisao(numero)],
       });
     }
     return interaction.reply({ content: `Petição ${numero} reaberta — diligência retomada.`, ephemeral: true });
@@ -900,7 +906,7 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
       // os antigos assim que o documento pedido for anexado.
       await canal.send({
         content: `<@${peticao.requerenteId}> — clique em **"📎 Anexar petição/documento"** abaixo pra juntar o que o Juiz pediu; depois avise <@${peticao.juiz}> pra decidir de novo.`,
-        components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero)), botoesDecisao(numero)],
+        components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero)), ...botoesDecisao(numero)],
       });
     } else {
       // Deferido/Indeferido: mesma sentença formal e padrão pros três tipos de petição.

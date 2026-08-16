@@ -1,11 +1,12 @@
-const { EmbedBuilder, ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const db = require('../database/db');
 const config = require('../config');
 const rh = require('./rh');
 const canais = require('./canais');
 const auditoria = require('./auditoria');
 const { temCargo, isAdmin, isSuperStaff } = require('./permissoes');
-const { truncar, extrairMencao } = require('./texto');
+const { truncar, extrairMencao, extrairMencaoOuId } = require('./texto');
+const responsaveis = require('./responsaveis');
 const andamentos = require('./andamentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const documentos = require('./documentos');
@@ -28,6 +29,118 @@ function podeSupervisionar(interaction) {
   return isAdmin(interaction) || temCargo(interaction, 'Desembargador') || temCargo(interaction, 'Procurador');
 }
 
+// ---- Parte 2: troca de responsável, universal e dentro do ticket ----
+// DOIS pontos de entrada (botão 🛡️ Supervisão no ticket e o painel central), UMA implementação: os
+// dois caem em `menuTroca` → modal → `responsaveis.trocarManual`. O painel central só difere por
+// perguntar antes qual é o caso. Nada aqui enumera tipo de ticket — a lista de papéis sai de
+// responsaveis.papeisTrocaveis, então tipo novo herda a função sozinho.
+
+const RECUSA_SUPERVISAO = 'Só Desembargador, Procurador ou Staff/Administração podem supervisionar um caso.';
+
+// A checagem de cargo do interaction injetada no motor (que não conhece discord.js).
+function podeTrocarEsse(interaction, papel) {
+  return responsaveis.podeTrocarPapel(papel, {
+    staff: isAdmin(interaction) || isSuperStaff(interaction),
+    temCargo: (cargo) => temCargo(interaction, cargo),
+  });
+}
+
+// Menu efêmero com um botão por papel trocável — só os papéis que ESTE supervisor pode trocar
+// (Juiz é com o Desembargador, Promotor com o Procurador; Staff tudo).
+async function menuTroca(interaction, alvo) {
+  const responder = (payload) => interaction.reply({ ...payload, ephemeral: true });
+  const { tabela, registro } = alvo;
+  const rotulo = `${responsaveis.rotuloTabela(tabela)} ${registro.numero}`;
+  const papeis = responsaveis.papeisTrocaveis(tabela, registro);
+  if (!papeis.length) {
+    return responder({ content: `**${rotulo}** — nada a trocar aqui: o caso está encerrado/arquivado ou ainda não tem responsável marcado (nesse caso é *designar*, não *trocar*).` });
+  }
+  const permitidos = papeis.filter(p => podeTrocarEsse(interaction, p.papel));
+  if (!permitidos.length) {
+    return responder({ content: `**${rotulo}** — você não tem cargo para trocar ${papeis.map(p => p.papel).join('/')} deste caso. (Juiz é com o Desembargador; Promotor, com o Procurador.)` });
+  }
+  const linhas = permitidos.map(p => `• **${p.papel}** atual: <@${p.atualId}>`).join('\n');
+  return responder({
+    content: `🛡️ **Supervisão — ${rotulo}**\n${linhas}\n\nQuem você quer substituir?`,
+    components: [new ActionRowBuilder().addComponents(permitidos.map(p =>
+      new ButtonBuilder()
+        .setCustomId(`painel:acao:supervisao:trocaresp:${tabela}#${registro.numero}#${p.papel}`)
+        .setLabel(`Trocar ${p.papel}`).setStyle(ButtonStyle.Primary),
+    ))],
+  });
+}
+
+// Entrada 1 — botão dentro do ticket. `extra` = "tabela#numero"; sem isso (ou com referência
+// desconhecida), cai pro canal onde o botão foi clicado.
+async function abrirSupervisaoTicket(interaction, extra) {
+  if (!podeSupervisionar(interaction)) return interaction.reply({ content: RECUSA_SUPERVISAO, ephemeral: true });
+  const [tabela, numero] = String(extra || '').split('#');
+  const registro = tabela && numero ? db.buscarPorNumero(tabela, numero) : null;
+  const alvo = registro && responsaveis.TABELAS_TICKET[tabela]
+    ? { tabela, cfg: responsaveis.TABELAS_TICKET[tabela], registro }
+    : responsaveis.resolverTicket(interaction.channelId);
+  if (!alvo) return interaction.reply({ content: 'Não encontrei o caso deste canal.', ephemeral: true });
+  return menuTroca(interaction, alvo);
+}
+
+// Entrada 2 — painel central: pergunta o caso (número ou ID do canal) e cai no MESMO menu.
+function abrirModalTrocaGenerica(interaction) {
+  if (!podeSupervisionar(interaction)) return interaction.reply({ content: RECUSA_SUPERVISAO, ephemeral: true });
+  const modal = new ModalBuilder().setCustomId('painel:modal:supervisao:trocaresp0').setTitle('Trocar responsável de um caso');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('ref')
+      .setLabel('Número do caso ou ID do canal').setPlaceholder('0001PN, 0002MD, 0003AP…')
+      .setStyle(TextInputStyle.Short).setRequired(true)),
+  );
+  return interaction.showModal(modal);
+}
+
+async function trocaGenericaSubmit(interaction) {
+  if (!podeSupervisionar(interaction)) return interaction.reply({ content: RECUSA_SUPERVISAO, ephemeral: true });
+  const alvo = responsaveis.resolverTicket(interaction.fields.getTextInputValue('ref'));
+  if (!alvo) return interaction.reply({ content: 'Caso não encontrado — informe o número (ex.: `0001PN`) ou o ID do canal do ticket.', ephemeral: true });
+  return menuTroca(interaction, alvo);
+}
+
+// Escolhido o papel: pede substituto + motivo. `extra` = "tabela#numero#papel".
+function abrirModalTrocaResponsavel(interaction, extra) {
+  if (!podeSupervisionar(interaction)) return interaction.reply({ content: RECUSA_SUPERVISAO, ephemeral: true });
+  const [tabela, numero, papel] = String(extra || '').split('#');
+  if (!tabela || !numero || !papel) return interaction.reply({ content: 'Ação inválida.', ephemeral: true });
+  if (!podeTrocarEsse(interaction, papel)) {
+    return interaction.reply({ content: `Você não tem cargo para trocar o(a) ${papel} deste caso.`, ephemeral: true });
+  }
+  const modal = new ModalBuilder()
+    .setCustomId(`painel:modal:supervisao:trocaresp:${tabela}#${numero}#${papel}`)
+    .setTitle(`Trocar ${papel} — ${numero}`.slice(0, 45));
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('novo')
+      .setLabel(`Menção @ do novo ${papel}`.slice(0, 45)).setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo')
+      .setLabel('Motivo da troca').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
+  );
+  return interaction.showModal(modal);
+}
+
+async function trocaResponsavelSubmit(interaction, extra) {
+  if (!podeSupervisionar(interaction)) return interaction.reply({ content: RECUSA_SUPERVISAO, ephemeral: true });
+  const [tabela, numero, papel] = String(extra || '').split('#');
+  if (!tabela || !numero || !papel) return interaction.reply({ content: 'Ação inválida.', ephemeral: true });
+  if (!podeTrocarEsse(interaction, papel)) {
+    return interaction.reply({ content: `Você não tem cargo para trocar o(a) ${papel} deste caso.`, ephemeral: true });
+  }
+  const bruto = interaction.fields.getTextInputValue('novo');
+  const novoId = extrairMencaoOuId(bruto) || extrairMencao(bruto);
+  const motivo = interaction.fields.getTextInputValue('motivo');
+
+  // A troca busca membro, mexe em permissão de canal e posta andamento — não cabe nos 3s.
+  await interaction.deferReply({ ephemeral: true });
+  const guild = await resolverGuild(interaction);
+  const r = await responsaveis.trocarManual(guild, { tabela, numero, papel, novoId, motivo, executorId: interaction.user.id });
+  if (!r.ok) return interaction.editReply({ content: `❌ ${r.erro}` });
+  return interaction.editReply({ content: `✅ ${papel} de ${responsaveis.rotuloTabela(tabela).toLowerCase()} ${numero}: <@${r.antigoId}> → <@${r.novoId}>. Prazo reiniciado para o(a) substituto(a); os atos já praticados permanecem nos autos.` });
+}
+
 // ---- Trocar Juiz (Desembargador) ----
 
 function abrirModalTrocarJuiz(interaction) {
@@ -43,40 +156,45 @@ function abrirModalTrocarJuiz(interaction) {
   return interaction.showModal(modal);
 }
 
+// O campo de substituto aceita @menção (o normal) ou ID cru — o Delegado vindo da integração da
+// Polícia Civil às vezes só existe como ID, e obrigar a menção travaria a troca justamente nele.
+function mencaoDoCampo(interaction, campo) {
+  const bruto = interaction.fields.getTextInputValue(campo);
+  return extrairMencaoOuId(bruto) || extrairMencao(bruto);
+}
+
+// Handlers do painel central: mesmo customId de sempre, mas a troca em si é a MESMA do fluxo
+// universal (responsaveis.trocarManual). O que sobra aqui é só o que é específico do papel — no
+// Juiz, reabrir o processo arquivado sem julgamento de mérito, que é decisão do Desembargador
+// e não parte da troca.
 async function trocarJuiz(interaction) {
-  const numero = interaction.fields.getTextInputValue('numero');
-  const novoJuizId = extrairMencao(interaction.fields.getTextInputValue('novo'));
+  if (!temCargo(interaction, 'Desembargador') && !isAdmin(interaction)) {
+    return interaction.reply({ content: 'Só Desembargadores podem trocar o Juiz de um processo.', ephemeral: true });
+  }
+  const novoJuizId = mencaoDoCampo(interaction, 'novo');
   const motivo = interaction.fields.getTextInputValue('motivo');
+  const alvo = responsaveis.resolverTicket(interaction.fields.getTextInputValue('numero'));
+  if (!alvo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
 
-  const processo = db.buscarPorNumero('processos', numero);
-  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (!novoJuizId) return interaction.reply({ content: 'Marque o novo Juiz com @menção.', ephemeral: true });
-  if (!processo.juiz) return interaction.reply({ content: 'Esse processo ainda não tem Juiz — use os fluxos normais de sorteio.', ephemeral: true });
-
-  const juizAntigo = processo.juiz;
-  const reabrindo = processo.status === 'Arquivado sem julgamento de mérito';
-  db.atualizar('processos', numero, {
-    juiz: novoJuizId,
-    juizDesde: new Date().toISOString(),
-    ...(reabrindo ? { status: 'Instrução' } : {}),
-  });
-
-  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
-  if (canal) {
-    if (reabrindo) await canais.reabrirCanal(canal, [processo.delegado, processo.promotor, processo.autor, ...(processo.reus || [])].filter(Boolean));
-    await canais.adicionarMembro(canal, novoJuizId);
-    await canal.permissionOverwrites.delete(juizAntigo).catch(() => {});
-    await canal.send({
-      content: `<@${novoJuizId}> passa a ser o Juiz deste processo (trocado por decisão do Desembargador <@${interaction.user.id}>)${reabrindo ? ' — processo reaberto pra instrução' : ''}. Motivo: ${motivo}`,
-    });
+  await interaction.deferReply({ ephemeral: true });
+  const guild = await resolverGuild(interaction);
+  const { tabela, registro } = alvo;
+  const reabrindo = tabela === 'processos' && registro.status === 'Arquivado sem julgamento de mérito';
+  if (reabrindo) {
+    db.atualizar('processos', registro.numero, { status: 'Instrução' });
+    const canal = registro.canalId ? await guild.channels.fetch(registro.canalId).catch(() => null) : null;
+    if (canal) await canais.reabrirCanal(canal, [registro.delegado, registro.promotor, registro.autor, ...(registro.reus || [])].filter(Boolean));
   }
 
-  await auditoria.registrar(interaction.guild, {
-    acao: 'Troca de Juiz', executorId: interaction.user.id,
-    referencia: `Processo ${numero}: <@${juizAntigo}> → <@${novoJuizId}>`, motivo,
+  const r = await responsaveis.trocarManual(guild, {
+    tabela, numero: registro.numero, papel: 'Juiz', novoId: novoJuizId, motivo, executorId: interaction.user.id,
   });
-
-  return interaction.reply({ content: `Juiz do processo ${numero} trocado para <@${novoJuizId}>.`, ephemeral: true });
+  if (!r.ok) {
+    // Troca recusada não pode deixar o caso reaberto pela metade.
+    if (reabrindo) db.atualizar('processos', registro.numero, { status: 'Arquivado sem julgamento de mérito' });
+    return interaction.editReply({ content: `❌ ${r.erro}` });
+  }
+  return interaction.editReply({ content: `Juiz do processo ${registro.numero} trocado para <@${r.novoId}>${reabrindo ? ' — processo reaberto pra instrução' : ''}.` });
 }
 
 // ---- Designar Juiz (Supervisão/Staff) a um caso que ficou SEM julgador ----
@@ -144,31 +262,20 @@ function abrirModalTrocarPromotor(interaction) {
 }
 
 async function trocarPromotor(interaction) {
-  const numero = interaction.fields.getTextInputValue('numero');
-  const novoPromotorId = extrairMencao(interaction.fields.getTextInputValue('novo'));
+  if (!temCargo(interaction, 'Procurador') && !isAdmin(interaction)) {
+    return interaction.reply({ content: 'Só Procuradores podem trocar o Promotor de um processo.', ephemeral: true });
+  }
+  const alvo = responsaveis.resolverTicket(interaction.fields.getTextInputValue('numero'));
+  if (!alvo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  const novoPromotorId = mencaoDoCampo(interaction, 'novo');
   const motivo = interaction.fields.getTextInputValue('motivo');
 
-  const processo = db.buscarPorNumero('processos', numero);
-  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (!novoPromotorId) return interaction.reply({ content: 'Marque o novo Promotor com @menção.', ephemeral: true });
-  if (!processo.promotor) return interaction.reply({ content: 'Esse processo não tem Promotor atribuído.', ephemeral: true });
-
-  const promotorAntigo = processo.promotor;
-  db.atualizar('processos', numero, { promotor: novoPromotorId });
-
-  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
-  if (canal) {
-    await canais.adicionarMembro(canal, novoPromotorId);
-    await canal.permissionOverwrites.delete(promotorAntigo).catch(() => {});
-    await canal.send({ content: `<@${novoPromotorId}> passa a ser o Promotor deste processo (trocado por decisão do Procurador <@${interaction.user.id}>). Motivo: ${motivo}` });
-  }
-
-  await auditoria.registrar(interaction.guild, {
-    acao: 'Troca de Promotor', executorId: interaction.user.id,
-    referencia: `Processo ${numero}: <@${promotorAntigo}> → <@${novoPromotorId}>`, motivo,
+  await interaction.deferReply({ ephemeral: true });
+  const r = await responsaveis.trocarManual(await resolverGuild(interaction), {
+    tabela: alvo.tabela, numero: alvo.registro.numero, papel: 'Promotor', novoId: novoPromotorId, motivo, executorId: interaction.user.id,
   });
-
-  return interaction.reply({ content: `Promotor do processo ${numero} trocado para <@${novoPromotorId}>.`, ephemeral: true });
+  if (!r.ok) return interaction.editReply({ content: `❌ ${r.erro}` });
+  return interaction.editReply({ content: `Promotor de ${responsaveis.rotuloTabela(alvo.tabela).toLowerCase()} ${alvo.registro.numero} trocado para <@${r.novoId}>.` });
 }
 
 // ---- Trocar Delegado (Supervisão) ----
@@ -178,16 +285,8 @@ async function trocarPromotor(interaction) {
 // antigo e registra na auditoria. O Delegado precisa do acesso ao canal pra anexar PDFs (indícios,
 // relatórios), por isso a troca de permissão não é cosmética.
 
-// Resolve um processo pelo número interno ("0001PN") OU pelo ID do canal do Discord (snowflake) —
-// a Supervisão às vezes tem em mãos o canal do processo, não o número.
-function acharProcessoPorRef(ref) {
-  const t = (ref || '').trim();
-  if (/^\d{15,25}$/.test(t)) {
-    const porCanal = db.buscarUm('processos', p => p.canalId === t);
-    if (porCanal) return porCanal;
-  }
-  return db.buscarPorNumero('processos', t);
-}
+// (A resolução por número OU ID do canal virou responsaveis.resolverTicket, que vale pra qualquer
+// tipo de ticket — não só processo.)
 
 function abrirModalTrocarDelegado(interaction) {
   if (!podeSupervisionar(interaction)) {
@@ -206,31 +305,17 @@ async function trocarDelegado(interaction) {
   if (!podeSupervisionar(interaction)) {
     return interaction.reply({ content: 'Só a Supervisão (Procurador/Desembargador/Staff) pode trocar o Delegado de um processo.', ephemeral: true });
   }
-  const novoDelegadoId = extrairMencao(interaction.fields.getTextInputValue('novo'));
+  const alvo = responsaveis.resolverTicket(interaction.fields.getTextInputValue('numero'));
+  if (!alvo) return interaction.reply({ content: 'Processo não encontrado — informe o número (ex.: `0001PN`) ou o ID do canal.', ephemeral: true });
+  const novoDelegadoId = mencaoDoCampo(interaction, 'novo');
   const motivo = interaction.fields.getTextInputValue('motivo');
 
-  const processo = acharProcessoPorRef(interaction.fields.getTextInputValue('numero'));
-  if (!processo) return interaction.reply({ content: 'Processo não encontrado — informe o número (ex.: `0001PN`) ou o ID do canal.', ephemeral: true });
-  if (!novoDelegadoId) return interaction.reply({ content: 'Marque o novo Delegado com @menção.', ephemeral: true });
-  if (!processo.delegado) return interaction.reply({ content: 'Esse processo não tem Delegado atribuído.', ephemeral: true });
-  if (processo.delegado === novoDelegadoId) return interaction.reply({ content: 'Esse já é o Delegado atual do processo.', ephemeral: true });
-
-  const delegadoAntigo = processo.delegado;
-  db.atualizar('processos', processo.numero, { delegado: novoDelegadoId });
-
-  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
-  if (canal) {
-    await canais.adicionarMembro(canal, novoDelegadoId);
-    await canal.permissionOverwrites.delete(delegadoAntigo).catch(() => {});
-    await canal.send({ content: `<@${novoDelegadoId}> passa a ser o Delegado deste processo (trocado pela Supervisão <@${interaction.user.id}>). Motivo: ${motivo}` });
-  }
-
-  await auditoria.registrar(interaction.guild, {
-    acao: 'Troca de Delegado', executorId: interaction.user.id,
-    referencia: `Processo ${processo.numero}: <@${delegadoAntigo}> → <@${novoDelegadoId}>`, motivo,
+  await interaction.deferReply({ ephemeral: true });
+  const r = await responsaveis.trocarManual(await resolverGuild(interaction), {
+    tabela: alvo.tabela, numero: alvo.registro.numero, papel: 'Delegado', novoId: novoDelegadoId, motivo, executorId: interaction.user.id,
   });
-
-  return interaction.reply({ content: `Delegado do processo ${processo.numero} trocado para <@${novoDelegadoId}>.`, ephemeral: true });
+  if (!r.ok) return interaction.editReply({ content: `❌ ${r.erro}` });
+  return interaction.editReply({ content: `Delegado de ${responsaveis.rotuloTabela(alvo.tabela).toLowerCase()} ${alvo.registro.numero} trocado para <@${r.novoId}>.` });
 }
 
 // ---- Trocar Desembargador de uma apelação ----
@@ -251,31 +336,21 @@ function abrirModalTrocarDesembargador(interaction) {
 }
 
 async function trocarDesembargador(interaction) {
+  if (!temCargo(interaction, 'Desembargador') && !isAdmin(interaction)) {
+    return interaction.reply({ content: 'Só Desembargadores podem trocar o relator de uma apelação.', ephemeral: true });
+  }
   const numero = interaction.fields.getTextInputValue('numero');
-  const novoId = extrairMencao(interaction.fields.getTextInputValue('novo'));
-  const motivo = interaction.fields.getTextInputValue('motivo');
-
   const apelacao = db.buscarPorNumero('apelacoes', numero);
   if (!apelacao) return interaction.reply({ content: 'Apelação não encontrada.', ephemeral: true });
-  if (!novoId) return interaction.reply({ content: 'Marque o novo Desembargador com @menção.', ephemeral: true });
-  if (apelacao.status !== 'Aguardando decisão') return interaction.reply({ content: 'Essa apelação já foi decidida.', ephemeral: true });
+  const novoId = mencaoDoCampo(interaction, 'novo');
+  const motivo = interaction.fields.getTextInputValue('motivo');
 
-  const antigoId = apelacao.desembargadorId;
-  db.atualizar('apelacoes', numero, { desembargadorId: novoId });
-
-  const canal = await interaction.guild.channels.fetch(apelacao.canalId).catch(() => null);
-  if (canal) {
-    await canais.adicionarMembro(canal, novoId);
-    if (antigoId) await canal.permissionOverwrites.delete(antigoId).catch(() => {});
-    await canal.send({ content: `<@${novoId}> passa a ser o Desembargador relator desta apelação (trocado por decisão de <@${interaction.user.id}>). Motivo: ${motivo}` });
-  }
-
-  await auditoria.registrar(interaction.guild, {
-    acao: 'Troca de relator (apelação)', executorId: interaction.user.id,
-    referencia: `Apelação ${numero}: <@${antigoId}> → <@${novoId}>`, motivo,
+  await interaction.deferReply({ ephemeral: true });
+  const r = await responsaveis.trocarManual(await resolverGuild(interaction), {
+    tabela: 'apelacoes', numero: apelacao.numero, papel: 'Desembargador', novoId, motivo, executorId: interaction.user.id,
   });
-
-  return interaction.reply({ content: `Relator da apelação ${numero} trocado para <@${novoId}>.`, ephemeral: true });
+  if (!r.ok) return interaction.editReply({ content: `❌ ${r.erro}` });
+  return interaction.editReply({ content: `Relator da apelação ${apelacao.numero} trocado para <@${r.novoId}>.` });
 }
 
 // ---- Forçar denúncia (Procurador reverte arquivamento do Promotor) ----
@@ -502,6 +577,9 @@ async function filasPendentes(interaction) {
 module.exports = {
   resolverGuild,
   podeSupervisionar,
+  // Parte 2 — troca universal (ticket e painel central caem nos mesmos handlers)
+  abrirSupervisaoTicket, abrirModalTrocaGenerica, trocaGenericaSubmit,
+  abrirModalTrocaResponsavel, trocaResponsavelSubmit,
   abrirModalTrocarJuiz, trocarJuiz,
   abrirModalTrocarPromotor, trocarPromotor,
   abrirModalTrocarDelegado, trocarDelegado,

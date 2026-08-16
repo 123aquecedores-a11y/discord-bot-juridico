@@ -11,6 +11,7 @@ const db = require('../database/db');
 const rh = require('./rh');
 const canais = require('./canais');
 const auditoria = require('./auditoria');
+const andamentos = require('./andamentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const config = require('../config');
 
@@ -61,13 +62,21 @@ function ticketAberto(cfg, reg) {
 }
 
 // Quem pode fazer a troca MANUAL de cada papel (Parte 2). Staff sempre pode (checado à parte).
-// Desembargador só por Staff — não há instância acima dele. Regra-mãe: na dúvida, é Staff.
+// Regra-mãe: na dúvida, é Staff.
 const QUEM_TROCA = {
   Juiz: ['Desembargador'],
   Promotor: ['Procurador'],
   Delegado: ['Desembargador', 'Procurador'],
-  Desembargador: [], // Staff apenas
+  // Não há instância acima do Desembargador, então a redistribuição de relator é do próprio
+  // colegiado (é o que o botão "Trocar relator (apelação)" já fazia antes da Parte 2) — mais Staff.
+  Desembargador: ['Desembargador'],
 };
+
+// O substituto precisa constar no rh com o cargo? Sim, salvo exceção DECLARADA. Delegado é a
+// exceção: a integração da Polícia Civil injeta o delegado por @menção crua, sem contratar no rh
+// (mesmo motivo de estadoResponsavel não checar cargo) — exigir rh aqui impediria justamente a
+// troca que a Supervisão precisa fazer nos inquéritos vindos da PC.
+const EXIGE_CARGO_RH = { Juiz: true, Promotor: true, Desembargador: true, Delegado: false };
 
 // Presença no servidor de forma CONFIÁVEL: distingue "não é membro" (DiscordAPIError 10007) de uma
 // falha transitória (rede/timeout). { presente:true } / { ausente:true } / { indeterminado:true }.
@@ -156,6 +165,14 @@ async function aplicarTroca(guild, { tabela, numero, papel, novoId, textoAndamen
     referencia: `${rotuloTabela(tabela)} ${numero}: ${antigoId ? `<@${antigoId}>` : '—'} → <@${novoId}>`,
     motivo: motivoAuditoria,
   });
+  // Andamento nos autos: a mensagem no canal rola pra cima e some de vista; o histórico é o que
+  // fica. Vale pros dois caminhos (troca manual e reatribuição automática) porque os dois passam
+  // por aqui. Best-effort — falhar no registro não pode desfazer uma troca já efetivada.
+  await andamentos.registrar(guild, numero, {
+    tipo: 'troca_responsavel', titulo: `🔁 Troca de ${papel}`,
+    detalhe: `${antigoId ? `<@${antigoId}>` : '—'} → <@${novoId}>${motivoAuditoria ? `. Motivo: ${motivoAuditoria}` : ''}`,
+    executorId, metadata: { tabela, papel, antigoId: antigoId || null, novoId },
+  }).catch(e => console.error('[responsaveis] falha ao registrar andamento da troca (ignorado):', e.message));
   return { ok: true, antigoId, novoId };
 }
 
@@ -190,6 +207,100 @@ async function reatribuirAutomatico(guild, { tabela, numero, papel, motivoTipo }
 
 function rotuloTabela(tabela) {
   return { processos: 'Processo', medidas: 'Medida', peticoes: 'Petição', apelacoes: 'Apelação' }[tabela] || tabela;
+}
+
+// ---- Parte 2: TROCA MANUAL de responsável (universal) ----
+// Mesmo motor da reatribuição automática (aplicarTroca). O que muda é só a ORIGEM do substituto
+// (@menção da Supervisão em vez de sorteio) e o texto do andamento. Nada aqui enumera tipo de
+// ticket: tudo sai de TABELAS_TICKET/QUEM_TROCA, então um tipo novo declarado no mapa já nasce
+// trocável, sem ninguém cadastrar exceção.
+
+// Resolve o ticket por REFERÊNCIA: número interno ("0001PN") ou ID do canal do Discord (a Supervisão
+// costuma estar dentro do canal, não com o número na mão). Varre todas as tabelas do mapa.
+function resolverTicket(ref) {
+  const t = String(ref || '').trim();
+  if (!t) return null;
+  if (/^\d{15,25}$/.test(t)) {
+    for (const [tabela, cfg] of Object.entries(TABELAS_TICKET)) {
+      const porCanal = db.buscarUm(tabela, r => r[cfg.canalCampo] === t);
+      if (porCanal) return { tabela, cfg, registro: porCanal };
+    }
+    return null; // snowflake que não é canal de ticket: não tenta como número
+  }
+  for (const [tabela, cfg] of Object.entries(TABELAS_TICKET)) {
+    const r = db.buscarPorNumero(tabela, t);
+    if (r) return { tabela, cfg, registro: r };
+  }
+  return null;
+}
+
+// Papéis que ESTE ticket permite trocar agora. Sem responsável marcado não é troca, é designação
+// (outro fluxo — designarJulgador); ticket encerrado/arquivado devolve vazio, e é isso que faz o
+// botão sumir sozinho, sem lista de status espalhada pela UI.
+function papeisTrocaveis(tabela, registro) {
+  const cfg = TABELAS_TICKET[tabela];
+  if (!cfg || !registro || !ticketAberto(cfg, registro)) return [];
+  return Object.entries(cfg.papeis)
+    .filter(([, pcfg]) => !!registro[pcfg.campo])
+    .map(([papel, pcfg]) => ({ papel, atualId: registro[pcfg.campo] }));
+}
+
+// Quem pode trocar ESTE papel. `temCargo` é injetado por quem chama (a UI passa o teste de cargo do
+// interaction) pra este módulo não depender de discord.js nem de permissoes.js.
+function podeTrocarPapel(papel, { staff = false, temCargo = () => false } = {}) {
+  if (staff) return true;
+  return (QUEM_TROCA[papel] || []).some(c => temCargo(c));
+}
+
+// Botão de entrada da Supervisão dentro do ticket. Fonte única do customId — o painel do processo,
+// os cards de medida/petição e a apelação chamam esta função, ninguém remonta a string.
+function botaoSupervisaoTicket(tabela, numero) {
+  return new ButtonBuilder()
+    .setCustomId(`painel:acao:supervisao:ticket:${tabela}#${numero}`)
+    .setLabel('🛡️ Supervisão').setStyle(ButtonStyle.Secondary);
+}
+
+/**
+ * Troca manual de um responsável. Valida tudo antes de mexer em qualquer coisa: em erro, o estado
+ * fica EXATAMENTE como estava e a razão volta pronta pra mostrar a quem clicou.
+ * @returns {Promise<{ok:boolean, erro?:string, antigoId?:string, novoId?:string, papel?:string}>}
+ */
+async function trocarManual(guild, { tabela, numero, papel, novoId, motivo, executorId = null }) {
+  const cfg = TABELAS_TICKET[tabela];
+  if (!cfg || !cfg.papeis[papel]) return { ok: false, erro: `Não existe ${papel} em ${rotuloTabela(tabela)}.` };
+  const registro = db.buscarPorNumero(tabela, numero);
+  if (!registro) return { ok: false, erro: 'Caso não encontrado.' };
+  if (!ticketAberto(cfg, registro)) return { ok: false, erro: `${rotuloTabela(tabela)} ${numero}: caso já encerrado/arquivado — responsável de caso fechado é registro histórico, não se troca.` };
+  if (!String(motivo || '').trim()) return { ok: false, erro: 'O motivo da troca é obrigatório.' };
+  if (!novoId) return { ok: false, erro: 'Marque o substituto com @menção.' };
+
+  const antigoId = registro[cfg.papeis[papel].campo];
+  if (!antigoId) return { ok: false, erro: `Este caso não tem ${papel} atribuído — use "Designar", não "Trocar".` };
+  if (antigoId === novoId) return { ok: false, erro: `<@${novoId}> já é o(a) ${papel} deste caso.` };
+  // Ninguém acumula dois papéis no mesmo ticket (mesma regra do sorteio automático, que exclui os
+  // responsáveis atuais) — senão o promotor viraria juiz do próprio caso.
+  const outroPapel = Object.entries(cfg.papeis).find(([p, pc]) => p !== papel && registro[pc.campo] === novoId);
+  if (outroPapel) return { ok: false, erro: `<@${novoId}> já atua neste caso como ${outroPapel[0]}.` };
+  if (EXIGE_CARGO_RH[papel] !== false && !rh.temCargo(novoId, papel)) {
+    return { ok: false, erro: `<@${novoId}> não consta como ${papel} ativo no quadro (RH).` };
+  }
+  const membro = await checarMembro(guild, novoId);
+  if (membro.ausente) return { ok: false, erro: `<@${novoId}> não está no servidor.` };
+
+  const [nomeAntigo, nomeNovo] = await Promise.all([
+    documentoPng.nomeExibicao(guild, antigoId),
+    documentoPng.nomeExibicao(guild, novoId),
+  ]);
+  const artigo = papel === 'Juiz' ? 'O(a) Juiz(a)' : `O(a) ${papel}`;
+  const textoAndamento = `🔁 **Troca de responsável** — ${artigo} ${nomeAntigo} deixa o caso; assume ${nomeNovo}, por ato da Supervisão${executorId ? ` (<@${executorId}>)` : ''}. Motivo: ${String(motivo).trim()}. Os atos já praticados permanecem nos autos. <@${novoId}> assume a partir de agora.`;
+
+  const r = await aplicarTroca(guild, {
+    tabela, numero, papel, novoId, textoAndamento,
+    acaoAuditoria: `Troca de ${papel} (${rotuloTabela(tabela)})`,
+    motivoAuditoria: String(motivo).trim(), executorId,
+  });
+  if (!r.ok) return { ok: false, erro: r.razao || 'Não foi possível concluir a troca.' };
+  return { ...r, papel, tabela, numero };
 }
 
 // Botão de designar à mão pra pendência (só Juiz em processo/petição tem designarjulgador hoje).
@@ -319,9 +430,10 @@ async function varrerResponsaveisFantasma(guild) {
 }
 
 module.exports = {
-  TABELAS_TICKET, QUEM_TROCA, ticketAberto,
+  TABELAS_TICKET, QUEM_TROCA, EXIGE_CARGO_RH, ticketAberto,
   checarMembro, estadoResponsavel, sortearParaPapel, sortearSubstitutoValido, canalArquivado,
   responsaveisAtuais, aplicarTroca, reatribuirAutomatico, rotuloTabela,
+  resolverTicket, papeisTrocaveis, podeTrocarPapel, botaoSupervisaoTicket, trocarManual,
   limparRhFantasma, reatribuirTicketsFantasma, recuperarPendencias,
   varrerResponsaveisFantasma, tratarResponsavelInvalido,
 };

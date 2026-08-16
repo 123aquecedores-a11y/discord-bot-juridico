@@ -41,6 +41,7 @@ const medidaCmd = require('./medida');
 const dossieJulgamento = require('../utils/dossieJulgamento');
 const partesProcesso = require('../utils/partesProcesso');
 const andamentos = require('../utils/andamentos');
+const responsaveis = require('../utils/responsaveis');
 
 function extrairMencoes(texto) {
   if (!texto) return [];
@@ -504,6 +505,13 @@ const CATALOGO_ACOES = [
     quando: (p) => p.tipo === 'Penal',
     botao: (numero) => botaoManifestacaoMp(numero),
   },
+  // Supervisão do caso (Parte 2) — trocar Juiz/Promotor/Delegado sem sair do canal. Só nasce
+  // enquanto houver responsável a trocar; gate real (Desembargador/Procurador/Staff) no clique.
+  {
+    id: 'supervisao_ticket', grupo: 2, cargo: ['Desembargador', 'Procurador'],
+    quando: (p) => responsaveis.papeisTrocaveis('processos', p).length > 0,
+    botao: (numero) => responsaveis.botaoSupervisaoTicket('processos', numero),
+  },
 ];
 
 // Fonte única do customId: pega o botão de uma ação pelo id do catálogo. A string do customId vive
@@ -563,7 +571,7 @@ const HUBS_PROCESSO = [
 // Ações universais que ficam como botão DIRETO no painel (fora de hub) — qualquer parte precisa
 // delas em qualquer fase/tipo, então não faz sentido escondê-las atrás de um cargo. (Histórico e
 // "Solicitar documento externo" são `cargo: qualquer`; "Designar Juiz" é ação de destravamento.)
-const ACOES_UNIVERSAIS_PAINEL = ['historico', 'solicitar_documento_externo', 'designar_juiz'];
+const ACOES_UNIVERSAIS_PAINEL = ['historico', 'solicitar_documento_externo', 'designar_juiz', 'supervisao_ticket'];
 
 function botaoHub(hub, numero) {
   return new ButtonBuilder().setCustomId(`painel:acao:processo:${hub.id}:${numero}`).setLabel(hub.label).setStyle(hub.estilo);
@@ -2937,6 +2945,8 @@ async function criarApelacao(interaction, numero, modo) {
     new ButtonBuilder().setCustomId(`painel:acao:apelacao:reformar:${numeroApelacao}`).setLabel('Reformar').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`painel:acao:apelacao:anular:${numeroApelacao}`).setLabel('Anular').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`painel:acao:apelacao:arquivarmanual:${numeroApelacao}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
+    // Troca de relator sem sair do ticket (Parte 2) — gate no clique.
+    responsaveis.botaoSupervisaoTicket('apelacoes', numeroApelacao),
   );
   await canal.send({ content: `<@${desembargadorId}>`, embeds: [embed], components: [botoes] });
 
