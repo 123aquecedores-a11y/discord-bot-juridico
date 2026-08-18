@@ -13,6 +13,7 @@ const ficha = require('./utils/ficha');
 const integracaoPoliciaCivil = require('./utils/integracaoPoliciaCivil');
 const { garantirCanais } = require('./utils/garantirCanais');
 const guildGuard = require('./utils/guildGuard');
+const modoManutencao = require('./utils/modoManutencao');
 
 // ISOLAMENTO ENTRE INSTALAÇÕES — o mesmo código roda em mais de um servidor, cada instalação com
 // seu token, seu volume e seu banco. Sem GUILD_ID o bot atenderia qualquer servidor onde a
@@ -72,6 +73,15 @@ client.once('ready', async () => {
   // mas é o tipo de redundância que custa uma linha e evita gravar no servidor errado.
   if (!guildGuard.guardarEvento('ready', guild, 'boot abortado por segurança')) return;
 
+  // MODO MANUTENÇÃO (SKIP_BOOT_TASKS=1): sai daqui e o `ready` acaba — daqui pra baixo é TUDO
+  // escrita automática (canais, backfill, varreduras, checagens de prazo, painel fixo), e depois
+  // de uma parada longa isso viraria uma avalanche de atos irreversíveis no primeiro boot.
+  // Ver utils/modoManutencao.js. Só o valor exato "1" liga; qualquer outro mantém o normal.
+  if (modoManutencao.ativo()) {
+    console.warn(modoManutencao.AVISO);
+    return;
+  }
+
   // Auto-cria os canais de publicação (📜│diário-oficial e 📢│editais) se faltarem — idempotente,
   // não duplica, e não derruba o boot se faltar permissão (ver utils/garantirCanais.js).
   await garantirCanais(guild);
@@ -100,8 +110,8 @@ client.once('ready', async () => {
     // Parte 3: reconcilia rh + reatribui tickets com responsável fantasma (saiu do servidor / perdeu
     // o cargo). Passada A (rh) antes da B (tickets), dentro da própria função. Sem cron novo.
     require('./utils/responsaveis').varrerResponsaveisFantasma(guild).catch(err => console.error('Erro na varredura de responsável fantasma:', err));
-    // Diário: backfill retroativo dos atos decisórios não publicados + escape do Nível 2 (mandado
-    // nunca cumprido de caso encerrado). Em silêncio (sem @everyone). Idempotente.
+    // Diário: backfill retroativo dos atos decisórios não publicados. Em silêncio (sem @everyone).
+    // Idempotente. NÃO publica mandado não cumprido (escape do Nível 2 desligado por política).
     require('./utils/diarioAtos').varrerDiario(guild).catch(err => console.error('Erro na varredura do Diário:', err));
   };
   rodarChecagens();

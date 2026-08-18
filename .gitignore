@@ -4,3 +4,10 @@ dados.json
 dados.backup.json
 dados.json.*
 *.log
+
+# Scripts locais de operação/limpeza — destrutivos, não pertencem ao repositório nem à imagem.
+limpar-servidor.js
+limpar-servidor.bat
+limpar-historico.js
+limpar-historico.bat
+fase2.js

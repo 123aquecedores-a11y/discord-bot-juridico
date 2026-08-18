@@ -482,6 +482,117 @@ async function decidirReconsideracaoGenerica(interaction, extra, cfg) {
   return interaction.reply({ content: cfg.replyManter(numero), ephemeral: true });
 }
 
+// Emissão do mandado a partir de uma medida deferida. Vivia inline no processarReferendo; foi
+// extraída porque o passo é REEXECUTÁVEL: quando o `canal.send` falha (foi o caso do estouro de
+// 2000 caracteres em utils/documentos.js), a medida já ficou gravada como Deferida e o mandado já
+// existe no banco, mas nada apareceu no canal e o botão de referendar sumiu — sem um caminho de
+// reemissão o ato morria ali, gravado e invisível.
+//
+// Idempotente no número: se a medida já tem mandado, reaproveita em vez de emitir um segundo.
+// Devolve { numeroMandado, postado, erro } — o send é capturado de propósito, pra uma falha de
+// postagem virar estado recuperável e visível, nunca exceção no meio de um ato já gravado.
+async function emitirMandadoDaMedida(interaction, medida, fundamentacaoJuiz, { reemissao = false } = {}) {
+  const numero = medida.numero;
+  const mandadoExistente = db.todos('mandados', m => m.medidaNumero === numero)[0];
+  const numeroMandado = mandadoExistente?.numero || proximoNumero(db, 'mandados', 'MO');
+  if (!mandadoExistente) {
+    // Schema unificado com o mandado direto (mandado.js): grava também processoVinculado (quando a
+    // medida já está atrelada a um processo), senão temAcessoMandado/embed não enxergam o processo.
+    db.inserir('mandados', {
+      numero: numeroMandado, medidaNumero: numero, processoVinculado: medida.processoVinculado || null,
+      tipo: medida.tipo, alvo: medida.alvo,
+      status: 'Emitido', emitidoPor: medida.juiz, cumpridoPor: null,
+    });
+    // Dossiê do inquérito: registra o mandado sob o mesmo protocolo da medida que o originou,
+    // independente de qual Juiz foi sorteado — é isso que deixa o dossiê completo quando a
+    // denúncia nascer daqui (ver criarProcessoPenal).
+    if (medida.codigoExterno) dossie.registrarMandado(medida.codigoExterno, numeroMandado);
+  }
+
+  const medidaAtualizada = db.buscarPorNumero('medidas', numero);
+  // Assinatura = quem clicou (o Juiz que referenda a medida, ou superstaff no lugar dele).
+  const nomeAssinante = await documentoPng.nomeExibicao(interaction.guild, interaction.user.id);
+  const pngMandado = await documentoPng.gerarDocumentoPNG({
+    tipoDocumento: 'mandado_generico',
+    orgaoEmissor: 'judiciario',
+    subunidade: 'Comarca de São Paulo — Vara Criminal',
+    tituloDocumento: `MANDADO DE ${medida.tipo.toUpperCase()}`,
+    numeroProcesso: numeroMandado,
+    dataEmissao: documentos.dataExtenso(),
+    destinatario: medida.alvo,
+    corpoTexto: [
+      `Fundamentação do Ministério Público:\n${medida.fundamentacaoPromotor || '—'}`,
+      '',
+      `Fundamentação do Juízo:\n${fundamentacaoJuiz}`,
+      ...(medida.codigoExterno ? ['', `Pedido advindo do Inquérito Policial nº ${medida.codigoExterno}.`] : []),
+    ].join('\n'),
+    nomeAssinante,
+    cargoAssinante: 'Juiz de Direito',
+  }).catch(err => { console.error('Falha ao gerar PNG do mandado:', err.message); return null; });
+
+  const canal = await interaction.guild.channels.fetch(medida.canalId).catch(() => null);
+  if (!canal) return { numeroMandado, postado: false, erro: 'canal da medida não encontrado' };
+
+  try {
+    const msgMandado = await canal.send({
+      content: `<@${medida.delegado}>\n\n${documentos.textoMandado({
+        numero: numeroMandado, medida: medidaAtualizada,
+        fundamentacaoPromotor: medida.fundamentacaoPromotor, fundamentacaoJuiz,
+        codigoExterno: medida.codigoExterno,
+      })}`,
+      components: [botaoCumprir(numeroMandado)],
+      ...(pngMandado ? { files: [{ attachment: pngMandado, name: `Mandado-${numeroMandado}.png` }] } : {}),
+    });
+    // Registra o PNG do referendo em documentosAnexados — o mandado direto (mandado.js) já fazia
+    // isso; sem isto a rastreabilidade do mandado ficava só no direto. Protocolo = processo
+    // vinculado quando existe, senão a própria medida.
+    const anexoUrlMandado = msgMandado?.attachments?.first()?.url;
+    if (anexoUrlMandado) {
+      anexos.criarDocumento({
+        tipo: 'mandado', url: anexoUrlMandado, nomeArquivo: `Mandado-${numeroMandado}.png`,
+        autorId: medida.juiz, atoOrigemId: numeroMandado, protocoloVinculado: medida.processoVinculado || numero,
+      });
+    }
+    await canal.send({ content: `<@${medida.promotor}> quando quiser, pode transformar esta medida em processo penal formal, herdando os dados automaticamente.`, components: [botaoAbrirProcesso(numero)] });
+  } catch (err) {
+    console.error(`Falha ao postar o mandado ${numeroMandado} da medida ${numero}:`, err.message);
+    return { numeroMandado, postado: false, erro: err.message };
+  }
+
+  // Na reemissão os atos abaixo já foram lavrados no referendo original — relavrar duplicaria o
+  // andamento nos autos e reenviaria a devolutiva pro servidor da Polícia Civil.
+  if (reemissao) {
+    await auditoria.registrar(interaction.guild, { acao: 'Mandado reemitido no canal da medida', executorId: interaction.user.id, referencia: `${numero} → Mandado ${numeroMandado}` });
+    return { numeroMandado, postado: true };
+  }
+
+  // Só vira andamento se já existe processo pra pendurar o evento — nem toda medida referendada
+  // tem um (pode ainda estar solta, virando processo só depois via botaoAbrirProcesso). Sem
+  // processo vinculado, mantém o auditoria.registrar solto de antes como única saída.
+  if (medida.processoVinculado) {
+    await andamentos.registrar(interaction.guild, medida.processoVinculado, {
+      tipo: 'mandado_emitido', titulo: `📜 Mandado de ${medida.tipo} emitido`,
+      detalhe: `Mandado ${numeroMandado} — alvo: ${medida.alvo}\nFundamentação do Juízo: ${fundamentacaoJuiz}`,
+      executorId: interaction.user.id, metadata: { mandadoNumero: numeroMandado, tipoMandado: medida.tipo, medidaNumero: numero },
+    });
+    // Sem repostarPainel aqui de propósito: a narrativa acima foi postada no canal DA MEDIDA
+    // (medida.canalId), não necessariamente no canal do processo — repostar lá enterraria o
+    // painel no canal errado, sem relação com a mensagem nova.
+  } else {
+    await auditoria.registrar(interaction.guild, { acao: 'Medida referendada — mandado emitido', executorId: interaction.user.id, referencia: `${numero} → Mandado ${numeroMandado}` });
+  }
+  await devolutivaPoliciaCivil.enviarDevolutivaMandado(medidaAtualizada, {
+    decisao: 'Deferido', fundamentacao: fundamentacaoJuiz, juizId: medida.juiz, numeroMandado, pngBuffer: pngMandado,
+  });
+  // NÍVEL 2 — NÃO publica no Diário aqui (no deferimento/emissão): publicar antes do cumprimento
+  // avisaria o alvo e queimaria a diligência. A publicação acontece só no cumprimento
+  // (cumprirMandado → mandadoCumprido), e só para os tipos da allow-list (utils/diarioAtos.js).
+  // Mandado não cumprido não publica em gatilho nenhum.
+  // OBS: a devolutiva acima (enviarDevolutivaMandado) é OUTRA coisa — vai por webhook pro servidor
+  // da Polícia Civil que pediu a diligência, leva Tipo/Alvo e NÃO passa pela política do Diário.
+  return { numeroMandado, postado: true };
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('medida')
@@ -499,6 +610,9 @@ module.exports = {
       .addUserOption(o => o.setName('promotor').setDescription('Promotor responsável por analisar')))
     .addSubcommand(sub => sub.setName('ver').setDescription('Ver detalhes de uma medida')
       .addStringOption(o => o.setName('numero').setDescription('Número da medida').setRequired(true).setAutocomplete(true)))
+    // Reparo: republica no canal o mandado de uma medida já deferida cuja postagem falhou.
+    .addSubcommand(sub => sub.setName('reemitir').setDescription('Republica no canal o mandado de uma medida já deferida')
+      .addStringOption(o => o.setName('numero').setDescription('Número da medida (ex: 0009MD)').setRequired(true)))
     .addSubcommand(sub => sub.setName('listar').setDescription('Lista medidas cautelares')
       .addStringOption(o => o.setName('status').setDescription('Filtrar por status').addChoices(
         { name: 'Aguardando MP', value: 'Aguardando MP' },
@@ -537,6 +651,10 @@ module.exports = {
       // Gate de sigilo + resposta SEMPRE privada (antes era pública, vazava o teor no canal).
       if (!temAcessoMedida(interaction, medida)) return interaction.reply({ content: 'Você não tem acesso ao teor desta medida — ela é sigilosa (fase de inquérito). Só as partes (Delegado/Promotor/Juiz) e a Staff podem consultá-la.', ephemeral: true });
       return interaction.reply({ embeds: [embedMedida(medida)], ephemeral: true });
+    }
+
+    if (sub === 'reemitir') {
+      return module.exports.reemitirMandado(interaction, interaction.options.getString('numero').trim().toUpperCase());
     }
 
     if (sub === 'listar') {
@@ -675,87 +793,34 @@ module.exports = {
     if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
     db.atualizar('medidas', numero, { status: 'Deferida', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString() });
 
-    const numeroMandado = proximoNumero(db, 'mandados', 'MO');
-    // Schema unificado com o mandado direto (mandado.js): grava também processoVinculado (quando a
-    // medida já está atrelada a um processo), senão temAcessoMandado/embed não enxergam o processo.
-    db.inserir('mandados', {
-      numero: numeroMandado, medidaNumero: numero, processoVinculado: medida.processoVinculado || null,
-      tipo: medida.tipo, alvo: medida.alvo,
-      status: 'Emitido', emitidoPor: medida.juiz, cumpridoPor: null,
-    });
-    // Dossiê do inquérito: registra o mandado sob o mesmo protocolo da medida que o originou,
-    // independente de qual Juiz foi sorteado — é isso que deixa o dossiê completo quando a
-    // denúncia nascer daqui (ver criarProcessoPenal).
-    if (medida.codigoExterno) dossie.registrarMandado(medida.codigoExterno, numeroMandado);
-
     if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
-    const medidaAtualizada = db.buscarPorNumero('medidas', numero);
 
-    // Assinatura = quem clicou (o Juiz que referenda a medida, ou superstaff no lugar dele).
-    const nomeAssinante = await documentoPng.nomeExibicao(interaction.guild, interaction.user.id);
-    const pngMandado = await documentoPng.gerarDocumentoPNG({
-      tipoDocumento: 'mandado_generico',
-      orgaoEmissor: 'judiciario',
-      subunidade: 'Comarca de São Paulo — Vara Criminal',
-      tituloDocumento: `MANDADO DE ${medida.tipo.toUpperCase()}`,
-      numeroProcesso: numeroMandado,
-      dataEmissao: documentos.dataExtenso(),
-      destinatario: medida.alvo,
-      corpoTexto: [
-        `Fundamentação do Ministério Público:\n${medida.fundamentacaoPromotor || '—'}`,
-        '',
-        `Fundamentação do Juízo:\n${fundamentacaoJuiz}`,
-        ...(medida.codigoExterno ? ['', `Pedido advindo do Inquérito Policial nº ${medida.codigoExterno}.`] : []),
-      ].join('\n'),
-      nomeAssinante,
-      cargoAssinante: 'Juiz de Direito',
-    }).catch(err => { console.error('Falha ao gerar PNG do mandado:', err.message); return null; });
-
-    const canal = await interaction.guild.channels.fetch(medida.canalId).catch(() => null);
-    if (canal) {
-      const msgMandado = await canal.send({
-        content: `<@${medida.delegado}>\n\n${documentos.textoMandado({
-          numero: numeroMandado, medida: medidaAtualizada,
-          fundamentacaoPromotor: medida.fundamentacaoPromotor, fundamentacaoJuiz,
-          codigoExterno: medida.codigoExterno,
-        })}`,
-        components: [botaoCumprir(numeroMandado)],
-        ...(pngMandado ? { files: [{ attachment: pngMandado, name: `Mandado-${numeroMandado}.png` }] } : {}),
-      });
-      // Registra o PNG do referendo em documentosAnexados — o mandado direto (mandado.js) já fazia
-      // isso; sem isto a rastreabilidade do mandado ficava só no direto. Protocolo = processo
-      // vinculado quando existe, senão a própria medida.
-      const anexoUrlMandado = msgMandado?.attachments?.first()?.url;
-      if (anexoUrlMandado) {
-        anexos.criarDocumento({
-          tipo: 'mandado', url: anexoUrlMandado, nomeArquivo: `Mandado-${numeroMandado}.png`,
-          autorId: medida.juiz, atoOrigemId: numeroMandado, protocoloVinculado: medida.processoVinculado || numero,
-        });
-      }
-      await canal.send({ content: `<@${medida.promotor}> quando quiser, pode transformar esta medida em processo penal formal, herdando os dados automaticamente.`, components: [botaoAbrirProcesso(numero)] });
+    const { numeroMandado, postado, erro } = await emitirMandadoDaMedida(interaction, medida, fundamentacaoJuiz);
+    if (!postado) {
+      return interaction.editReply({ content: `Medida ${numero} referendada e Mandado ${numeroMandado} emitido, mas **não consegui postar no canal da medida** (${erro}). O ato está gravado — use \`/medida reemitir numero:${numero}\` para publicá-lo.` });
     }
-    // Só vira andamento se já existe processo pra pendurar o evento — nem toda medida referendada
-    // tem um (pode ainda estar solta, virando processo só depois via botaoAbrirProcesso). Sem
-    // processo vinculado, mantém o auditoria.registrar solto de antes como única saída.
-    if (medida.processoVinculado) {
-      await andamentos.registrar(interaction.guild, medida.processoVinculado, {
-        tipo: 'mandado_emitido', titulo: `📜 Mandado de ${medida.tipo} emitido`,
-        detalhe: `Mandado ${numeroMandado} — alvo: ${medida.alvo}\nFundamentação do Juízo: ${fundamentacaoJuiz}`,
-        executorId: interaction.user.id, metadata: { mandadoNumero: numeroMandado, tipoMandado: medida.tipo, medidaNumero: numero },
-      });
-      // Sem repostarPainel aqui de propósito: a narrativa acima foi postada no canal DA MEDIDA
-      // (medida.canalId), não necessariamente no canal do processo — repostar lá enterraria o
-      // painel no canal errado, sem relação com a mensagem nova.
-    } else {
-      await auditoria.registrar(interaction.guild, { acao: 'Medida referendada — mandado emitido', executorId: interaction.user.id, referencia: `${numero} → Mandado ${numeroMandado}` });
-    }
-    await devolutivaPoliciaCivil.enviarDevolutivaMandado(medidaAtualizada, {
-      decisao: 'Deferido', fundamentacao: fundamentacaoJuiz, juizId: medida.juiz, numeroMandado, pngBuffer: pngMandado,
-    });
-    // NÍVEL 2 — NÃO publica no Diário aqui (no deferimento/emissão): publicar antes do cumprimento
-    // avisaria o alvo e queimaria a diligência. A publicação acontece só no cumprimento
-    // (cumprirMandado → mandadoCumprido) ou, se o caso encerrar sem cumprir, no escape da varredura.
     return interaction.editReply({ content: `Medida ${numero} referendada. Mandado ${numeroMandado} emitido.` });
+  },
+
+  // Reemissão do mandado de uma medida JÁ deferida cuja publicação no canal falhou. Não redecide
+  // nada: reaproveita a fundamentação do Juízo gravada nos autos e o número de mandado que já
+  // existe, só refaz o PNG e a postagem.
+  async reemitirMandado(interaction, numero) {
+    const medida = db.buscarPorNumero('medidas', numero);
+    if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
+    if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
+      return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode reemitir o mandado — no caso, <@${medida.juiz}>.`, ephemeral: true });
+    }
+    if (medida.status !== 'Deferida') {
+      return interaction.reply({ content: `A medida ${numero} está como "${medida.status}" — só medida deferida tem mandado a reemitir.`, ephemeral: true });
+    }
+    if (!medida.fundamentacaoJuiz) {
+      return interaction.reply({ content: `A medida ${numero} está deferida mas sem fundamentação do Juízo gravada — não dá pra reemitir o mandado sem o teor da decisão.`, ephemeral: true });
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const { numeroMandado, postado, erro } = await emitirMandadoDaMedida(interaction, medida, medida.fundamentacaoJuiz, { reemissao: true });
+    if (!postado) return interaction.editReply({ content: `Não consegui postar o Mandado ${numeroMandado} no canal da medida: ${erro}` });
+    return interaction.editReply({ content: `Mandado ${numeroMandado} publicado no canal da medida ${numero}.` });
   },
 
   async abrirModalNegarJuiz(interaction, numero) {

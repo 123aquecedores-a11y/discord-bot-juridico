@@ -203,8 +203,9 @@ async function emitirMandadoNoProcesso({ guild, processo, tipoRotulo, teor, emit
   await require('./processo').repostarPainel(guild, processo.numero);
 
   // NÍVEL 2 — NÃO publica no Diário na emissão: publicar antes do cumprimento avisaria o alvo e
-  // queimaria a diligência (busca/prisão/quebra). A publicação sai só no cumprimento (cumprirMandado
-  // → mandadoCumprido) ou no escape da varredura, se o caso encerrar sem cumprir.
+  // queimaria a diligência. A publicação sai SÓ no cumprimento (cumprirMandado → mandadoCumprido),
+  // e mesmo lá só para os tipos da allow-list (prisão preventiva/temporária) — ver a política de
+  // sigilo em utils/diarioAtos.js. Mandado não cumprido não publica nunca, em gatilho nenhum.
 
   return { numero: numeroMandado };
 }

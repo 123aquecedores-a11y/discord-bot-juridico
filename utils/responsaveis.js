@@ -42,8 +42,25 @@ const TABELAS_TICKET = {
     aberto: (r) => !['Deferido', 'Indeferido', 'Vencido', 'Arquivada', 'Cancelada — prazo de vínculo expirado'].includes(r.status),
     papeis: {
       Juiz:     { campo: 'juiz',     resetPrazo: () => ({}) },
-      // Troca de promotor reinicia as 24h do MP; a manifestação anterior PERMANECE (ato não se desfaz).
-      Promotor: { campo: 'promotor', resetPrazo: () => ({ sorteioPromotorEm: new Date().toISOString() }) },
+      // REINÍCIO ÚNICO DO PRAZO DO MP (decisão do operador — "opção B").
+      //
+      // Antes, toda troca de Promotor zerava as 24h. Isso abria um loop: o Procurador trocava de
+      // promotor a cada 23h e o prazo nunca vencia, deixando o Juiz travado indefinidamente à espera
+      // de uma manifestação que ninguém precisava dar. A trava do Juiz é lazy (libera sozinha no
+      // decurso), então prazo que nunca vence = decisão que nunca sai.
+      //
+      // Agora o relógio volta a zero UMA VEZ SÓ por petição. A primeira troca reinicia (o promotor
+      // novo merece a janela cheia — ele acabou de receber os autos) e marca prazoMpJaReiniciado.
+      // Da segunda troca em diante o prazo SEGUE CORRENDO da data que já estava valendo: trocar de
+      // promotor deixa de ser uma forma de comprar tempo.
+      //
+      // A manifestação anterior PERMANECE nos autos nos dois casos — ato praticado não se desfaz.
+      Promotor: {
+        campo: 'promotor',
+        resetPrazo: (reg) => (reg && reg.prazoMpJaReiniciado
+          ? {} // já usou o reinício: o relógio não volta a zero
+          : { sorteioPromotorEm: new Date().toISOString(), prazoMpJaReiniciado: true }),
+      },
     },
   },
   apelacoes: {
@@ -166,6 +183,21 @@ async function canalArquivado(guild, canalId) {
   return !!(canal && canal.parentId === config.categoriaArquivadosId);
 }
 
+// Texto do aviso do prazo do MP numa troca de Promotor em petição (ver o resetPrazo de peticoes).
+// Recebe o registro ANTES da troca. Devolve null quando não é o caso (outro papel/tabela).
+function textoPrazoMp(tabela, papel, registroAntes) {
+  if (tabela !== 'peticoes' || papel !== 'Promotor' || !registroAntes) return null;
+  if (!registroAntes.prazoMpJaReiniciado) {
+    return '⏱️ **Prazo do MP reiniciado por ato da Supervisão** — o Ministério Público tem 24 (vinte e quatro) horas, '
+      + 'a contar de agora, para se manifestar. Este é o **único** reinício desta petição: novas trocas de Promotor não '
+      + 'devolvem o prazo.';
+  }
+  const desde = registroAntes.sorteioPromotorEm ? new Date(registroAntes.sorteioPromotorEm) : null;
+  const quando = desde && !isNaN(desde) ? desde.toLocaleString('pt-BR') : 'a data já registrada nos autos';
+  return '⏱️ **Prazo do MP NÃO foi reiniciado** — esta petição já usou seu reinício único. O prazo de 24 (vinte e quatro) '
+    + `horas segue correndo desde ${quando}, e a troca de Promotor não o devolve.`;
+}
+
 // Núcleo compartilhado: efetiva a troca de UM papel num ticket. Grava o campo + reinicia prazo,
 // migra o acesso ao canal (novo entra, antigo sai), posta o andamento narrativo e registra a
 // auditoria. Recebe novoId pronto (do sorteio automático OU da @menção da troca manual).
@@ -176,13 +208,21 @@ async function aplicarTroca(guild, { tabela, numero, papel, novoId, textoAndamen
   if (!registro) return { ok: false, razao: 'ticket não encontrado' };
   const antigoId = registro[pcfg.campo];
 
-  db.atualizar(tabela, numero, { [pcfg.campo]: novoId, ...pcfg.resetPrazo() });
+  // resetPrazo recebe o registro ANTES da troca — é assim que o reinício único do prazo do MP
+  // (petições/Promotor) sabe se já foi usado. Os demais papéis ignoram o argumento.
+  db.atualizar(tabela, numero, { [pcfg.campo]: novoId, ...pcfg.resetPrazo(registro) });
+
+  // Aviso do prazo do MP: sai em TODA troca de Promotor em petição, dizendo a verdade daquela
+  // troca — reiniciou agora, ou já tinha reiniciado e o relógio continua correndo. Sem isso, a
+  // Supervisão trocaria de promotor achando que comprou 24h e o Juiz decidiria no meio.
+  const avisoMp = textoPrazoMp(tabela, papel, registro);
 
   const canal = registro[cfg.canalCampo] ? await guild.channels.fetch(registro[cfg.canalCampo]).catch(() => null) : null;
   if (canal) {
     await canais.adicionarMembro(canal, novoId);
     if (antigoId && antigoId !== novoId) await canal.permissionOverwrites.delete(antigoId).catch(() => {});
     if (textoAndamento) await canal.send({ content: textoAndamento });
+    if (avisoMp) await canal.send({ content: avisoMp }).catch(() => {});
   }
   await auditoria.registrar(guild, {
     acao: acaoAuditoria, executorId,
@@ -197,7 +237,19 @@ async function aplicarTroca(guild, { tabela, numero, papel, novoId, textoAndamen
     detalhe: `${antigoId ? `<@${antigoId}>` : '—'} → <@${novoId}>${motivoAuditoria ? `. Motivo: ${motivoAuditoria}` : ''}`,
     executorId, metadata: { tabela, papel, antigoId: antigoId || null, novoId },
   }).catch(e => console.error('[responsaveis] falha ao registrar andamento da troca (ignorado):', e.message));
-  return { ok: true, antigoId, novoId };
+  // O prazo do MP também vai pro HISTÓRICO, não só pro canal: a mensagem rola pra cima, o andamento
+  // fica. É por ele que se responde depois "por que o Juiz decidiu se o MP não tinha se manifestado".
+  if (avisoMp) {
+    const reiniciouAgora = !registro.prazoMpJaReiniciado;
+    await andamentos.registrar(guild, numero, {
+      tipo: 'prazo_mp',
+      titulo: reiniciouAgora ? '⏱️ Prazo do MP reiniciado (único)' : '⏱️ Prazo do MP mantido (reinício já usado)',
+      detalhe: avisoMp,
+      executorId,
+      metadata: { reiniciouAgora, sorteioPromotorEmAnterior: registro.sorteioPromotorEm || null },
+    }).catch(e => console.error('[responsaveis] falha ao registrar andamento do prazo do MP (ignorado):', e.message));
+  }
+  return { ok: true, antigoId, novoId, prazoMpReiniciado: avisoMp ? !registro.prazoMpJaReiniciado : undefined };
 }
 
 // Motivo automático que vai pro andamento nos autos e pra auditoria — reatribuição automática
@@ -502,4 +554,5 @@ module.exports = {
   resolverTicket, papeisTrocaveis, podeTrocarPapel, botaoSupervisaoTicket, trocarManual,
   limparRhFantasma, reatribuirTicketsFantasma, recuperarPendencias,
   varrerResponsaveisFantasma, tratarResponsavelInvalido,
+  textoPrazoMp, // exposto pro teste do reinício único do prazo do MP
 };
