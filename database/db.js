@@ -7,7 +7,7 @@ const path = require('path');
 const DB_PATH = process.env.DADOS_JSON_PATH || path.join(__dirname, '..', 'dados.json');
 // 'pecas' entrou com a entrega in-game (utils/pecas.js). Banco antigo ganha a tabela vazia no
 // primeiro carregar() — ver o loop de tabelas novas abaixo. Nenhuma migração é necessária.
-const TABELAS = ['processos', 'medidas', 'mandados', 'oficios', 'rh', 'apelacoes', 'peticoes', 'fichas', 'consultas', 'estado', 'certidoes', 'atosMp', 'documentosAnexados', 'dossiesInquerito', 'instituicoes', 'andamentos', 'solicitacoesCargo', 'preferencias', 'editais', 'inscricoesEdital', 'pecas'];
+const TABELAS = ['processos', 'medidas', 'mandados', 'oficios', 'rh', 'apelacoes', 'peticoes', 'fichas', 'consultas', 'estado', 'certidoes', 'atosMp', 'documentosAnexados', 'dossiesInquerito', 'instituicoes', 'andamentos', 'solicitacoesCargo', 'preferencias', 'editais', 'inscricoesEdital', 'pecas', 'configGuild'];
 
 // Semente inicial do cadastro de instituições (spec-atualizacoes-bot-juridico.md, seção 6) —
 // só entra na PRIMEIRA vez que a tabela aparece (banco novo, ou banco antigo ganhando a tabela

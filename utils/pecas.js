@@ -469,6 +469,48 @@ function pendentesDoPapel(processoTabela, processoNumero, papel) {
     && p.destinatarios.some(d => d.papel === papel && !d.recebidoEm));
 }
 
+// SPEC §11.2.2b: DESTRAVAR EM EMERGÊNCIA — ação separada e explícita, nunca efeito colateral do
+// interruptor. Se a mecânica travar o servidor e for preciso liberar os processos em curso, a staff
+// usa este caminho de propósito, e cada processo afetado recebe o registro nos autos.
+//
+// Mora aqui, e não em utils/modoEntrega.js, exatamente para não poder ser chamada por engano junto
+// com o desligamento do modo: quem desliga o interruptor não destrava nada.
+function destravarTodasPendencias({ quemId, motivo, agora = Date.now() } = {}) {
+  if (!motivo || !String(motivo).trim()) return { ok: false, razao: 'motivo é obrigatório' };
+  const afetadas = [];
+  for (const peca of db.todos('pecas', p => p.gated)) {
+    let mudou = false;
+    const destinatarios = peca.destinatarios.map(d => {
+      if (d.recebidoEm) return d; // recebimento é irreversível
+      mudou = true;
+      return {
+        ...d,
+        recebidoEm: new Date(agora).toISOString(),
+        recebidoComo: 'entregas destravadas pela staff',
+        automatico: true,
+        travado: false,
+        destravadoPorId: quemId,
+        destravadoMotivo: String(motivo).trim(),
+      };
+    });
+    if (!mudou) continue;
+    db.atualizar('pecas', peca.numero, { destinatarios });
+    afetadas.push({ peca: peca.numero, processoTabela: peca.processoTabela, processoNumero: peca.processoNumero });
+  }
+  return { ok: true, afetadas };
+}
+
+// SPEC §11.2.1: relatório de aposentadoria do caminho antigo — quantos processos legados ainda
+// estão abertos. Quando chegar a zero, o fluxo de PDF anexado pode ser removido.
+function relatorioLegado(processoTabela = 'processos') {
+  const cfg = TABELAS_TICKET[processoTabela];
+  const todos = db.todos(processoTabela);
+  const abertos = cfg ? todos.filter(r => cfg.aberto(r)) : todos;
+  const porModo = { legado: 0, ingame: 0, aberto: 0 };
+  for (const r of abertos) porModo[modoDoProcesso(r)] = (porModo[modoDoProcesso(r)] || 0) + 1;
+  return { abertos: abertos.length, porModo, podeAposentarLegado: porModo.legado === 0 };
+}
+
 // SPEC §11.4: processo arquivado ou anulado fecha as janelas pendentes, para não sobrar estado
 // órfão. Não marca nada como recebido — só encerra a janela.
 function fecharJanelasDoProcesso(processoTabela, processoNumero, { agora = Date.now() } = {}) {
@@ -488,4 +530,5 @@ module.exports = {
   gerar, abrirEntrega, encerrarEntrega, janelaAberta, receber, destravarSelo,
   podeVerTeor, projetarParaUsuario, processoSentenciado, habilitadoNoProcesso,
   varrerValvula, reiniciarValvulaPorTroca, pendentesDoPapel, fecharJanelasDoProcesso,
+  destravarTodasPendencias, relatorioLegado,
 };

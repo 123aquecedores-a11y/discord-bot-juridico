@@ -392,6 +392,77 @@ console.log('\n14) Processo arquivado limpa janelas órfãs (SPEC §11.4)');
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n15) Interruptor "Modo Entrega In-Game" (SPEC §11.2)');
+{
+  const modo = require('../utils/modoEntrega');
+  const G1 = 'guild_A', G2 = 'guild_B';
+  const STAFF = 'id_staff';
+
+  // Ausência de registro = DESLIGADO. Erra-se para o lado que não trava ninguém.
+  ok(modo.ligado(G1) === false, '15a: sem registro, o modo nasce DESLIGADO');
+  ok(modo.modoParaNovoProcesso(G1) === 'aberto', '15b: ...e processo novo nasce aberto, não ingame');
+  const boot = modo.logarNoBoot(G1);
+  ok(boot.semRegistro === true && boot.ligado === false, '15c: o boot avisa que não há registro');
+
+  const l = modo.ligar(G1, STAFF);
+  ok(l.ok && modo.ligado(G1), '15d: staff liga com um ato explícito');
+  ok(modo.modoParaNovoProcesso(G1) === 'ingame', '15e: agora processo novo nasce ingame');
+  ok(modo.historico(G1).length === 1 && modo.historico(G1)[0].porId === STAFF, '15f: log de quem ligou, com horário');
+
+  ok(!modo.ligar(G1, STAFF).ok, '15g: ligar de novo não duplica evento no histórico');
+  ok(modo.historico(G1).length === 1, '15h: ...o histórico continua com 1 evento');
+
+  // POR GUILD, NUNCA GLOBAL (SPEC §15.20).
+  ok(modo.ligado(G2) === false, '15i: ligar num servidor NÃO afeta o outro');
+  ok(modo.modoParaNovoProcesso(G2) === 'aberto', '15j: ...o outro segue no padrão desligado');
+
+  // Desligar afeta só processos NOVOS — nunca os que já estão correndo (SPEC §15.19).
+  const correndo = novoProcesso({ modoEntrega: modo.modoParaNovoProcesso(G1) });
+  const { peca: pcCorrendo } = pecas.gerar({
+    processoTabela: 'processos', processoNumero: correndo.numero, tipo: 'intimacao',
+    autorId: JUIZ, autorPapel: 'Juiz', texto: 'teor', destinatarios: [{ papel: 'Promotor' }],
+  });
+  const d = modo.desligar(G1, STAFF);
+  ok(d.ok && !modo.ligado(G1), '15k: staff desliga');
+  ok(modo.historico(G1).length === 2, '15l: ...com log de quem desligou');
+  ok(pecas.modoDoProcesso(recarregar(correndo.numero)) === 'ingame', '15m: processo que já corria SEGUE ingame');
+  ok(peca(pcCorrendo.numero).gated === true, '15n: ...e a peça dele continua gated');
+  ok(!peca(pcCorrendo.numero).destinatarios[0].recebidoEm, '15o: desligar NÃO destravou nada (não é efeito colateral)');
+  ok(modo.modoParaNovoProcesso(G1) === 'aberto', '15p: só o processo NOVO nasce aberto');
+}
+
+console.log('\n16) Destravar pendências é ação separada (SPEC §11.2.2b, §15.19b)');
+{
+  const p = novoProcesso();
+  const { peca: pc } = pecas.gerar({
+    processoTabela: 'processos', processoNumero: p.numero, tipo: 'intimacao',
+    autorId: JUIZ, autorPapel: 'Juiz', texto: 'teor', destinatarios: [{ papel: 'Promotor' }],
+  });
+  const jaRecebida = novoProcesso();
+  const { peca: pcRecebida } = pecas.gerar({
+    processoTabela: 'processos', processoNumero: jaRecebida.numero, tipo: 'intimacao',
+    autorId: JUIZ, autorPapel: 'Juiz', texto: 'teor', destinatarios: [{ papel: 'Promotor' }],
+  });
+  pecas.abrirEntrega(pcRecebida.numero, JUIZ);
+  pecas.receber(pcRecebida.numero, PROMOTOR, { tokenLido: pcRecebida.destinatarios[0].token });
+  const comoRecebeu = peca(pcRecebida.numero).destinatarios[0].recebidoComo;
+
+  ok(!pecas.destravarTodasPendencias({ quemId: 'id_staff', motivo: '' }).ok, '16a: destravar exige motivo');
+  const r = pecas.destravarTodasPendencias({ quemId: 'id_staff', motivo: 'mecânica travou o servidor' });
+  ok(r.ok && r.afetadas.some(a => a.peca === pc.numero), '16b: libera as pendências');
+  ok(/destravadas pela staff/.test(peca(pc.numero).destinatarios[0].recebidoComo), '16c: e lavra em cada processo afetado');
+  ok(peca(pcRecebida.numero).destinatarios[0].recebidoComo === comoRecebeu, '16d: não reescreve o que já tinha sido recebido pessoalmente');
+}
+
+console.log('\n17) Relatório de aposentadoria do legado (SPEC §11.2.1)');
+{
+  const rel = pecas.relatorioLegado('processos');
+  ok(typeof rel.abertos === 'number' && rel.porModo, '17a: relatório conta processos abertos por modo');
+  ok(rel.porModo.legado >= 1, '17b: enxerga os legados ainda abertos');
+  ok(rel.podeAposentarLegado === false, '17c: ...e diz que o caminho antigo ainda não pode ser removido');
+}
+
+// ---------------------------------------------------------------------------
 try { fs.unlinkSync(DB_TESTE); } catch (_) {}
 try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
