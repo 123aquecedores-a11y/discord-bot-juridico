@@ -109,6 +109,15 @@ const novoToken = () => `tk_${crypto.randomBytes(16).toString('hex')}`;
 // do documento. Ninguém digita isso em lugar nenhum do fluxo (SPEC §3.5, §13).
 const novosDigitos = () => Array.from({ length: 6 }, () => crypto.randomInt(0, 10)).join('');
 
+// ENDEREÇO PÚBLICO DA PÁGINA — token SEPARADO do token do selo, e a separação é obrigatória.
+//
+// O token do selo destrava o recebimento; o token público é só endereço de imagem, e vai impresso
+// numa URL que o jogo busca sem autenticação. Se fossem o mesmo valor, qualquer um que recebesse o
+// link do documento teria também a chave que destrava a entrega — o gate inteiro cairia por aí.
+//
+// Não enumerável de propósito: 24 bytes de aleatório, nada de id sequencial na URL.
+const novoTokenPublico = () => crypto.randomBytes(24).toString('base64url');
+
 function novoDestinatario({ papel, habilitacaoId = null }, { gated, agora }) {
   return {
     papel,
@@ -143,7 +152,12 @@ function novoDestinatario({ papel, habilitacaoId = null }, { gated, agora }) {
 // `destinatarios` são PAPÉIS — `{ papel: 'Juiz' }` ou `{ papel: 'Advogado', habilitacaoId: 3 }` —
 // nunca IDs. Cada um ganha o próprio token, e o ato só se cumpre por inteiro quando todos
 // receberam ou a válvula estourar (SPEC §11.3).
-function gerar({ processoTabela, processoNumero, tipo, autorId, autorPapel, texto, destinatarios = [], agora = Date.now() }) {
+// `qualificacao` e `assinante` entram no registro, e não são recalculados na hora de exibir. Dois
+// motivos: o servidor HTTP que serve a página para o jogo não tem acesso ao Discord para resolver
+// nome de exibição, e — mais importante — documento assinado não muda de assinante nem de partes
+// depois de emitido. Congelar aqui é o que torna a renderização determinística e o documento
+// reproduzível anos depois.
+function gerar({ processoTabela, processoNumero, tipo, autorId, autorPapel, texto, qualificacao = null, assinante = null, destinatarios = [], agora = Date.now() }) {
   const processo = db.buscarPorNumero(processoTabela, processoNumero);
   if (!processo) return { ok: false, razao: 'processo não encontrado' };
 
@@ -165,6 +179,8 @@ function gerar({ processoTabela, processoNumero, tipo, autorId, autorPapel, text
     autorId,
     autorPapel,
     texto, // fonte da verdade; o PNG é renderizado a partir daqui (SPEC §5.1)
+    qualificacao, // classe e partes, congeladas na emissão
+    assinante,    // nome de exibição de quem assinou, congelado na emissão
     modoEntrega: modo,
     gated,
     digitos: gated ? novosDigitos() : null,
@@ -466,6 +482,42 @@ function paraRenderizacao(pecaNumero, usuarioId, { ehStaff = false } = {}) {
   };
 }
 
+// Endereço permanente das páginas de um destinatário. Uma URL POR PÁGINA: no jogo cada página é
+// impressa separadamente, então cada uma precisa do próprio link.
+function registrarPaginasPublicas(pecaNumero, papel, habilitacaoId, totalPaginas) {
+  const peca = db.buscarPorNumero('pecas', pecaNumero);
+  if (!peca) return { ok: false, razao: 'peça não encontrada' };
+  const idx = peca.destinatarios.findIndex(d => d.papel === papel
+    && (papel !== 'Advogado' || d.habilitacaoId === habilitacaoId));
+  if (idx === -1) return { ok: false, razao: 'destinatário não encontrado' };
+
+  const paginas = Array.from({ length: totalPaginas }, (_, i) => ({ pagina: i + 1, token: novoTokenPublico() }));
+  const destinatarios = peca.destinatarios.map((d, i) => (i === idx ? { ...d, paginasPublicas: paginas } : d));
+  db.atualizar('pecas', pecaNumero, { destinatarios });
+  return { ok: true, paginas };
+}
+
+// Resolve um token público em "que página, de que peça, para que destinatário". É o que a rota HTTP
+// usa para regerar. Devolve só o necessário — nunca o registro inteiro.
+function resolverTokenPublico(token) {
+  if (!token) return null;
+  for (const peca of db.todos('pecas')) {
+    for (const dest of peca.destinatarios || []) {
+      const achada = (dest.paginasPublicas || []).find(p => p.token === token);
+      if (!achada) continue;
+      return {
+        pecaNumero: peca.numero, processoNumero: peca.processoNumero, processoTabela: peca.processoTabela,
+        tipo: peca.tipo, texto: peca.texto, digitos: peca.digitos, codigoArquivo: peca.codigoArquivo,
+        qualificacao: peca.qualificacao, assinante: peca.assinante, criadoEm: peca.criadoEm,
+        autorId: peca.autorId, autorPapel: peca.autorPapel,
+        tokenSelo: dest.token, papel: dest.papel, habilitacaoId: dest.habilitacaoId,
+        pagina: achada.pagina,
+      };
+    }
+  }
+  return null;
+}
+
 // ARQUIVO ÚNICO É O REGISTRO, NÃO UM ANEXO HOSPEDADO (SPEC §3.7, corrigido em 18/08/2026).
 //
 // A versão anterior guardava a URL do anexo do Discord. Não funciona: as URLs do CDN são links
@@ -597,7 +649,7 @@ module.exports = {
   ocupanteAtual, ocupaDestinatario, isSupervisao,
   gerar, abrirEntrega, encerrarEntrega, janelaAberta, receber, destravarSelo,
   podeVerTeor, projetarParaUsuario, processoSentenciado, habilitadoNoProcesso,
-  metadados, paraRenderizacao, registrarEnvio,
+  metadados, paraRenderizacao, registrarEnvio, registrarPaginasPublicas, resolverTokenPublico,
   varrerValvula, reiniciarValvulaPorTroca, pendentesDoPapel, fecharJanelasDoProcesso,
   destravarTodasPendencias, relatorioLegado,
 };

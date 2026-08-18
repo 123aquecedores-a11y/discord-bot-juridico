@@ -40,6 +40,10 @@ process.on('uncaughtException', (err) => {
 // Linha de base de memória antes de a paginação de PNG existir — ver utils/memoria.js.
 require('./utils/memoria').logar('boot');
 
+// Servidor HTTP das páginas de documento. Sobe ANTES do login do Discord: a impressora do jogo
+// busca a imagem por conta própria e não deve depender de o gateway estar conectado.
+require('./services/servidorPecas').iniciar();
+
 const DEZ_MIN_MS = 10 * 60 * 1000;
 
 // GuildMembers é intent privilegiada — precisa estar habilitada em "Server Members Intent"

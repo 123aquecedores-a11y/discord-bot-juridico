@@ -36,10 +36,21 @@ function negritoSimples(s) {
   return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
 }
 
-// Correção de erro Q (SPEC §5.3): mais redundância que M, e a diferença de tamanho é irrelevante —
-// medida no round-trip, 2.470 b contra 2.112 b. A redundância extra é o que faz o QR sobreviver à
-// recompressão da captura.
-const qrDataUri = (token) => QRCode.toDataURL(token, { errorCorrectionLevel: 'Q', margin: 1, width: 220 });
+// DENSIDADE DO QR — é o que decide se o selo é legível na captura, e cada parâmetro aqui tem conta
+// por trás. Medido: o documento renderiza no jogo a ~0,92 do tamanho nativo do PNG, então o que vale
+// é a escala de render, não a fração de tela.
+//
+// - PAYLOAD: só o token, nunca uma URL. Quem lê é o próprio bot, então embutir endereço só engordaria
+//   o QR. Com 35 caracteres em nível Q dá versão 4 — 33×33 módulos.
+// - MARGEM 4 MÓDULOS (zona de silêncio do padrão QR). Com margem 1, a borda do selo encosta no
+//   código e a leitura falha por um motivo que aumentar o tamanho não resolve. Custa 8 módulos:
+//   33 + 8 = 41 no total.
+// - TAMANHO 168px: 168 / 41 = 4,1 px por módulo. O anterior (96px, margem 1) dava 2,74 — marginal,
+//   e uma falha no teste não distinguiria layout apertado de captura ruim.
+// - NÍVEL Q: 25% de redundância, que é o que sobrevive a HUD do jogo por cima de um pedaço do código.
+const QR_MODULOS_COM_MARGEM = 41;
+const QR_PX = 168;
+const qrDataUri = (token) => QRCode.toDataURL(token, { errorCorrectionLevel: 'Q', margin: 4, width: QR_PX });
 
 const CSS = `
   * { box-sizing: border-box; }
@@ -69,7 +80,10 @@ const CSS = `
   /* SELO — fonte monoespaçada, corpo grande, alto contraste (SPEC §5.3). Precisa sobreviver a
      recompressão de captura, então nada de cinza claro nem fonte fina. */
   .selo { border: 2px solid #1a1a1a; display: flex; align-items: center; gap: 14px; padding: 8px 12px; margin-bottom: 10px; background: #fff; }
-  .selo .qr { width: 96px; height: 96px; flex: none; }
+  /* O QR sai no tamanho nativo em que foi gerado — reescalar por CSS reintroduziria interpolação e
+     comeria justamente a nitidez de borda de módulo que a leitura usa. image-rendering: pixelated
+     garante que, se algum navegador escalar, seja por vizinho mais próximo e não por suavização. */
+  .selo .qr { width: ${QR_PX}px; height: ${QR_PX}px; flex: none; }
   .selo .qr img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
   .selo .info { flex: 1; font-family: 'Courier New', Courier, monospace; }
   .selo .titulo-selo { font-size: 11px; font-weight: bold; letter-spacing: 1px; }

@@ -171,14 +171,17 @@ function novoProcesso(modo = 'ingame', extra = {}) {
   // anexos guardados já retornavam 404, incluindo 11 provas em processos reais. O original da peça
   // é o REGISTRO no banco, e o PNG se regera do texto — determinístico, nada expira.
   {
+    // O que se proíbe é copiar a URL do ANEXO do Discord — ela é o link assinado que expira. A URL
+    // do nosso próprio servidor (BASE_URL_PECAS/p/<token>.png) é o oposto disso: não expira, e nem
+    // sequer é gravada — o que fica no banco é o token, e a URL se monta na hora.
     const fontes = ['utils/emissaoPeca.js', 'utils/pecas.js'];
     const infratores = [];
     for (const f of fontes) {
       const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf-8')
         .replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
-      if (/\.attachments\b/.test(src) || /\burls?\s*:/.test(src)) infratores.push(f);
+      if (/\.attachments\b/.test(src) || /cdn\.discordapp/.test(src)) infratores.push(f);
     }
-    ok(infratores.length === 0, '9a: nenhuma URL de anexo é copiada para o banco', infratores.join('; '));
+    ok(infratores.length === 0, '9a: nenhuma URL de anexo do Discord é lida ou copiada', infratores.join('; '));
 
     const p = novoProcesso();
     const g = pecas.gerar({

@@ -28,8 +28,19 @@ const DIRS = ['.', 'utils', 'commands', 'services', 'database'];
 
 // Allow-list EXPLÍCITA e justificada. Não use isto para calar um achado — se um ponto de saída
 // legítimo precisar entrar aqui, o motivo tem que caber numa linha e ser verdadeiro.
+const SERVIDOR = path.join('services', 'servidorPecas.js');
+
 const PERMITIDOS = new Set([
   MODULO, // o próprio módulo da camada
+  // EXCEÇÃO DECLARADA, com consequência aceita: o servidor HTTP serve a página para a impressora do
+  // jogo, que busca a imagem sem sessão — exigir login quebraria a impressora. Quem tem o link vê o
+  // documento, e isso é deliberado: o link É o papel, e passar o papel adiante é o mesmo ato que a
+  // §2 da spec já trata por dissuasão e não por impedimento técnico.
+  //
+  // A exceção é estreita e a asserção A4 abaixo é o que a mantém assim: o servidor só pode chegar
+  // ao teor por TOKEN PÚBLICO imprevisível. No dia em que alguém lhe der um caminho por número de
+  // peça, o gate cairia inteiro por uma URL adivinhável — e o teste quebra antes disso ir ao ar.
+  SERVIDOR,
 ]);
 
 // PORTAS DA CAMADA — funções de utils/pecas.js por onde o teor pode legitimamente sair, porque
@@ -119,6 +130,18 @@ console.log('A) O acesso à tabela `pecas` é monopólio de utils/pecas.js');
   ok(semConferencia.length === 0,
     'A3: toda porta declarada realmente consulta podeVerTeor antes de devolver teor',
     semConferencia.join('; '));
+
+  // A cerca da exceção do servidor HTTP: ele só pode alcançar o teor por token público. Qualquer
+  // outra porta ali (paraRenderizacao, metadados, buscar por número) daria um caminho para o
+  // documento sem o token — e a URL viraria adivinhável a partir do número do processo.
+  const fonteServidor = FONTES.get(SERVIDOR) || '';
+  ok(/resolverTokenPublico\s*\(/.test(fonteServidor),
+    'A4: o servidor HTTP resolve o documento por token público');
+  const outrasPortas = ['paraRenderizacao', 'metadados', 'projetarParaUsuario', 'podeVerTeor']
+    .filter(p => new RegExp(`pecas\\.${p}\\s*\\(`).test(fonteServidor));
+  ok(outrasPortas.length === 0,
+    'A4b: ...e NÃO tem nenhum outro caminho para o teor além dele',
+    outrasPortas.join('; '));
 }
 
 // ---------------------------------------------------------------------------

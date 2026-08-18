@@ -14,6 +14,7 @@ const andamentos = require('./andamentos');
 const permissoes = require('./permissoes');
 const { gerarPecaPNG } = require('../services/gerarPecaPNG');
 const { nomeExibicao } = require('../services/gerarDocumentoPNG');
+const servidorPecas = require('../services/servidorPecas');
 
 // CATÁLOGO DE TIPOS DE ATO, com a ativação por tipo que a SPEC §11 pede — a flag existe para
 // reduzir raio de dano, não escopo. A arquitetura é universal desde já; o que a faixa controla é
@@ -142,9 +143,14 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   // Renderizar leva alguns segundos (Chromium). Sem o defer, a interação expira em 3s.
   await interaction.deferReply({ ephemeral: true });
 
+  // Qualificação e assinante são congelados na emissão: documento assinado não muda de partes nem
+  // de assinante depois, e é isso que permite regerá-lo idêntico anos depois, sem Discord.
   const r = pecas.gerar({
     processoTabela: cfg.tabela, processoNumero: numeroProcesso, tipo: tipoChave,
-    autorId: interaction.user.id, autorPapel: cfg.emissor, texto, destinatarios,
+    autorId: interaction.user.id, autorPapel: cfg.emissor, texto,
+    qualificacao: qualificacao(processo),
+    assinante: await nomeExibicao(interaction.guild, interaction.user.id),
+    destinatarios,
   });
   if (!r.ok) return interaction.editReply({ content: `Não consegui criar a peça: ${r.razao}` });
   const peca = r.peca;
@@ -156,7 +162,7 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   // quem acabou de escrever a peça é o autor — a permissão é conferida do mesmo jeito.
   const acesso = pecas.paraRenderizacao(peca.numero, interaction.user.id, { ehStaff: permissoes.isAdmin(interaction) });
   const renderizados = acesso.ok
-    ? await renderizar(interaction.guild, acesso.peca, cfg, processo).catch(err => {
+    ? await renderizar(interaction.guild, { ...acesso.peca, qualificacao: peca.qualificacao, assinante: peca.assinante, codigoArquivo: peca.codigoArquivo }, cfg).catch(err => {
       console.error(`[peca] falha ao renderizar ${peca.numero}:`, err.message);
       return null;
     })
@@ -205,15 +211,9 @@ function qualificacao(processo) {
   return linhas.join('\n');
 }
 
-async function renderizar(guild, peca, cfg, processo) {
-  // PNG é imagem estática: `<@id>` não vira menção clicável nela como vira no texto do Discord, e
-  // sairia literal no papel. Por isso o nome de exibição é resolvido antes (mesmo motivo e mesma
-  // função que os outros documentos do projeto usam).
-  const assinante = await nomeExibicao(guild, peca.autorId);
-
-  // Um token por destinatário significa um PNG por destinatário — cada um precisa receber o selo
-  // que é dele, senão o token do outro destravaria a peça errada. Renderiza um jogo de páginas por
-  // destinatário; hoje só o primeiro é entregue, e o restante passa a ser usado no recebimento.
+// Um token por destinatário significa um PNG por destinatário — cada um precisa receber o selo que
+// é dele, senão o token do outro destravaria a peça errada.
+async function renderizar(guild, peca, cfg) {
   const porDestinatario = [];
   for (const dest of peca.destinatarios) {
     porDestinatario.push({
@@ -221,15 +221,16 @@ async function renderizar(guild, peca, cfg, processo) {
       paginas: await gerarPecaPNG({
         token: dest.token,
         digitos: peca.digitos,
+        codigoArquivo: peca.codigoArquivo,
         numeroPeca: peca.numero,
         numeroProcesso: peca.processoNumero,
         titulo: cfg.titulo,
         orgao: cfg.orgao,
         unidade: cfg.unidade,
         data: new Date().toLocaleDateString('pt-BR'),
-        qualificacao: qualificacao(processo),
+        qualificacao: peca.qualificacao,
         texto: peca.texto,
-        assinante,
+        assinante: peca.assinante,
         cargoAssinante: peca.autorPapel,
       }),
     });
@@ -249,10 +250,25 @@ async function enviarAoEmissor(interaction, peca, renderizados) {
 
   for (const { dest, paginas } of renderizados) {
     const sufixo = dest.papel === 'Advogado' ? `${dest.papel}-hab${dest.habilitacaoId}` : dest.papel;
+
+    // Endereço permanente, uma URL por página — é o que a impressora do jogo recebe. O anexo vai
+    // junto só como pré-visualização; ele expira em 24h e o link não.
+    const registro = pecas.registrarPaginasPublicas(peca.numero, dest.papel, dest.habilitacaoId, paginas.length);
+    const links = registro.ok
+      ? registro.paginas.map(p => ({ pagina: p.pagina, url: servidorPecas.urlPublica(p.token) })).filter(l => l.url)
+      : [];
+
+    const blocoLinks = links.length
+      ? '\n\n**Para imprimir no jogo** — cada página tem seu próprio link:\n'
+        + links.map(l => `\`${l.url}\``).join('\n')
+        + '\n⚠️ Quem tiver o link vê o documento. O link **é** o papel: não poste em canal, não mande para quem não deve ver.'
+      : '\n\n⚠️ O endereço para impressão no jogo não está configurado neste servidor (BASE_URL_PECAS). Avise a staff.';
+
     const msg = await dm.send({
       content: `📄 **${peca.numero}** — via de **${dest.papel}**, ${paginas.length} página(s).\n`
         + 'O selo está em **todas** as páginas: na cena, o destinatário pode capturar qualquer uma.\n'
-        + '⚠️ Repassar este documento fora dos autos é sujeito a sanção administrativa.',
+        + '⚠️ Repassar este documento fora dos autos é sujeito a sanção administrativa.'
+        + blocoLinks,
       files: paginas.map((buf, i) => ({ attachment: buf, name: `${peca.numero}-${sufixo}-fls${i + 1}.png` })),
     }).catch(() => null);
     if (!msg) return false;
