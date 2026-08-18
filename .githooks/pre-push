@@ -1,0 +1,38 @@
+#!/bin/sh
+# SUÍTE COMPLETA OBRIGATÓRIA ANTES DE TODO PUSH — não é escolha manual.
+#
+# Por que hook de pre-push, e não de pre-commit: commit é barato e frequente (rascunho, WIP,
+# bisect). Push é o que chega no GitHub e dispara o deploy automático do Railway — é ali que a
+# suíte tem que ser inegociável.
+#
+# Por que .githooks/ versionado, e não .git/hooks/: hook em .git/hooks não vai no repositório e
+# some no próximo clone. O `prepare` do package.json aponta core.hooksPath para cá em todo
+# `npm install`, então quem clonar e instalar ganha o hook sem precisar lembrar de nada.
+#
+# Contorno consciente: `git push --no-verify` pula. É de propósito — emergência existe. O que não
+# pode existir é pular POR ESQUECIMENTO, e para isso a barreira precisa ser ativa, não uma
+# lembrança.
+
+echo ""
+echo "──────────────────────────────────────────────────────────────"
+echo "  pre-push: rodando a SUÍTE COMPLETA (inclui os testes de"
+echo "  Chromium). Leva ~5 min. Para pular numa emergência de"
+echo "  verdade: git push --no-verify"
+echo "──────────────────────────────────────────────────────────────"
+echo ""
+
+npm run test:completo
+resultado=$?
+
+if [ $resultado -ne 0 ]; then
+  echo ""
+  echo "❌ PUSH BLOQUEADO — a suíte completa falhou."
+  echo "   Conserte antes de subir: o push dispara deploy automático em produção."
+  echo ""
+  exit 1
+fi
+
+echo ""
+echo "✅ Suíte completa passou. Seguindo com o push."
+echo ""
+exit 0

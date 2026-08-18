@@ -37,6 +37,44 @@ process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err instanceof Error ? err.stack : err);
 });
 
+// DESLIGAMENTO LIMPO — causa raiz das falhas de deploy de 18/08/2026 (três seguidas).
+//
+// `CMD ["node", "index.js"]` faz o Node rodar como PID 1. O kernel do Linux trata PID 1 de forma
+// especial: sinal SEM handler explícito é IGNORADO (não vale a ação padrão de terminar). Sem este
+// bloco, o container ignorava o SIGTERM do Railway e só morria por SIGKILL, depois do prazo de
+// carência.
+//
+// Com volume isso é fatal: `/data` só monta em UM container por vez. O container novo ficava
+// esperando o antigo soltar o volume, estourava o tempo e falhava — sem produzir uma linha de log,
+// porque nunca chegava a iniciar. Era exatamente o padrão observado: build OK, imagem publicada,
+// zero log de runtime. E explica por que `railway redeploy` "resolvia": a essa altura o container
+// antigo já tinha levado SIGKILL e liberado o mount.
+//
+// O desligamento fecha o gateway do Discord e o servidor HTTP (os dois seguram o event loop). O
+// `setTimeout` é rede de segurança: se algo travar no fechamento, o processo sai assim mesmo em vez
+// de repetir o bloqueio que este bloco existe para resolver. `unref()` para o próprio timer não
+// segurar o processo de pé.
+let desligando = false;
+async function desligar(sinal) {
+  if (desligando) return;
+  desligando = true;
+  console.log(`[shutdown] ${sinal} recebido — encerrando gateway e servidor HTTP.`);
+
+  const prazo = setTimeout(() => {
+    console.error('[shutdown] fechamento demorou demais — saindo à força.');
+    process.exit(0);
+  }, 8000);
+  prazo.unref();
+
+  try { await require('./services/servidorPecas').parar(); } catch (e) { console.error('[shutdown] servidor HTTP:', e.message); }
+  try { if (global.__clienteDiscord) await global.__clienteDiscord.destroy(); } catch (e) { console.error('[shutdown] gateway:', e.message); }
+
+  console.log('[shutdown] encerrado com limpeza.');
+  process.exit(0);
+}
+process.on('SIGTERM', () => desligar('SIGTERM'));
+process.on('SIGINT', () => desligar('SIGINT'));
+
 // Linha de base de memória antes de a paginação de PNG existir — ver utils/memoria.js.
 require('./utils/memoria').logar('boot');
 
@@ -56,6 +94,9 @@ const DEZ_MIN_MS = 10 * 60 * 1000;
 // Portal) — sem ela, o Discord manda embeds/conteúdo VAZIOS em mensagens que o bot não
 // escreveu, o que quebra a leitura do webhook da Polícia Civil (utils/integracaoPoliciaCivil.js).
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+// Referência global só para o desligamento limpo (ver o handler de SIGTERM acima) — ele é declarado
+// antes do client existir, porque precisa estar armado desde o primeiro instante do processo.
+global.__clienteDiscord = client;
 client.commands = new Collection();
 
 const commandsPath = path.join(__dirname, 'commands');

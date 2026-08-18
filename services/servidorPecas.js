@@ -206,4 +206,11 @@ function iniciar() {
   return servidor;
 }
 
-module.exports = { iniciar, urlPublica, tratar, dirCache, nomeCache, limparCacheAntigo, apagarCache, VERSAO_TEMPLATE };
+// Fechar é parte do desligamento limpo — ver o handler de SIGTERM em index.js. Um servidor HTTP
+// aberto segura o event loop e impede o processo de sair sozinho.
+function parar() {
+  if (!servidor) return Promise.resolve();
+  return new Promise((resolve) => { servidor.close(() => { servidor = null; resolve(); }); });
+}
+
+module.exports = { iniciar, parar, urlPublica, tratar, dirCache, nomeCache, limparCacheAntigo, apagarCache, VERSAO_TEMPLATE };
