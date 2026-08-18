@@ -257,15 +257,34 @@ function novoProcesso(modo = 'ingame', extra = {}) {
 
   console.log('\n11) Estimativa de páginas — medida, não chutada');
   {
-    // Medições reais no leiaute atual: 1.642 chars = 1 página; 4.389 = 3; 8.239 = 5; 12.089 = 7.
-    ok(emissao.estimarPaginas('x'.repeat(1642)) === 1, '11a: 1.642 chars ≈ 1 página');
-    ok(emissao.estimarPaginas('x'.repeat(4389)) >= 3, '11b: 4.389 chars ≈ 3 páginas');
-    ok(emissao.estimarPaginas('x'.repeat(12000)) >= 6, '11c: 12.000 chars (teto) ≈ 7 páginas');
+    // Cada par abaixo veio de medição no Chromium com o leiaute atual. Se alguém mexer no leiaute e
+    // não remedir, estes casos quebram — é o ponto deles.
+    const MEDIDOS = [[2739, 1], [3289, 2], [5489, 2], [6589, 3], [8239, 3], [9889, 4], [12089, 4]];
+    for (const [chars, paginas] of MEDIDOS) {
+      const est = emissao.estimarPaginas('x'.repeat(chars));
+      ok(est === paginas, `11: ${chars} chars → ${paginas} página(s)`, `estimou ${est}`);
+    }
     ok(emissao.estimarPaginas('') === 1, '11d: nunca estima menos de 1 página');
-    // Errar para MAIS é o lado certo: o advogado vê o custo maior, nunca menor.
-    ok(emissao.estimarPaginas('x'.repeat(3839)) >= 2, '11e: a estimativa nunca fica abaixo do real');
-    ok(/impressões no jogo/.test(emissao.linhaCusto('x'.repeat(5000))), '11f: a linha de custo fala em impressões');
+    ok(/impressões no jogo/.test(emissao.linhaCusto('x'.repeat(9000))), '11e: a linha de custo fala em impressões');
+    ok(/impressão no jogo/.test(emissao.linhaCusto('x'.repeat(500))), '11f: com singular quando é uma só');
     ok(emissao.MAX_TRECHOS * emissao.MAX_CHARS_TRECHO === 12000, '11g: teto total de 12.000 caracteres');
+    // O teto inteiro tem que caber em 4 páginas — era 7 antes da compactação do leiaute.
+    ok(emissao.estimarPaginas('x'.repeat(12000)) <= 4, '11h: o teto de 12.000 custa no máximo 4 impressões');
+  }
+
+  console.log('\n12) TTL do rascunho');
+  {
+    ok(emissao.TTL_RASCUNHO_MS === 2 * 60 * 60 * 1000, '12a: rascunho dura 2 horas, não 20 minutos');
+
+    // O prazo renova a cada leitura: sem isso, as 2h contariam do primeiro trecho, e quem escreve
+    // devagar perderia o texto no meio da terceira parte.
+    const { RascunhoTTL } = require('../utils/rascunhoTtl');
+    const r = new RascunhoTTL(120);
+    r.set('k', { trechos: ['a'] });
+    await new Promise(res => setTimeout(res, 80));
+    r.set('k', r.get('k')); // é o que lerRascunho faz
+    await new Promise(res => setTimeout(res, 80));
+    ok(r.get('k') !== undefined, '12b: reescrever no get renova o prazo (2h de inatividade, não de vida)');
   }
 
   console.log('\n8) Carimbo do modo na abertura (SPEC §11.2)');

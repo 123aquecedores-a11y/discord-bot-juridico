@@ -64,19 +64,40 @@ const MAX_TRECHOS = 3;
 const MAX_CHARS_TRECHO = 4000;
 
 // Rascunho em memória com expiração — reaproveita o RascunhoTTL do fluxo de revisão in-flow, em vez
-// de inventar mecanismo. Se o advogado abandonar no meio, a entrada morre sozinha em 20 min.
-const rascunhos = new RascunhoTTL();
+// de inventar mecanismo.
+//
+// DUAS HORAS, e não os 20 min do padrão da classe: quem escreve 12.000 caracteres em três trechos
+// leva mais que isso, e o tempo digitando DENTRO do modal conta — o Discord não avisa o bot que a
+// pessoa está escrevendo. Rascunho perdido no meio da redação é o pior erro possível deste fluxo:
+// o texto não está em lugar nenhum, e não há como recuperá-lo.
+const TTL_RASCUNHO_MS = 2 * 60 * 60 * 1000;
+const rascunhos = new RascunhoTTL(TTL_RASCUNHO_MS);
 const chaveRascunho = (userId, tipo, numero) => `${userId}:${tipo}:${numero}`;
 
-const lerRascunho = (userId, tipo, numero) => rascunhos.get(chaveRascunho(userId, tipo, numero)) || { trechos: [] };
+// Ler RENOVA o prazo. O RascunhoTTL só marca a expiração no set, então reescrever a entrada a cada
+// leitura é o que transforma as 2h em "2h de inatividade" em vez de "2h desde o primeiro trecho" —
+// que era o comportamento que deixaria alguém perder o texto no meio da terceira parte.
+function lerRascunho(userId, tipo, numero) {
+  const chave = chaveRascunho(userId, tipo, numero);
+  const atual = rascunhos.get(chave);
+  if (!atual) return { trechos: [] };
+  rascunhos.set(chave, atual);
+  return atual;
+}
 const salvarRascunho = (userId, tipo, numero, r) => rascunhos.set(chaveRascunho(userId, tipo, numero), r);
 const textoDoRascunho = (r) => r.trechos.join('\n\n');
 
-// ESTIMATIVA DE PÁGINAS — medida no leiaute atual, não chutada. Com o selo de 168px, o corpo comporta
-// cerca de 1.750 caracteres por página; medições: 1.642 chars = 1 página, 4.389 = 3, 8.239 = 5,
-// 12.089 = 7. A conta erra para MAIS em alguns pontos (a quebra real depende de onde os parágrafos
-// caem), e errar para mais é o lado certo: o advogado vê o custo maior, nunca menor.
-const CHARS_POR_PAGINA = 1750;
+// ESTIMATIVA DE PÁGINAS — medida no leiaute atual, não chutada.
+//
+// Medições depois da compactação (cabeçalho completo só na folha 1, selo reduzido ao QR nas demais,
+// entrelinha 1,45): 2.739 chars = 1 página, 5.489 = 2, 8.239 = 3, 12.089 = 4. Média de 3.022 por
+// página, contra 1.750 do leiaute anterior — o mesmo texto passou a custar quase metade das
+// impressões no jogo.
+//
+// 3.050 é o divisor que reproduz todos os pontos medidos. A conta pode errar para MAIS quando um
+// parágrafo grande cai perto da quebra, e errar para mais é o lado certo: o advogado vê o custo
+// maior, nunca menor.
+const CHARS_POR_PAGINA = 3050;
 const estimarPaginas = (texto) => Math.max(1, Math.ceil((texto || '').length / CHARS_POR_PAGINA));
 
 // O custo tem que ficar visível ENQUANTO ele escreve. Cada página é uma impressão separada no jogo e
@@ -181,7 +202,7 @@ function painelRascunho(tipoChave, numeroProcesso, rascunho, cfg) {
         ? 'Você pode **enviar agora** ou **adicionar mais texto** — tudo vira uma peça só, paginada.'
         : `Você chegou ao limite de ${MAX_TRECHOS} trechos. Revise e envie, ou apague o último.`),
     )
-    .setFooter({ text: 'O rascunho expira em 20 minutos sem atividade.' });
+    .setFooter({ text: 'O rascunho fica guardado por 2 horas sem atividade — o prazo renova a cada clique.' });
 
   const linha = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`peca:enviar:${tipoChave}:${numeroProcesso}`).setLabel('Enviar peça').setEmoji('📄').setStyle(ButtonStyle.Success),
@@ -259,7 +280,7 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   const rascunho = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
   const texto = textoDoRascunho(rascunho);
   if (!texto.trim()) {
-    return interaction.reply({ content: 'Não há texto para enviar — o rascunho pode ter expirado (20 min). Comece de novo.', ephemeral: true });
+    return interaction.reply({ content: 'Não há texto para enviar — o rascunho pode ter expirado (2 horas sem atividade). Comece de novo.', ephemeral: true });
   }
 
   const destinatarios = resolverDestinatarios(cfg, processo);
@@ -528,5 +549,5 @@ async function router(interaction) {
 module.exports = {
   router, TIPOS, tipoAtivo, abrirEmissao, criarPeca, entregarAgora, encerrarEntrega,
   receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho,
-  estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA,
+  estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA, TTL_RASCUNHO_MS,
 };

@@ -57,24 +57,46 @@ const CSS = `
   body { margin: 0; background: #888; font-family: 'Times New Roman', Times, serif; }
   .folha {
     width: ${LARGURA}px; height: ${ALTURA}px;
-    padding: 48px 60px 0 60px;
+    padding: 40px 54px 0 54px;
     background: #fdfdfb; color: #1a1a1a;
     position: relative; overflow: hidden;
     display: flex; flex-direction: column;
   }
-  .cabecalho { text-align: center; border-bottom: 2px solid #1a1a1a; padding-bottom: 12px; }
+  .cabecalho { text-align: center; border-bottom: 2px solid #1a1a1a; padding-bottom: 10px; }
   .cabecalho .orgao { font-size: 15px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
   .cabecalho .unidade { font-size: 12px; color: #333; margin-top: 2px; }
-  .titulo { text-align: center; font-size: 17px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; margin: 20px 0 6px; }
-  .metadados { display: flex; justify-content: space-between; font-size: 11px; color: #444; border-bottom: 1px solid #ccc; padding-bottom: 8px; margin-bottom: 12px; }
-  .qualificacao { font-size: 12px; line-height: 1.5; border-left: 3px solid #1a1a1a; padding-left: 10px; margin-bottom: 14px; }
+  .titulo { text-align: center; font-size: 17px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; margin: 16px 0 6px; }
+  .metadados { display: flex; justify-content: space-between; font-size: 11px; color: #444; border-bottom: 1px solid #ccc; padding-bottom: 7px; margin-bottom: 10px; }
+  .qualificacao { font-size: 12px; line-height: 1.45; border-left: 3px solid #1a1a1a; padding-left: 10px; margin-bottom: 12px; }
+
+  /* CABEÇALHO COMPACTO, da página 2 em diante. Repetir o timbre inteiro em toda folha era o maior
+     desperdício vertical do documento: cabeçalho, título, metadados e qualificação somavam ~190px
+     por página, que é quase um terço da área útil. Aqui viram uma linha de 20px.
+     Cada página é uma impressão no jogo e um espaço no arquivo físico — papel custa caro aqui. */
+  .cabecalho-compacto { display: none; font-size: 11px; color: #444; border-bottom: 1px solid #1a1a1a; padding-bottom: 5px; margin-bottom: 10px; letter-spacing: 0.5px; }
+  .folha.continuacao .cabecalho,
+  .folha.continuacao .titulo,
+  .folha.continuacao .metadados,
+  .folha.continuacao .qualificacao { display: none; }
+  .folha.continuacao .cabecalho-compacto { display: block; }
+  /* Só a ÚLTIMA folha mostra o selo completo — é ela que leva a assinatura, os dígitos de
+     conferência humana e a caixa de arquivo físico. Nas demais fica só o QR, que é o que a captura
+     precisa ler: o QR está em TODAS as páginas, e é isso que faz qualquer captura destravar.
+     A classe "ultima" é independente de "continuacao": num documento de uma página só, a folha 1 é
+     as duas coisas ao mesmo tempo — cabeçalho completo E selo completo. */
+  .folha:not(.ultima) .selo .info .digitos,
+  .folha:not(.ultima) .selo .info .aviso,
+  .folha:not(.ultima) .selo .arquivo,
+  .folha:not(.ultima) .assinatura { display: none; }
   /* min-height:0 é obrigatório aqui. O padrão de um flex item é min-height:auto, que o impede de
      encolher abaixo do próprio conteúdo — o .corpo cresceria junto com o texto, clientHeight
      acompanharia, e a paginação nunca detectaria estouro (documento inteiro numa folha só,
      com o excedente cortado pelo overflow da folha). */
-  .corpo { flex: 1; min-height: 0; font-size: 14px; line-height: 1.65; text-align: justify; overflow: hidden; }
-  .corpo p { margin: 0 0 11px 0; text-indent: 34px; }
-  .assinatura { text-align: center; font-size: 13px; margin: 14px 0 6px; }
+  /* Entrelinha 1,45 e margem de parágrafo de 7px: o padrão anterior (1,65 e 11px) era espaçamento de
+     tela, não de documento impresso. Peça judicial real usa entrelinha próxima de 1,5. */
+  .corpo { flex: 1; min-height: 0; font-size: 14px; line-height: 1.45; text-align: justify; overflow: hidden; }
+  .corpo p { margin: 0 0 7px 0; text-indent: 34px; }
+  .assinatura { text-align: center; font-size: 13px; margin: 12px 0 4px; }
   .assinatura .linha { border-top: 1px solid #1a1a1a; width: 260px; margin: 0 auto 4px; }
 
   /* SELO — fonte monoespaçada, corpo grande, alto contraste (SPEC §5.3). Precisa sobreviver a
@@ -106,14 +128,19 @@ const CSS = `
 // Move parágrafo a parágrafo para a folha corrente; quando estoura o orçamento, devolve o
 // parágrafo e abre folha nova. Parágrafo que sozinho não cabe fica na sua própria folha em vez de
 // entrar em laço infinito.
-const SCRIPT_PAGINACAO = `
+const scriptPaginacao = (numeroProcesso) => `
   (function () {
+    var NUMERO_PROCESSO = ${JSON.stringify(String(numeroProcesso || ''))};
     var molde = document.getElementById('molde');
     var paragrafos = Array.prototype.slice.call(molde.children);
     molde.remove();
     var container = document.getElementById('documento');
     var modelo = document.getElementById('modelo-folha');
 
+    // A folha 2 em diante nasce como CONTINUAÇÃO: sem timbre, sem título, sem qualificação, e com o
+    // selo reduzido ao QR. Precisa ser decidido na criação, e não depois: se a folha nascesse
+    // completa e fosse compactada no fim, o texto já teria sido distribuído contra a altura errada e
+    // sobraria um vão em branco em cada página.
     function novaFolha() {
       var f = modelo.cloneNode(true);
       f.id = '';
@@ -121,6 +148,7 @@ const SCRIPT_PAGINACAO = `
       // precisa perder esse display:none, senão o Puppeteer recusa capturar elemento invisível.
       f.removeAttribute('style');
       f.classList.add('folha');
+      if (container.children.length > 0) f.classList.add('continuacao');
       container.appendChild(f);
       return f;
     }
@@ -131,8 +159,8 @@ const SCRIPT_PAGINACAO = `
       var p = paragrafos[i];
       corpo.appendChild(p);
       // Compara com a altura REAL disponível no elemento, não com uma constante: o espaço livre
-      // depende do cabeçalho, do selo e da assinatura, e uma constante chutada quebra silenciosamente
-      // sempre que o layout mudar um pixel. clientHeight é o que o Chromium reservou de fato.
+      // depende do cabeçalho e do selo, e uma constante chutada quebra silenciosamente sempre que o
+      // layout mudar um pixel. clientHeight é o que o Chromium reservou de fato.
       if (corpo.scrollHeight > corpo.clientHeight && corpo.children.length > 1) {
         corpo.removeChild(p);
         folha = novaFolha();
@@ -141,17 +169,34 @@ const SCRIPT_PAGINACAO = `
       }
     }
 
-    // Assinatura só na última folha — repetir em todas faria parecer que cada página é um ato.
-    // Sai por VISIBILITY, não display: assim ela ocupa o mesmo espaço em todas as folhas durante a
-    // medição, e a última não estoura ao ganhá-la de volta.
+    // SEGUNDA PASSADA — a assinatura. Ela não participou da distribuição acima de propósito:
+    // reservá-la em todas as folhas (que era o que a versão anterior fazia) desperdiçava ~50px por
+    // página para um bloco que só aparece na última. Agora ela entra no fim, e se a última folha não
+    // a comportar, os parágrafos do fim escorrem para uma folha nova até caber.
+    function ultimaFolha() {
+      var todas = container.querySelectorAll('.folha');
+      return todas[todas.length - 1];
+    }
+    var fim = ultimaFolha();
+    fim.classList.add('ultima');
+    var guarda = 0;
+    while (fim.querySelector('.corpo').scrollHeight > fim.querySelector('.corpo').clientHeight
+           && fim.querySelector('.corpo').children.length > 1 && guarda++ < 50) {
+      var corpoFim = fim.querySelector('.corpo');
+      var ultimoP = corpoFim.lastElementChild;
+      corpoFim.removeChild(ultimoP);
+      fim.classList.remove('ultima');
+      var nova = novaFolha();
+      nova.querySelector('.corpo').appendChild(ultimoP);
+      nova.classList.add('ultima');
+      fim = nova;
+    }
+
     var folhas = container.querySelectorAll('.folha');
-    var ultima = folhas[folhas.length - 1];
-    ultima.querySelector('.assinatura').style.visibility = 'visible';
-    // Dígitos do selo só na última (são para conferência humana, não para a máquina).
     for (var j = 0; j < folhas.length; j++) {
-      var dig = folhas[j].querySelector('.digitos');
-      if (dig && folhas[j] !== ultima) dig.style.visibility = 'hidden';
       folhas[j].querySelector('.n-folha').textContent = 'fls. ' + (j + 1) + ' de ' + folhas.length;
+      var compacto = folhas[j].querySelector('.cabecalho-compacto');
+      if (compacto) compacto.textContent = NUMERO_PROCESSO + ' — fl. ' + (j + 1) + '/' + folhas.length;
     }
     document.body.setAttribute('data-paginas', folhas.length);
   })();
@@ -217,6 +262,7 @@ async function montarHtml(dados) {
         <div class="orgao">${escapeHtml(dados.orgao)}</div>
         ${dados.unidade ? `<div class="unidade">${escapeHtml(dados.unidade)}</div>` : ''}
       </div>
+      <div class="cabecalho-compacto"></div>
       <div class="titulo">${escapeHtml(dados.titulo)}</div>
       <div class="metadados">
         <span>Processo nº ${escapeHtml(dados.numeroProcesso)}</span>
@@ -225,7 +271,7 @@ async function montarHtml(dados) {
       </div>
       ${dados.qualificacao ? `<div class="qualificacao">${negritoSimples(dados.qualificacao)}</div>` : ''}
       <div class="corpo"></div>
-      <div class="assinatura" style="visibility:hidden">
+      <div class="assinatura">
         <div class="linha"></div>
         <div><strong>${escapeHtml(dados.assinante)}</strong></div>
         <div>${escapeHtml(dados.cargoAssinante)}</div>
@@ -233,7 +279,7 @@ async function montarHtml(dados) {
       ${seloHtml}
       <div class="rodape"><span class="n-folha"></span><span>Autenticidade conferível pelo selo acima</span></div>
     </div>
-    <script>${SCRIPT_PAGINACAO}</script>
+    <script>${scriptPaginacao(dados.numeroProcesso)}</script>
   </body></html>`;
 }
 
