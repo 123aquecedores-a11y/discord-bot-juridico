@@ -117,7 +117,10 @@ function linhaCusto(texto) {
 // SPEC §5.1: o formulário já vem com número do processo, classe, partes, órgão e data. Nada disso é
 // digitado — mostrar antes do modal serve para o emissor conferir, não para preencher. O modal em
 // si fica com UM campo: a tese. É o que cabe e é o que muda de peça para peça.
-async function abrirEmissao(interaction, tipoChave, numeroProcesso) {
+// `destinatario` (opcional) fixa a via de ESTE ato — ver resolverDestinatarios. Fica guardado no
+// rascunho, e não no customId, porque o rascunho já é o estado que atravessa modal→trechos→envio;
+// enfiá-lo no customId significaria carregá-lo por quatro botões e perdê-lo em qualquer um.
+async function abrirEmissao(interaction, tipoChave, numeroProcesso, { destinatario = null } = {}) {
   const cfg = TIPOS[tipoChave];
   if (!cfg || !cfg.ativo) {
     return interaction.reply({ content: 'Este tipo de ato ainda não está ativado.', ephemeral: true });
@@ -145,6 +148,10 @@ async function abrirEmissao(interaction, tipoChave, numeroProcesso) {
     return interaction.reply({ content: `Só quem ocupa o papel de **${cfg.emissor}** neste processo pode emitir esta peça.`, ephemeral: true });
   }
 
+  if (destinatario) {
+    const r = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
+    salvarRascunho(interaction.user.id, tipoChave, numeroProcesso, { ...r, destinatario });
+  }
   return abrirModalTrecho(interaction, tipoChave, numeroProcesso);
 }
 
@@ -260,7 +267,12 @@ function podeEmitir(interaction, cfg, processo) {
 
 // Para quem vai a peça, resolvido no momento da emissão. Advogado precisa de habilitação
 // específica: `advogados[]` é coleção e não identifica quem recebe (SPEC §6.2).
-function resolverDestinatarios(cfg, processo) {
+// `escolhido` (opcional) vem de quem emite tendo apontado UMA pessoa — é o caso da intimação, em
+// que o juiz seleciona o destinatário e pecas.classificarDestinatarioIntimacao já decidiu o papel.
+// Sem ele, vale o catálogo: todos os papéis declarados no tipo. Manter os dois caminhos é o que
+// permite a mesma máquina servir ato dirigido (intimação) e ato de destinatário fixo (petição).
+function resolverDestinatarios(cfg, processo, escolhido = null) {
+  if (escolhido) return [escolhido];
   const out = [];
   for (const papel of cfg.destinatarios) {
     if (papel !== 'Advogado') { out.push({ papel }); continue; }
@@ -292,7 +304,7 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
     return interaction.reply({ content: 'Não há texto para enviar — o rascunho pode ter expirado (2 horas sem atividade). Comece de novo.', ephemeral: true });
   }
 
-  const destinatarios = resolverDestinatarios(cfg, processo);
+  const destinatarios = resolverDestinatarios(cfg, processo, rascunho.destinatario || null);
   if (!destinatarios.length) {
     return interaction.reply({
       content: `⚠️ Não há quem ocupe o papel de **${cfg.destinatarios.join(' / ')}** neste processo agora. A peça não foi criada — assim que houver destinatário, emita novamente.`,

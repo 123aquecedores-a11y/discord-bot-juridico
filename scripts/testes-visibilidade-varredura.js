@@ -82,6 +82,16 @@ const SEGURAS_SEM_TEOR = new Set([
   'processoSentenciado', 'habilitadoNoProcesso', 'metadados', 'registrarPaginasPublicas',
   'registrarEnvio', 'varrerValvula', 'reiniciarValvulaPorTroca', 'destravarTodasPendencias',
   'relatorioLegado', 'fecharJanelasDoProcesso', 'revogarLinksDeProcessosEncerrados',
+  // Acrescentadas em 18/08/2026, e o motivo de cada uma — entrar nesta lista é abrir mão de um
+  // alarme, então tem que estar justificado, não só declarado:
+  //
+  // detalheDeAndamento(processoNumero, teor, generico): devolve UMA DAS DUAS STRINGS QUE O
+  //   CHAMADOR PASSOU. Não consulta a tabela `pecas`, não lê `.texto` de peça nenhuma — só olha o
+  //   modo do processo para decidir qual das duas persistir. O teor que ela devolve já estava na
+  //   mão de quem chamou.
+  // classificarDestinatarioIntimacao(processo, {...}): devolve roteamento — { via, papel,
+  //   habilitacaoId }. Lê partes/habilitações do PROCESSO, nunca peça, e não devolve texto de ato.
+  'detalheDeAndamento', 'classificarDestinatarioIntimacao',
 ]);
 
 // Acha qualquer `pecas.<nome>(` (ou `pecasModulo.<nome>(`, alias usado nalgum teste) cujo nome NÃO

@@ -37,9 +37,7 @@ const CONHECIDOS = [
   { arquivo: 'commands/mandado.js', marca: 'Fundamentação: ${teor}', ato: 'mandado', gated: true },
   { arquivo: 'commands/medida.js', marca: 'Fundamentação do Juízo:', ato: 'medida', gated: true },
   { arquivo: 'commands/processo.js', marca: 'tipo: \'manifestacao_mp\'', ato: 'manifestação do MP', gated: true },
-  // ÚNICO ainda cru. Morre no Bloco B, quando a intimação entrar no módulo gated de verdade —
-  // ali o teor deixa de morar em andamento e passa a ser peça, com selo e recebimento.
-  { arquivo: 'commands/processo.js', marca: 'Teor: ${teor}', ato: 'intimação (2 pontos)', gated: false },
+  { arquivo: 'commands/processo.js', marca: 'Teor: ', ato: 'intimação (2 pontos)', gated: true },
 ];
 
 const raiz = path.join(__dirname, '..');
@@ -88,7 +86,7 @@ console.log('1) O ponto único de decisão funciona (teste COMPORTAMENTAL, não 
 
 console.log('\n1b) Todos os atos migrados usam o PONTO ÚNICO, não a regra copiada');
 {
-  const esperado = { 'commands/processo.js': 3, 'commands/mandado.js': 1, 'commands/medida.js': 1 };
+  const esperado = { 'commands/processo.js': 5, 'commands/mandado.js': 1, 'commands/medida.js': 1 };
   let total = 0;
   for (const [arq, n] of Object.entries(esperado)) {
     const src = fs.readFileSync(path.join(raiz, arq), 'utf-8');
@@ -96,11 +94,17 @@ console.log('\n1b) Todos os atos migrados usam o PONTO ÚNICO, não a regra copi
     total += visto;
     ok(visto === n, `1b-${arq}: ${n} ato(s) pelo ponto único`, `achou ${visto}`);
   }
-  ok(total === 5, '1b-total: os 5 atos migrados passam pelo mesmo lugar', `total ${total}`);
-  // Ninguém pode reintroduzir a regra por fora do helper.
+  ok(total === 7, '1b-total: os 7 atos migrados passam pelo mesmo lugar', `total ${total}`);
+
+  // Ninguém pode reintroduzir a regra DE ANDAMENTO por fora do helper. A checagem antes era ampla
+  // demais e passou a acusar uma decisão LEGÍTIMA e diferente: se o PNG da intimação vai ou não ao
+  // canal compartilhado (Bloco B). Consultar o modo do processo não é o problema — o problema seria
+  // um `detalhe:` decidindo sozinho o que gravar. Por isso a asserção agora é sobre o `detalhe:`.
   const proc = fs.readFileSync(path.join(raiz, 'commands/processo.js'), 'utf-8');
-  ok(!/modoDoProcesso\(\w+\)\s*===\s*'ingame'/.test(proc),
-    '1b-z: nenhuma decisão de gate por andamento foi copiada solta em processo.js');
+  const detalhesComGateSolto = (proc.match(/detalhe:[^\n]*modoDoProcesso/g) || []).length;
+  ok(detalhesComGateSolto === 0,
+    '1b-z: nenhum `detalhe:` decide o gate sozinho — todos passam pelo ponto único',
+    `${detalhesComGateSolto} ocorrência(s)`);
 }
 
 console.log('\n2) Inventário: todo ato que persiste teor está declarado');

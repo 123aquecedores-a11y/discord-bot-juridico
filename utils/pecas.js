@@ -98,11 +98,71 @@ function ocupanteDaHabilitacao(registro, habilitacaoId) {
 
 // Quem ocupa ESTE destinatário agora. `null` = slot vago (juiz saiu e ainda não houve sorteio,
 // habilitação revogada). Nunca inventa substituto.
+// AUTOR também não é slot de TABELAS_TICKET (lá só existem Juiz/Promotor/Delegado, que são os
+// papéis SUBSTITUÍVEIS pela supervisão — autor não se troca). Mas ele é parte, tem conta e, por
+// decisão de 18/08/2026, recebe intimação gated como o advogado. Resolvido aqui, como o Advogado
+// já era: acrescentá-lo a TABELAS_TICKET o faria aparecer como "responsável" trocável no fluxo de
+// supervisão, que é outra coisa.
+//
+// CUIDADO COM O NOME: `processo.autor` é o ADVOGADO do autor (ver criarProcessoCivil); quem é a
+// PARTE autora é `autorDiscordId`, espelhado também em partes[] com papel 'autor'.
+function ocupanteAutor(registro) {
+  if (registro.autorDiscordId) return registro.autorDiscordId;
+  const parte = (registro.partes || []).find(p => p.papel === 'autor' && p.discordId);
+  return parte ? parte.discordId : null;
+}
+
 function ocupanteAtual(processoTabela, registro, destinatario) {
   if (!destinatario) return null;
-  return destinatario.papel === 'Advogado'
-    ? ocupanteDaHabilitacao(registro, destinatario.habilitacaoId)
-    : ocupanteDoSlot(processoTabela, registro, destinatario.papel);
+  if (destinatario.papel === 'Advogado') return ocupanteDaHabilitacao(registro, destinatario.habilitacaoId);
+  if (destinatario.papel === 'Autor') return ocupanteAutor(registro);
+  return ocupanteDoSlot(processoTabela, registro, destinatario.papel);
+}
+
+// POR QUAL RITO A INTIMAÇÃO SAI (decisão de 18/08/2026, ordens pós-teste do selo).
+//
+// O juiz escolhe a PESSOA; quem decide o mecanismo é esta função. É de propósito: pedir ao juiz que
+// saiba qual rito se aplica é exatamente como o contorno nasce — ele escolheria "terceiro" para uma
+// parte e pularia o selo sem querer (ou querendo).
+//
+// TRAVA ANTI-CONTORNO: a classificação é por QUEM A PESSOA É, nunca pela porta por onde ela foi
+// escolhida. Escolher um advogado habilitado pela lista de "pessoa fora do processo" cai em `gated`
+// do mesmo jeito — senão a lista de terceiros vira o atalho para não emitir com selo.
+//
+// Devolve: { via: 'gated', papel, habilitacaoId? } | { via: 'reu' } | { via: 'aberto' }
+// `rg` fecha um buraco real da trava: classificarIdLivre só entende snowflake de 17–20 dígitos,
+// então o juiz digitando o RG de uma parte na tela de "pessoa fora" não produzia discordId nenhum
+// e escapava da classificação. Parte identificada por RG é parte do mesmo jeito.
+function classificarDestinatarioIntimacao(processo, { discordId = null, parteId = null, rg = null } = {}) {
+  const partes = processo.partes || [];
+  const parte = parteId ? partes.find(p => p.id === parteId) : null;
+  const rgAlvo = rg || (parte && parte.rg) || null;
+  // RG casa com a parte e, por ela, com o discordId dela — é o que faz a trava valer nos dois modos
+  // de identificação.
+  const porRg = rgAlvo ? partes.find(p => p.rg && p.rg === rgAlvo) : null;
+  const id = discordId || (parte && parte.discordId) || (porRg && porRg.discordId) || null;
+  const parteEfetiva = parte || porRg;
+
+  // 1) Advogado com habilitação APROVADA — gated, resolvido pela habilitação específica (nunca por
+  //    advogados[], que é ambíguo quando há mais de uma defesa).
+  const hab = id ? (processo.habilitacoes || []).find(h => h.status === 'Aprovado' && h.advogadoId === id) : null;
+  if (hab) return { via: 'gated', papel: 'Advogado', habilitacaoId: hab.id };
+
+  // 2) RÉU — exceção da SPEC §11.1, mantida: não tem conta no Discord, o juiz marca cumprida na
+  //    mão. Vale tanto escolhendo a parte quanto acertando o ID dela por fora.
+  if (parteEfetiva && parteEfetiva.papel === 'reu') return { via: 'reu' };
+  if (id && partes.some(p => p.papel === 'reu' && p.discordId === id)) return { via: 'reu' };
+
+  // 3) AUTOR — é parte, tem papel e tem conta: mesmo tratamento do advogado. SEM conta não há quem
+  //    receba (não dá para clicar em "Receber"), então cai no rito aberto — a parte existe só como
+  //    nome nos autos, e forçar o gated ali criaria peça órfã travada até a válvula.
+  if (parteEfetiva && parteEfetiva.papel === 'autor' && !id) return { via: 'aberto' };
+  if (id && partes.some(p => p.papel === 'autor' && p.discordId === id)) return { via: 'gated', papel: 'Autor' };
+  if (id && processo.autorDiscordId === id) return { via: 'gated', papel: 'Autor' };
+
+  // 4) Testemunha, terceiro, pessoa fora — não têm papel que o selo saiba resolver. Intimar
+  //    testemunha é uso legítimo; o mecanismo é que não se aplica.
+  return { via: 'aberto' };
 }
 
 const ocupaDestinatario = (processoTabela, registro, destinatario, usuarioId) =>
@@ -721,7 +781,7 @@ function fecharJanelasDoProcesso(processoTabela, processoNumero, { agora = Date.
 module.exports = {
   MODOS, VALVULA_MS, MAX_RECUSAS_TOKEN, MAX_ILEGIVEIS_AVISO,
   modoDoProcesso, janelaMinutos, detalheDeAndamento,
-  ocupanteAtual, ocupaDestinatario, isSupervisao,
+  ocupanteAtual, ocupaDestinatario, isSupervisao, classificarDestinatarioIntimacao,
   gerar, abrirEntrega, encerrarEntrega, janelaAberta, receber, destravarSelo,
   podeVerTeor, projetarParaUsuario, processoSentenciado, habilitadoNoProcesso,
   metadados, paraRenderizacao, registrarEnvio, registrarPaginasPublicas, resolverTokenPublico,

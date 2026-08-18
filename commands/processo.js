@@ -1876,6 +1876,23 @@ async function postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId,
     destinatario: nomeDestinatario, corpoTexto: teor, nomeAssinante, cargoAssinante: 'Juiz de Direito',
   }).catch(err => { console.error('Falha ao gerar PNG da intimação:', err.message); return null; });
 
+  // EM PROCESSO `ingame` O TEOR NÃO VAI PARA O CANAL (ordem do Bloco B). O canal é compartilhado
+  // com a outra parte: postar o texto e o PNG aqui entregava a intimação a todo mundo antes de
+  // qualquer entrega pessoal — e ainda tornava o selo decorativo, porque o conteúdo já estava lido.
+  //
+  // Este caminho continua servindo réu, testemunha, terceiro e pessoa fora (que não têm papel que o
+  // selo saiba resolver) e todo processo `aberto`/`legado`. Para eles nada mudou. O que muda é que
+  // num processo gated ele passa a postar METADADO, no mesmo formato do resto da feature.
+  const gated = require('../utils/pecas').modoDoProcesso(processo) === 'ingame';
+  if (gated) {
+    await canal.send({
+      content: `📨 **Intimação expedida** — processo ${numero}\n`
+        + `Destinatário: ${destinatarioId ? `<@${destinatarioId}>` : (destinatarioNome || 'não identificado')}\n`
+        + '🔒 O teor fica restrito até a entrega pessoal.',
+    });
+    return canal;
+  }
+
   await canal.send({
     content: documentos.textoIntimacao({ numero, rotulo: 'Processo', destinatarioId, destinatarioNome, teor }),
     ...(pngIntimacao ? { files: [{ attachment: pngIntimacao, name: `Intimacao-${numero}.png` }] } : {}),
@@ -1891,13 +1908,43 @@ async function abrirSelectDestinatarioIntimacao(interaction, numero) {
   }
   return interaction.reply({
     content: 'Quem é o destinatário da intimação?',
-    components: [partesProcesso.selectDestinatario(`painel:select:processo:destinatariointimacao:${numero}`, processo)],
+    components: [partesProcesso.selectDestinatario(`painel:select:processo:destinatariointimacao:${numero}`, processo, { incluirAdvogados: true })],
     ephemeral: true,
   });
 }
 
+// O JUIZ ESCOLHE A PESSOA, O BOT ESCOLHE O RITO (decisão de 18/08/2026). Três saídas:
+//   gated  → módulo de peça com selo (advogado habilitado, autor com conta)
+//   reu    → exceção da SPEC §11.1: sem gate, o juiz marca cumprida na mão
+//   aberto → caminho de sempre, sem selo (testemunha, terceiro, pessoa fora)
+// A classificação é por QUEM A PESSOA É, nunca pela porta por onde foi escolhida — ver
+// pecas.classificarDestinatarioIntimacao. Só vale em processo `ingame`: em `aberto`/`legado` não há
+// entrega pessoal, e forçar o gated ali quebraria o rito em que o processo nasceu.
+function viaDaIntimacao(processo, ref, { discordId = null, rg = null } = {}) {
+  const pecas = require('../utils/pecas');
+  if (!processo || pecas.modoDoProcesso(processo) !== 'ingame') return { via: 'aberto' };
+  if (typeof ref === 'string' && ref.startsWith('hab:')) {
+    const hab = (processo.habilitacoes || []).find(h => String(h.id) === ref.slice(4) && h.status === 'Aprovado');
+    return hab ? { via: 'gated', papel: 'Advogado', habilitacaoId: hab.id } : { via: 'aberto' };
+  }
+  return pecas.classificarDestinatarioIntimacao(processo, { parteId: ref, discordId, rg });
+}
+
 async function processarSelecaoDestinatarioIntimacao(interaction, numero) {
   const destinatarioRef = interaction.values[0];
+
+  if (destinatarioRef !== 'fora') {
+    const processo = db.buscarPorNumero('processos', numero);
+    const r = viaDaIntimacao(processo, destinatarioRef);
+    if (r.via === 'gated') {
+      return require('../utils/emissaoPeca').abrirEmissao(interaction, 'intimacao_juiz', numero, {
+        destinatario: r.habilitacaoId ? { papel: 'Advogado', habilitacaoId: r.habilitacaoId } : { papel: r.papel },
+      });
+    }
+    // `reu` e `aberto` seguem no caminho de sempre — a exceção do réu (SPEC §11.1) é justamente
+    // não forçá-lo no molde do QR: ele não tem conta, o juiz marca cumprida na mão.
+  }
+
   if (destinatarioRef === 'fora') {
     const modal = new ModalBuilder().setCustomId(`painel:modal:processo:intimarforadestinatario:${numero}`).setTitle('Pessoa fora do processo');
     modal.addComponents(
@@ -1920,6 +1967,26 @@ async function confirmarDestinatarioForaIntimacao(interaction, numero) {
   const nomeCompleto = interaction.fields.getTextInputValue('nomeCompleto');
   const idTexto = interaction.fields.getTextInputValue('idTexto');
   const { discordId, rg } = partesProcesso.classificarIdLivre(idTexto);
+
+  // TRAVA ANTI-CONTORNO (obrigatória, decisão de 18/08/2026). Sem ela, "pessoa fora do processo"
+  // vira o atalho para pular o selo: bastava digitar o ID do advogado da outra parte aqui e a
+  // intimação sairia sem selo, sem janela e sem recebimento. A classificação é por QUEM A PESSOA É.
+  // Note que a trava roda ANTES de adicionarParte — senão o próprio contorno já teria sujado os
+  // autos com um "terceiro" que na verdade é parte.
+  const processoAlvo = db.buscarPorNumero('processos', numero);
+  const rota = viaDaIntimacao(processoAlvo, null, { discordId, rg });
+  if (rota.via === 'gated') {
+    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'intimacao_juiz', numero, {
+      destinatario: rota.habilitacaoId ? { papel: 'Advogado', habilitacaoId: rota.habilitacaoId } : { papel: rota.papel },
+    });
+  }
+  if (rota.via === 'reu') {
+    return interaction.reply({
+      content: '⚠️ Essa pessoa é o **réu** deste processo. A intimação do réu não sai por aqui: use o fluxo próprio e marque a intimação como cumprida quando o ato acontecer em cena.',
+      ephemeral: true,
+    });
+  }
+
   const novaParte = partesProcesso.adicionarParte(numero, { papel: 'terceiro', nome: nomeCompleto, discordId, rg, origem: 'manual_mandado', adicionadoPor: interaction.user.id });
   return interaction.reply({
     content: 'Qual o teor da intimação?',
@@ -1955,7 +2022,9 @@ async function confirmarIntimacaoGenerica(interaction, chave) {
 
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'intimacao_emitida', titulo: '✉️ Intimação emitida',
-    detalhe: `Destinatário: ${parte?.discordId ? `<@${parte.discordId}>` : (parte?.nome || 'não identificado')}\nTeor: ${teor}`,
+    detalhe: require('../utils/pecas').detalheDeAndamento(numero,
+      `Destinatário: ${parte?.discordId ? `<@${parte.discordId}>` : (parte?.nome || 'não identificado')}\nTeor: ${teor}`,
+      `Destinatário: ${parte?.discordId ? `<@${parte.discordId}>` : (parte?.nome || 'não identificado')}. O teor fica restrito até a entrega pessoal.`),
     executorId: interaction.user.id, metadata: { destinatarioId: parte?.discordId || null, destinatarioNome: parte?.nome || null, ehCitacao: false },
   });
   await repostarPainel(interaction.guild, numero);
@@ -2029,7 +2098,9 @@ async function emitirIntimacao(interaction, numero) {
   const destinatarioLabel = destId ? `<@${destId}>` : (destinatarioNome || 'não identificado');
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'intimacao_emitida', titulo: ehCitacaoCivil ? '✉️ Citação emitida' : '✉️ Intimação emitida',
-    detalhe: `Destinatário: ${destinatarioLabel}\nTeor: ${teor}`,
+    detalhe: require('../utils/pecas').detalheDeAndamento(numero,
+      `Destinatário: ${destinatarioLabel}\nTeor: ${teor}`,
+      `Destinatário: ${destinatarioLabel}. O teor fica restrito até a entrega pessoal.`),
     executorId: interaction.user.id, metadata: { destinatarioId: destId, destinatarioNome, ehCitacao: ehCitacaoCivil, prazoContestacaoAte },
   });
   await repostarPainel(interaction.guild, numero);

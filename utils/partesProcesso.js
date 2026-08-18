@@ -75,11 +75,27 @@ function registrarDepoimento(numero, { parteId, colhidoPor, papelDeQuemColheu, t
 // mandado e intimação. Discord limita select a 25 opções; corta em 24 partes + a opção fixa
 // "Pessoa fora do processo" pra nunca estourar (paginar/agrupar fica pra quando isso virar
 // problema de verdade — nenhum processo real chegou perto disso até hoje).
-function selectDestinatario(customId, processo) {
-  const opcoes = (processo.partes || []).slice(0, 24).map(p => ({
+// `incluirAdvogados` só é ligado pela INTIMAÇÃO (18/08/2026). Mandado e medida continuam sem, de
+// propósito: mandado se dirige a um alvo a ser preso/buscado, não ao defensor dele.
+//
+// Antes desta mudança o seletor listava só `partes[]` — réu, autor, testemunhas, terceiros — e o
+// advogado NÃO aparecia em lugar nenhum. Como o ato gated `intimacao_juiz` é dirigido justamente ao
+// Advogado, o único destinatário que o mecanismo sabe tratar era o único que a UI não oferecia.
+function selectDestinatario(customId, processo, { incluirAdvogados = false } = {}) {
+  const opcoes = [];
+  if (incluirAdvogados) {
+    for (const h of (processo.habilitacoes || [])) {
+      if (h.status !== 'Aprovado' || !h.advogadoId) continue;
+      opcoes.push({
+        label: `[Advogado] ${h.advogadoNome || h.advogadoId}`.slice(0, 100),
+        value: `hab:${h.id}`,
+      });
+    }
+  }
+  opcoes.push(...(processo.partes || []).slice(0, 24 - opcoes.length).map(p => ({
     label: `[${ROTULO_PAPEL[p.papel] || p.papel}] ${p.nome || p.discordId || 'sem identificação'}`.slice(0, 100),
     value: p.id,
-  }));
+  })));
   opcoes.push({ label: 'Pessoa fora do processo', value: 'fora' });
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder('Quem é o destinatário?').addOptions(opcoes),
