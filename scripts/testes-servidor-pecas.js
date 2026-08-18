@@ -161,6 +161,52 @@ const chamar = async (url, metodo = 'GET') => { const res = fakeRes(); await ser
     try { fs.unlinkSync(atual); fs.rmdirSync(dir); } catch (_) {}
   }
 
+  console.log('\n6) Revogação apaga as DUAS metades — banco E cache em disco');
+  // O achado: `tratar()` consulta o cache em disco ANTES de consultar o banco (item 3 acima,
+  // "cache antes do banco, de propósito" — performance). Isso significa que limpar só a entrada do
+  // banco na revogação deixaria um token revogado sendo servido do arquivo em cache PARA SEMPRE,
+  // porque a checagem de estado nunca seria alcançada para um pedido que bate no cache primeiro.
+  // Este teste escreve o arquivo de cache manualmente (sem depender do Chromium) e prova que a
+  // revogação apaga os dois lados juntos.
+  {
+    process.env.GUILD_ID = 'guild1';
+    const emissao = require('../utils/emissaoPeca');
+
+    db.inserir('processos', {
+      numero: '0099PN', tipo: 'Penal', status: 'Instrução', modoEntrega: 'ingame',
+      juiz: 'j1', habilitacoes: [], canalId: 'c1',
+    });
+    const g = pecas.gerar({
+      processoTabela: 'processos', processoNumero: '0099PN', tipo: 'intimacao_juiz',
+      autorId: 'j1', autorPapel: 'Juiz', texto: 'teor', destinatarios: [{ papel: 'Advogado', habilitacaoId: 1 }],
+    });
+    db.atualizar('processos', '0099PN', { habilitacoes: [{ id: 1, advogadoId: 'a1', reuId: 'r', status: 'Aprovado' }] });
+    const reg = pecas.registrarPaginasPublicas(g.peca.numero, 'Advogado', 1, 1);
+    const token = reg.paginas[0].token;
+
+    // Simula uma requisição já ter sido servida e cacheada — sem chamar tratar() nem renderizar de
+    // verdade, só escrevendo o arquivo no formato que gravarCache produziria.
+    fs.mkdirSync(servidor.dirCache(), { recursive: true });
+    fs.writeFileSync(path.join(servidor.dirCache(), servidor.nomeCache(token)), 'PNG-FALSO-DE-TESTE');
+    ok(fs.existsSync(path.join(servidor.dirCache(), servidor.nomeCache(token))), '6a: arquivo de cache existe (simula pedido anterior à revogação)');
+
+    // ANTES do achado, aqui pararia: o token continuaria resolvendo pelo banco, e o teste passaria
+    // por engano se só checasse resolverTokenPublico. O que prova o bug de verdade é bater na ROTA.
+    // lerCache devolve Buffer (fs.readFileSync sem encoding) — compara o conteúdo, não a instância.
+    const antes = await chamar(`/p/${token}.png`);
+    ok(antes.status === 200 && Buffer.isBuffer(antes.corpo) && antes.corpo.toString() === 'PNG-FALSO-DE-TESTE',
+      '6b: antes de encerrar, a rota serve o cache normalmente');
+
+    db.atualizar('processos', '0099PN', { status: 'Encerrado' });
+    await emissao.verificarValvulaEEncerramento({}, { channels: { fetch: async () => null } });
+
+    ok(!fs.existsSync(path.join(servidor.dirCache(), servidor.nomeCache(token))), '6c: a revogação APAGA o arquivo do cache, não só a entrada no banco');
+    ok(pecas.resolverTokenPublico(token) === null, '6d: ...e também a entrada no banco (a outra metade)');
+
+    const depois = await chamar(`/p/${token}.png`);
+    ok(depois.status === 404, '6e: a rota PARA DE SERVIR o token revogado — sem isso o "b" era mentira');
+  }
+
   try { fs.unlinkSync(DB_TESTE); } catch (_) {}
   try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);

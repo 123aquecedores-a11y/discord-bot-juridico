@@ -584,8 +584,19 @@ async function verificarValvulaEEncerramento(client, guild) {
   // existir: resolverTokenPublico nunca checava prazo nem estado, e um processo ARQUIVADO (sem
   // sentença) mantinha o teor fechado pela camada para sempre, enquanto o link cru continuava
   // servindo a imagem pra qualquer um que o tivesse.
+  //
+  // DUAS METADES, sempre juntas: apagar a entrada no banco não bastava, porque a rota HTTP consulta
+  // o CACHE EM DISCO antes do banco (ver services/servidorPecas.js) — um token revogado aqui mas já
+  // cacheado continuaria sendo servido do arquivo para sempre. Por isso o retorno de
+  // revogarLinksDeProcessosEncerrados agora traz os TOKENS, e cada um tem seu arquivo de cache
+  // apagado logo em seguida.
   const revogadas = pecas.revogarLinksDeProcessosEncerrados();
-  if (revogadas.length) console.log(`[pecas] links públicos revogados (processo encerrado): ${revogadas.join(', ')}.`);
+  if (revogadas.length) {
+    let arquivosApagados = 0;
+    for (const r of revogadas) for (const token of r.tokens) if (servidorPecas.apagarCache(token)) arquivosApagados++;
+    console.log(`[pecas] links públicos revogados (processo encerrado): ${revogadas.map(r => r.peca).join(', ')} `
+      + `— ${arquivosApagados} arquivo(s) de cache apagado(s) junto.`);
+  }
 }
 
 module.exports = {

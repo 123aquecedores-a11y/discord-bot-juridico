@@ -86,6 +86,17 @@ function gravarCache(token, buffer) {
   }
 }
 
+// METADE DA REVOGAÇÃO QUE FALTAVA — achado em revisão em 18/08/2026. `tratar()` consulta o cache em
+// disco ANTES de consultar `pecas.resolverTokenPublico` (ver abaixo): um token revogado no banco mas
+// já cacheado continuaria sendo servido para sempre, porque a checagem de estado nunca era alcançada
+// para um pedido que bate no cache. Limpar só o banco era metade da revogação, não a revogação.
+//
+// Chamada por utils/emissaoPeca.js logo depois de pecas.revogarLinksDeProcessosEncerrados() — as
+// duas metades andam juntas, sempre, na mesma varredura.
+function apagarCache(token) {
+  try { fs.unlinkSync(path.join(dirCache(), nomeCache(token))); return true; } catch { return false; }
+}
+
 // Rótulos do documento por tipo de ato. Espelha o catálogo de utils/emissaoPeca.js, mas sem importá-lo
 // — emissaoPeca puxa discord.js, e este servidor não precisa do bot para responder.
 const TITULOS = {
@@ -134,6 +145,13 @@ async function tratar(req, res) {
   if (!m) return naoEncontrado(res);
   const token = m[1];
 
+  // CACHE ANTES DO BANCO, de propósito — resolverTokenPublico varre todas as peças (O(n) por
+  // requisição), e a impressora do jogo pode pedir a mesma página várias vezes. Isso só é seguro
+  // porque a revogação (utils/pecas.js `revogarLinksDeProcessosEncerrados` + `apagarCache` logo
+  // abaixo) apaga o arquivo do cache no MESMO momento em que revoga no banco — nunca uma sem a
+  // outra. Se um dia a ordem daqui for invertida por "otimização", confirme antes que a revogação
+  // continua limpando os dois lados; senão um token revogado no banco continua sendo servido do
+  // disco para sempre.
   const cacheado = lerCache(token);
   if (cacheado) return responderPng(res, cacheado, req.method === 'HEAD');
 
@@ -188,4 +206,4 @@ function iniciar() {
   return servidor;
 }
 
-module.exports = { iniciar, urlPublica, tratar, dirCache, nomeCache, limparCacheAntigo, VERSAO_TEMPLATE };
+module.exports = { iniciar, urlPublica, tratar, dirCache, nomeCache, limparCacheAntigo, apagarCache, VERSAO_TEMPLATE };

@@ -648,6 +648,13 @@ function relatorioLegado(processoTabela = 'processos') {
 // Chamada pela varredura periódica de 10 min (ver index.js), não no instante da transição: hookar em
 // todo lugar que fecha um processo seria invasivo e frágil a esquecimento; varredura persistida é o
 // padrão que o projeto já usa para tudo que precisa sobreviver a restart (SPEC §12).
+//
+// DEVOLVE OS TOKENS, não só o número da peça — achado em revisão em 18/08/2026: limpar a entrada no
+// banco não bastava, porque a rota HTTP consulta o CACHE EM DISCO antes de consultar
+// resolverTokenPublico (ver services/servidorPecas.js, função `tratar`). Um token revogado aqui mas
+// já cacheado continuaria sendo servido para sempre, direto do arquivo, sem nunca passar por este
+// banco de novo. Quem chama esta função (utils/emissaoPeca.js) usa os tokens para apagar também o
+// arquivo do cache — as duas metades da revogação têm que andar juntas, ou a revogação é teatro.
 function revogarLinksDeProcessosEncerrados() {
   const revogadas = [];
   for (const peca of db.todos('pecas', p => (p.destinatarios || []).some(d => (d.paginasPublicas || []).length > 0))) {
@@ -660,14 +667,16 @@ function revogarLinksDeProcessosEncerrados() {
     if (cfg.aberto(processo)) continue;
 
     let mudou = false;
+    const tokensDaPeca = [];
     const destinatarios = peca.destinatarios.map(d => {
       if (!(d.paginasPublicas || []).length) return d;
       mudou = true;
+      for (const p2 of d.paginasPublicas) tokensDaPeca.push(p2.token);
       return { ...d, paginasPublicas: [] };
     });
     if (!mudou) continue;
     db.atualizar('pecas', peca.numero, { destinatarios });
-    revogadas.push(peca.numero);
+    revogadas.push({ peca: peca.numero, tokens: tokensDaPeca });
   }
   return revogadas;
 }
