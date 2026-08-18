@@ -2830,7 +2830,14 @@ async function salvarManifestacaoLivre(interaction, numero) {
       .addFields({ name: 'Promotor', value: `<@${interaction.user.id}>`, inline: true }, { name: 'Manifestação', value: truncar(descricao) }, { name: 'Documento(s)', value: truncar(lista) });
     await canal.send({ embeds: [embed] }).catch(() => {});
   }
-  await andamentos.registrar(interaction.guild, numero, { tipo: 'manifestacao_mp', titulo: '📝 Manifestação do MP', detalhe: `Manifestação do MP por <@${interaction.user.id}>: "${descricao}" — juntada aos autos.`, executorId: interaction.user.id, anexoUrl: arquivos[0]?.url || null, metadata: {} });
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'manifestacao_mp',
+    titulo: '📝 Manifestação do MP',
+    detalhe: require('../utils/pecas').detalheDeAndamento(numero,
+      `Manifestação do MP por <@${interaction.user.id}>: "${descricao}" — juntada aos autos.`,
+      `Manifestação do MP por <@${interaction.user.id}> juntada aos autos. O teor fica restrito até a entrega pessoal.`),
+    executorId: interaction.user.id, anexoUrl: arquivos[0]?.url || null, metadata: {},
+  });
   await repostarPainel(interaction.guild, numero);
   return interaction.followUp({ content: '📝 Manifestação juntada aos autos.', ephemeral: true });
 }
@@ -3017,7 +3024,9 @@ async function criarApelacao(interaction, numero, modo) {
 
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'apelacao', titulo: `⚖️ Apelação ${numeroApelacao} interposta`,
-    detalhe: razoes, executorId: recorrenteId, metadata: { apelacaoNumero: numeroApelacao },
+    detalhe: require('../utils/pecas').detalheDeAndamento(numero, razoes,
+      `Apelação ${numeroApelacao} interposta. As razões ficam restritas até a entrega pessoal.`),
+    executorId: recorrenteId, metadata: { apelacaoNumero: numeroApelacao },
   });
   // Sem repostarPainel aqui: a narrativa desta seção nasce no canal NOVO da apelação, não no
   // canal do processo original (que a essa altura já costuma estar arquivado pela sentença).
@@ -3330,12 +3339,10 @@ async function executarSentenca(interaction, numero, modo) {
   // Aqui o teor simplesmente não é persistido quando o processo é gated — não é "esconder na
   // exibição", é não gravar. A fonte da sentença continua sendo `processos.sentenca`, que é onde
   // a migração para o módulo gated (pendente) vai pendurar o selo e a entrega.
-  const sentencaGated = require('../utils/pecas').modoDoProcesso(processo) === 'ingame';
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'sentenca', titulo: `⚖️ Sentença — ${resultado}`,
-    detalhe: sentencaGated
-      ? 'Sentença proferida. O teor fica restrito até a entrega pessoal ao advogado de cada parte.'
-      : texto,
+    detalhe: require('../utils/pecas').detalheDeAndamento(numero, texto,
+      'Sentença proferida. O teor fica restrito até a entrega pessoal ao advogado de cada parte.'),
     executorId: interaction.user.id, anexoUrl: anexoUrlSentenca, metadata: { resultado, pena, regime },
   });
   await repostarPainel(interaction.guild, numero);

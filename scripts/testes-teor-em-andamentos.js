@@ -33,11 +33,13 @@ function ok(cond, nome, detalhe = '') {
 // Mover uma linha de false para true é o trabalho da migração de cada ato.
 const CONHECIDOS = [
   { arquivo: 'commands/processo.js', marca: 'tipo: \'sentenca\'', ato: 'sentença', gated: true },
-  { arquivo: 'commands/processo.js', marca: 'tipo: \'apelacao\'', ato: 'apelação (razões)', gated: false },
+  { arquivo: 'commands/processo.js', marca: 'tipo: \'apelacao\'', ato: 'apelação (razões)', gated: true },
+  { arquivo: 'commands/mandado.js', marca: 'Fundamentação: ${teor}', ato: 'mandado', gated: true },
+  { arquivo: 'commands/medida.js', marca: 'Fundamentação do Juízo:', ato: 'medida', gated: true },
+  { arquivo: 'commands/processo.js', marca: 'tipo: \'manifestacao_mp\'', ato: 'manifestação do MP', gated: true },
+  // ÚNICO ainda cru. Morre no Bloco B, quando a intimação entrar no módulo gated de verdade —
+  // ali o teor deixa de morar em andamento e passa a ser peça, com selo e recebimento.
   { arquivo: 'commands/processo.js', marca: 'Teor: ${teor}', ato: 'intimação (2 pontos)', gated: false },
-  { arquivo: 'commands/mandado.js', marca: 'Fundamentação: ${teor}', ato: 'mandado', gated: false },
-  { arquivo: 'commands/medida.js', marca: 'Fundamentação do Juízo:', ato: 'medida', gated: false },
-  { arquivo: 'commands/processo.js', marca: 'tipo: \'manifestacao_mp\'', ato: 'manifestação do MP', gated: false },
 ];
 
 const raiz = path.join(__dirname, '..');
@@ -45,15 +47,60 @@ const ARQUIVOS = ['commands/processo.js', 'commands/mandado.js', 'commands/medid
 
 console.log('\n=== Teor gravado em andamentos (ângulo cego da camada de visibilidade) ===\n');
 
-console.log('1) A sentença não persiste mais o teor quando o processo é gated');
+console.log('1) O ponto único de decisão funciona (teste COMPORTAMENTAL, não scan)');
 {
-  const src = fs.readFileSync(path.join(raiz, 'commands/processo.js'), 'utf-8');
-  const trecho = src.slice(src.indexOf("tipo: 'sentenca', titulo:") - 900, src.indexOf("tipo: 'sentenca', titulo:") + 500);
-  ok(/sentencaGated/.test(trecho), '1a: a gravação da sentença consulta o modo do processo', 'esperava a decisão por modo junto do registro');
-  ok(/modoDoProcesso\(processo\) === 'ingame'/.test(trecho), '1b: ...e a decisão é pelo modo real (ingame), não por um flag paralelo');
-  ok(/restrito at[ée] a entrega pessoal/.test(trecho), '1c: no gated grava descrição genérica, não a fundamentação');
-  // O caminho não-gated tem que continuar gravando o texto — aberto/legado não regridem.
-  ok(/:\s*texto,/.test(trecho), '1d: fora do gated o texto continua sendo gravado (sem regressão em aberto/legado)');
+  // A versão anterior só olhava o código-fonte. Agora a regra mora numa função pura sobre o banco
+  // (pecas.detalheDeAndamento), então dá para exercitá-la de verdade nos três modos.
+  const os = require('os');
+  const DB_TESTE = path.join(os.tmpdir(), `dados-teste-teor-and-${process.pid}.json`);
+  try { fs.unlinkSync(DB_TESTE); } catch (_) {}
+  process.env.DADOS_JSON_PATH = DB_TESTE;
+  process.env.RESETAR_BANCO = '';
+  const db = require('../database/db');
+  const pecas = require('../utils/pecas');
+
+  const TEOR = 'FUNDAMENTACAO SECRETA QUE NAO PODE VAZAR';
+  const GENERICO = 'restrito até a entrega pessoal.';
+
+  // `modo: null` grava SEM o campo — é como um processo anterior à feature se parece (legado).
+  const criar = (numero, modo) => db.inserir('processos', {
+    numero, tipo: 'Civil', status: 'Instrução', ...(modo === null ? {} : { modoEntrega: modo }),
+  });
+
+  criar('9001CV', 'ingame'); criar('9002CV', 'aberto'); criar('9003CV', null);
+
+  ok(pecas.detalheDeAndamento('9001CV', TEOR, GENERICO) === GENERICO,
+    '1a: processo ingame NÃO recebe o teor — grava a descrição genérica');
+  ok(!pecas.detalheDeAndamento('9001CV', TEOR, GENERICO).includes(TEOR),
+    '1b: ...e o teor não aparece nem parcialmente no que foi gravado');
+  ok(pecas.detalheDeAndamento('9002CV', TEOR, GENERICO) === TEOR,
+    '1c: processo aberto continua gravando o teor (sem regressão)');
+  ok(pecas.detalheDeAndamento('9003CV', TEOR, GENERICO) === TEOR,
+    '1d: processo legado continua gravando o teor (sem regressão)');
+  // Falha FECHADA: processo que não existe não pode virar desculpa para gravar teor... mas também
+  // não pode sumir com o andamento de um ticket sem processo vinculado. Documenta o que acontece.
+  ok(pecas.detalheDeAndamento('INEXISTENTE', TEOR, GENERICO) === TEOR,
+    '1e: sem processo encontrado grava o teor (ticket avulso não tem entrega pessoal a proteger)');
+
+  try { fs.unlinkSync(DB_TESTE); } catch (_) {}
+  try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
+}
+
+console.log('\n1b) Todos os atos migrados usam o PONTO ÚNICO, não a regra copiada');
+{
+  const esperado = { 'commands/processo.js': 3, 'commands/mandado.js': 1, 'commands/medida.js': 1 };
+  let total = 0;
+  for (const [arq, n] of Object.entries(esperado)) {
+    const src = fs.readFileSync(path.join(raiz, arq), 'utf-8');
+    const visto = (src.match(/detalheDeAndamento\(/g) || []).length;
+    total += visto;
+    ok(visto === n, `1b-${arq}: ${n} ato(s) pelo ponto único`, `achou ${visto}`);
+  }
+  ok(total === 5, '1b-total: os 5 atos migrados passam pelo mesmo lugar', `total ${total}`);
+  // Ninguém pode reintroduzir a regra por fora do helper.
+  const proc = fs.readFileSync(path.join(raiz, 'commands/processo.js'), 'utf-8');
+  ok(!/modoDoProcesso\(\w+\)\s*===\s*'ingame'/.test(proc),
+    '1b-z: nenhuma decisão de gate por andamento foi copiada solta em processo.js');
 }
 
 console.log('\n2) Inventário: todo ato que persiste teor está declarado');

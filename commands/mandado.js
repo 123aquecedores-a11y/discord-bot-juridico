@@ -195,7 +195,9 @@ async function emitirMandadoNoProcesso({ guild, processo, tipoRotulo, teor, emit
 
   await andamentos.registrar(guild, processo.numero, {
     tipo: 'mandado_emitido', titulo: `📜 Mandado de ${tipoRotulo} emitido`,
-    detalhe: `Mandado ${numeroMandado} — alvo: ${alvoTexto}\nFundamentação: ${teor}`,
+    detalhe: require('../utils/pecas').detalheDeAndamento(processo.numero,
+      `Mandado ${numeroMandado} — alvo: ${alvoTexto}\nFundamentação: ${teor}`,
+      `Mandado ${numeroMandado} — alvo: ${alvoTexto}. A fundamentação fica restrita até a entrega pessoal.`),
     executorId: emitidoPorId, anexoUrl, metadata: { mandadoNumero: numeroMandado, tipoMandado: tipoRotulo, alvoDiscordId: destinatario?.discordId || null },
   });
   // Lazy require pra evitar ciclo (processo.js já requer mandado.js no outro sentido) — só

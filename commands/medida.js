@@ -572,7 +572,9 @@ async function emitirMandadoDaMedida(interaction, medida, fundamentacaoJuiz, { r
   if (medida.processoVinculado) {
     await andamentos.registrar(interaction.guild, medida.processoVinculado, {
       tipo: 'mandado_emitido', titulo: `📜 Mandado de ${medida.tipo} emitido`,
-      detalhe: `Mandado ${numeroMandado} — alvo: ${medida.alvo}\nFundamentação do Juízo: ${fundamentacaoJuiz}`,
+      detalhe: require('../utils/pecas').detalheDeAndamento(medida.processoVinculado,
+        `Mandado ${numeroMandado} — alvo: ${medida.alvo}\nFundamentação do Juízo: ${fundamentacaoJuiz}`,
+        `Mandado ${numeroMandado} — alvo: ${medida.alvo}. A fundamentação do Juízo fica restrita até a entrega pessoal.`),
       executorId: interaction.user.id, metadata: { mandadoNumero: numeroMandado, tipoMandado: medida.tipo, medidaNumero: numero },
     });
     // Sem repostarPainel aqui de propósito: a narrativa acima foi postada no canal DA MEDIDA

@@ -31,6 +31,26 @@ const MAX_ILEGIVEIS_AVISO = 5; // QR ilegível → avisa a staff na 5ª, mas NUN
 const MODOS = { LEGADO: 'legado', INGAME: 'ingame', ABERTO: 'aberto' };
 const modoDoProcesso = (registro) => (registro && registro.modoEntrega) || MODOS.LEGADO;
 
+// TEOR GRAVADO EM ANDAMENTO — ponto único de decisão (18/08/2026).
+//
+// Os atos LEGADOS (sentença, apelação, mandado, medida, manifestação do MP, intimação) não são
+// peças: eles gravam texto livre no campo `detalhe` de um andamento. Andamento NÃO passa por
+// podeVerTeor — a camada governa a tabela `pecas`. Exibição é embedHistorico, cujo gate é
+// `temAcessoTotal` = TODAS as partes do processo. Em processo `ingame` isso entregava o teor sem
+// entrega pessoal nenhuma, e de forma PERMANENTE: o andamento continua consultável depois do canal
+// ser arquivado.
+//
+// A decisão mora AQUI, e não em cada ato, porque a regra copiada em seis lugares é a receita para o
+// sétimo nascer sem ela. Quem chama passa o teor e a alternativa genérica; o modo do processo
+// decide qual dos dois é persistido. Não é esconder na exibição — é não gravar.
+//
+// Processo `aberto` e `legado` seguem gravando o teor, como sempre: neles não existe entrega
+// pessoal a proteger.
+function detalheDeAndamento(processoNumero, teor, generico) {
+  const processo = db.buscarPorNumero('processos', processoNumero);
+  return processo && modoDoProcesso(processo) === MODOS.INGAME ? generico : teor;
+}
+
 // SPEC §6.2: janela configurável, faixa aceita 10–120, padrão 60. Fora da faixa cai no padrão em
 // vez de valer — uma env com "0" ou "9999" não pode desligar nem eternizar a janela em silêncio.
 function janelaMinutos() {
@@ -700,7 +720,7 @@ function fecharJanelasDoProcesso(processoTabela, processoNumero, { agora = Date.
 
 module.exports = {
   MODOS, VALVULA_MS, MAX_RECUSAS_TOKEN, MAX_ILEGIVEIS_AVISO,
-  modoDoProcesso, janelaMinutos,
+  modoDoProcesso, janelaMinutos, detalheDeAndamento,
   ocupanteAtual, ocupaDestinatario, isSupervisao,
   gerar, abrirEntrega, encerrarEntrega, janelaAberta, receber, destravarSelo,
   podeVerTeor, projetarParaUsuario, processoSentenciado, habilitadoNoProcesso,
