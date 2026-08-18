@@ -417,6 +417,61 @@ function projetarParaUsuario(usuarioId, peca, processoOpcional = null, opcoes = 
 }
 
 // ---------------------------------------------------------------------------
+// Portas de saída nomeadas — o resto do sistema entra por aqui, nunca pela tabela
+// ---------------------------------------------------------------------------
+// A varredura de scripts/testes-visibilidade-varredura.js garante que ninguém fora deste arquivo
+// toque `db.*('pecas')` nem leia `.texto` cru. Não é burocracia: quem pega o registro inteiro
+// contorna a camada de visibilidade toda de uma vez. Então quem precisa de dado de peça pede por
+// uma destas funções, e cada uma decide o que pode sair.
+
+// Metadados, nunca teor. É o que basta para montar embed, botão e log.
+function metadados(pecaNumero) {
+  const peca = db.buscarPorNumero('pecas', pecaNumero);
+  if (!peca) return null;
+  return {
+    numero: peca.numero,
+    tipo: peca.tipo,
+    processoTabela: peca.processoTabela,
+    processoNumero: peca.processoNumero,
+    autorId: peca.autorId,
+    autorPapel: peca.autorPapel,
+    criadoEm: peca.criadoEm,
+    gated: peca.gated,
+    modoEntrega: peca.modoEntrega,
+    janela: peca.janela,
+    destinatarios: peca.destinatarios.map(d => ({
+      papel: d.papel, habilitacaoId: d.habilitacaoId,
+      recebidoEm: d.recebidoEm, recebidoComo: d.recebidoComo, travado: d.travado,
+    })), // sem token: ele é segredo do selo
+  };
+}
+
+// Tudo o que a renderização do PNG precisa — teor e tokens — liberado SOMENTE a quem pode ver o
+// teor. É a mesma `podeVerTeor` de sempre; renderizar é só mais um ponto de saída.
+function paraRenderizacao(pecaNumero, usuarioId, { ehStaff = false } = {}) {
+  const peca = db.buscarPorNumero('pecas', pecaNumero);
+  if (!peca) return { ok: false, razao: 'peça não encontrada' };
+  if (!podeVerTeor(usuarioId, peca, null, { ehStaff })) return { ok: false, razao: 'sem acesso ao teor desta peça' };
+  return {
+    ok: true,
+    peca: {
+      numero: peca.numero, processoNumero: peca.processoNumero, tipo: peca.tipo,
+      texto: peca.texto, digitos: peca.digitos, autorId: peca.autorId, autorPapel: peca.autorPapel,
+      destinatarios: peca.destinatarios.map(d => ({ papel: d.papel, habilitacaoId: d.habilitacaoId, token: d.token })),
+    },
+  };
+}
+
+// Onde o documento renderizado ficou guardado. Arquivo único (SPEC §3.7): no recebimento, o que se
+// libera é a visualização DESTE arquivo, sem gerar segunda cópia.
+function registrarEntregaveis(pecaNumero, entregaveis, totalPaginas) {
+  const peca = db.buscarPorNumero('pecas', pecaNumero);
+  if (!peca) return { ok: false, razao: 'peça não encontrada' };
+  db.atualizar('pecas', pecaNumero, { entregaveis, totalPaginas });
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // Válvula de escape — 24h (SPEC §7)
 // ---------------------------------------------------------------------------
 // Roda na varredura periódica, comparando o horário-limite persistido. Nunca setTimeout.
@@ -529,6 +584,7 @@ module.exports = {
   ocupanteAtual, ocupaDestinatario, isSupervisao,
   gerar, abrirEntrega, encerrarEntrega, janelaAberta, receber, destravarSelo,
   podeVerTeor, projetarParaUsuario, processoSentenciado, habilitadoNoProcesso,
+  metadados, paraRenderizacao, registrarEntregaveis,
   varrerValvula, reiniciarValvulaPorTroca, pendentesDoPapel, fecharJanelasDoProcesso,
   destravarTodasPendencias, relatorioLegado,
 };

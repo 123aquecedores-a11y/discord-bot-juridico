@@ -85,6 +85,10 @@ client.once('ready', async () => {
     return;
   }
 
+  // Em que modo este servidor está? Registro perdido tem que ser visível na primeira linha do log,
+  // não descoberto uma semana depois por um jogador reclamando — ver utils/modoEntrega.js.
+  require('./utils/modoEntrega').logarNoBoot(guild.id);
+
   // Auto-cria os canais de publicação (📜│diário-oficial e 📢│editais) se faltarem — idempotente,
   // não duplica, e não derruba o boot se faltar permissão (ver utils/garantirCanais.js).
   await garantirCanais(guild);
@@ -220,6 +224,13 @@ client.on('interactionCreate', async interaction => {
     if (interaction.customId && interaction.customId.startsWith('painel:')) {
       const painel = client.commands.get('painel');
       if (painel?.router) await painel.router(interaction);
+      return;
+    }
+
+    // Peças com entrega in-game: botões/modais com prefixo "peca:" → router de utils/emissaoPeca.
+    // Só o lado da emissão está ligado; o recebimento entra depois do teste in-game do selo.
+    if (interaction.customId && interaction.customId.startsWith('peca:')) {
+      await require('./utils/emissaoPeca').router(interaction);
       return;
     }
 

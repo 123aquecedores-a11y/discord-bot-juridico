@@ -32,6 +32,15 @@ const PERMITIDOS = new Set([
   MODULO, // o próprio módulo da camada
 ]);
 
+// PORTAS DA CAMADA — funções de utils/pecas.js por onde o teor pode legitimamente sair, porque
+// cada uma chama `podeVerTeor` antes de devolver qualquer coisa.
+//
+// Ampliar esta lista é permitido, mas só depois de conferir no código que a função nova realmente
+// consulta a camada. Uma porta que não confere permissão transforma esta varredura num carimbo.
+// A asserção A3 abaixo faz essa conferência automaticamente.
+const PORTAS = ['podeVerTeor', 'projetarParaUsuario', 'paraRenderizacao'];
+const REGEX_PORTAS = new RegExp(`(?:${PORTAS.join('|')})\\s*\\(`, 'g');
+
 let passes = 0; const falhas = [];
 function ok(cond, nome, detalhe = '') {
   if (cond) { passes++; console.log(`  ✅ ${nome}`); }
@@ -93,6 +102,23 @@ console.log('A) O acesso à tabela `pecas` é monopólio de utils/pecas.js');
   ok(noModulo && noModulo.length >= 5,
     'A2: a própria regex ainda casa dentro do módulo (a varredura não virou no-op)',
     `casou ${noModulo ? noModulo.length : 0}x`);
+
+  // Cada porta declarada precisa mesmo consultar a camada. Sem isto, ampliar a lista PORTAS seria
+  // um jeito silencioso de furar a regra B — bastaria declarar a função nova como porta.
+  const fonteModulo = FONTES.get(MODULO) || '';
+  const semConferencia = [];
+  for (const porta of PORTAS) {
+    if (porta === 'podeVerTeor') continue; // é a própria camada
+    const i = fonteModulo.indexOf(`function ${porta}(`);
+    if (i === -1) { semConferencia.push(`${porta} (não encontrada)`); continue; }
+    // Corpo aproximado: até a próxima declaração de função no nível de arquivo.
+    const proxima = fonteModulo.indexOf('\nfunction ', i + 1);
+    const corpo = fonteModulo.slice(i, proxima === -1 ? fonteModulo.length : proxima);
+    if (!/podeVerTeor\s*\(/.test(corpo)) semConferencia.push(porta);
+  }
+  ok(semConferencia.length === 0,
+    'A3: toda porta declarada realmente consulta podeVerTeor antes de devolver teor',
+    semConferencia.join('; '));
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +132,8 @@ console.log('\nB) Ninguém devolve teor sem passar pela camada');
     const usaPecas = /require\(['"][^'"]*pecas['"]\)/.test(src);
     if (!usaPecas) continue;
     const leTeor = /\.texto\b/.test(src);
-    const passaPelaCamada = /podeVerTeor\s*\(|projetarParaUsuario\s*\(/.test(src);
+    REGEX_PORTAS.lastIndex = 0;
+    const passaPelaCamada = REGEX_PORTAS.test(src);
     if (leTeor && !passaPelaCamada) infratores.push(arquivo);
   }
   ok(infratores.length === 0,
@@ -121,7 +148,7 @@ console.log('\nC) Toda chamada à camada passa `ehStaff` explicitamente');
 // SILENCIOSO: ninguém descobre até um supervisor reclamar que não enxerga um processo. Silencioso-
 // seguro não testado é dívida invisível — por isso a omissão falha aqui.
 {
-  const CHAMADAS = /(?:podeVerTeor|projetarParaUsuario)\s*\(/g;
+  const CHAMADAS = new RegExp(REGEX_PORTAS.source, 'g');
   const infratores = [];
   for (const [arquivo, src] of FONTES) {
     if (PERMITIDOS.has(arquivo)) continue;
