@@ -380,6 +380,9 @@ function novoProcesso(modo = 'ingame', extra = {}) {
       if (/\.attachments\b/.test(src) || /cdn\.discordapp/.test(src)) infratores.push(f);
     }
     ok(infratores.length === 0, '9a: nenhuma URL de anexo do Discord é lida ou copiada fora do recebimento', infratores.join('; '));
+    // CANÁRIO: se a lista esvaziar (renome de módulo), o laço aprova sem ler nada. Teste vazio dá
+    // confiança falsa — é pior que teste ausente.
+    ok(fontes.length >= 2, '9z: a varredura tinha arquivos para varrer', `lista com ${fontes.length}`);
 
     const p = novoProcesso();
     const g = pecas.gerar({

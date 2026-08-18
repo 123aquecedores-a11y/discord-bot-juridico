@@ -107,6 +107,7 @@ console.log('\n5) Proteção: nada pode apagar ou zerar um contador');
   const RAIZ = path.join(__dirname, '..');
   const DONOS = ['utils/numeracao.js', 'utils/carteirinha.js', 'utils/rh.js'];
   const infratores = [];
+  let varridos = 0;
   for (const dir of ['.', 'utils', 'commands', 'services', 'database']) {
     const abs = path.join(RAIZ, dir);
     if (!fs.existsSync(abs)) continue;
@@ -114,11 +115,15 @@ console.log('\n5) Proteção: nada pode apagar ou zerar um contador');
       if (!nome.endsWith('.js')) continue;
       const rel = `${dir === '.' ? '' : dir + '/'}${nome}`;
       if (DONOS.includes(rel)) continue;
+      varridos++;
       const src = fs.readFileSync(path.join(RAIZ, rel), 'utf-8').replace(/\/\*[\s\S]*?\*\//g, '');
       if (/definir\s*\(\s*[`'"]contador/i.test(src) || /chaveContador\s*\(/.test(src)) infratores.push(rel);
     }
   }
   ok(infratores.length === 0, '5d: só os módulos donos escrevem em chave `contador*`', infratores.join('; '));
+  // CANÁRIO: mudança de layout de pastas faria os `continue` pularem tudo e 5d aprovaria em
+  // silêncio. Teste vazio dá confiança falsa — é pior que teste ausente.
+  ok(varridos >= 20, '5d-z: a varredura realmente leu arquivos (não passou vazia)', `varreu ${varridos}`);
 
   // E o comportamento: um valor corrompido não pode virar "recomeça do zero".
   estado.definir(chaveContador('PN'), 'lixo');

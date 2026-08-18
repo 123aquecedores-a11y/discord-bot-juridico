@@ -132,6 +132,11 @@ const FONTES = new Map(ARQUIVOS.map(f => [f, semComentarios(fs.readFileSync(path
 console.log('\n=== Varredura da camada de visibilidade ===\n');
 console.log(`  (${ARQUIVOS.length} arquivos varridos em ${DIRS.join(', ')})\n`);
 
+// CANÁRIO GLOBAL. Se arquivosJs() devolver lista vazia (renome de pasta, mudança de layout, erro de
+// path no Windows), TODAS as asserções abaixo passam por vacuidade e a varredura vira um carimbo de
+// aprovação automática. Teste vazio dá confiança falsa — é pior que teste ausente.
+ok(ARQUIVOS.length >= 20, '0: a varredura encontrou arquivos para varrer', `achou ${ARQUIVOS.length}`);
+
 // ---------------------------------------------------------------------------
 console.log('A) O acesso à tabela `pecas` é monopólio de utils/pecas.js');
 // Esta é a asserção mais forte das três. Quem lê o registro cru contorna a camada INTEIRA — não
@@ -193,12 +198,14 @@ console.log('\nB) Ninguém devolve teor sem passar pela camada');
 // podeVerTeor ou projetarParaUsuario no mesmo arquivo — senão está devolvendo teor cru.
 {
   const infratores = [];
+  let inspecionados = 0;
   for (const [arquivo, src] of FONTES) {
     if (PERMITIDOS.has(arquivo)) continue;
     // Só interessa quem pode TER uma peça em mãos. Importar `pecas` para chamar uma função da
     // lista segura (modoDoProcesso, janelaAberta...) não põe teor nenhum no arquivo — qualquer
     // outra chamada aciona o gatilho por padrão (ver SEGURAS_SEM_TEOR acima).
     if (!chamaFuncaoArriscada(src)) continue;
+    inspecionados++;
     const leTeor = /\.texto\b/.test(src);
     REGEX_PORTAS.lastIndex = 0;
     const passaPelaCamada = REGEX_PORTAS.test(src);
@@ -207,6 +214,9 @@ console.log('\nB) Ninguém devolve teor sem passar pela camada');
   ok(infratores.length === 0,
     'B1: todo arquivo que importa pecas e lê `.texto` passa por podeVerTeor/projetarParaUsuario',
     infratores.join('; '));
+  // Canário do B: se `chamaFuncaoArriscada` parar de casar (renome de função, troca de import),
+  // o `continue` acima pula TODOS os arquivos e B1 aprova sem ter olhado nada.
+  ok(inspecionados >= 1, 'B2: a varredura B realmente inspecionou arquivos (não virou no-op)', `inspecionou ${inspecionados}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -218,11 +228,13 @@ console.log('\nC) Toda chamada à camada passa `ehStaff` explicitamente');
 {
   const CHAMADAS = new RegExp(REGEX_PORTAS.source, 'g');
   const infratores = [];
+  let chamadasVistas = 0;
   for (const [arquivo, src] of FONTES) {
     if (PERMITIDOS.has(arquivo)) continue;
     let m;
     CHAMADAS.lastIndex = 0;
     while ((m = CHAMADAS.exec(src)) !== null) {
+      chamadasVistas++;
       // Lê a chamada até o parêntese que a fecha, contando aninhamento — argumento pode ter
       // objeto, chamada de função ou template dentro.
       let i = m.index + m[0].length, prof = 1;
@@ -241,6 +253,9 @@ console.log('\nC) Toda chamada à camada passa `ehStaff` explicitamente');
   ok(infratores.length === 0,
     'C1: nenhuma chamada omite ehStaff (omissão deixaria a staff cega em silêncio)',
     infratores.join('; '));
+  // Canário do C: REGEX_PORTAS que pare de casar faria o while nunca executar, e C1 aprovaria
+  // "todas as zero chamadas" em silêncio.
+  ok(chamadasVistas >= 1, 'C2: a varredura C realmente encontrou chamadas à camada (não virou no-op)', `viu ${chamadasVistas}`);
 }
 
 // ---------------------------------------------------------------------------

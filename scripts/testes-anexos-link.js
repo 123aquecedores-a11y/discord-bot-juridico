@@ -77,6 +77,10 @@ console.log('\n4) Nenhum consumidor volta a exibir a url do anexo');
     if (/\]\(\$\{[^}]*\.url[^}]*\}\)/.test(src)) infratores.push(f);
   }
   ok(infratores.length === 0, '4a: nenhum dos três pontos de consumo monta link com .url', infratores.join('; '));
+  // CANÁRIO: se um desses arquivos for renomeado, readFileSync lança e o teste falha alto — mas se
+  // a LISTA um dia for montada dinamicamente e vier vazia, o laço aprovaria sem ler nada. Teste
+  // vazio dá confiança falsa, é pior que teste ausente.
+  ok(CONSUMIDORES.length >= 3, '4z: a varredura tinha arquivos para varrer', `lista com ${CONSUMIDORES.length}`);
 
   const anexoPdf = fs.readFileSync(path.join(RAIZ, 'utils/anexoPdf.js'), 'utf-8');
   ok(/canalId/.test(anexoPdf) && /mensagemId/.test(anexoPdf), '4b: a coleta de anexo grava o par (a fábrica parou de produzir o defeito)');

@@ -128,6 +128,13 @@ console.log('\n4) Os pontos que POSTAM o botão passam pelo mesmo gate');
   });
   ok(semGate.length === 0, '4a: todo ponto que posta botão de PDF consulta o modo do processo', semGate.join(' | '));
 
+  // CANÁRIO. Se o nome do helper mudar, o scan acima varre zero linhas e aprova em silêncio —
+  // teste vazio dá confiança falsa, é pior que teste ausente. Conferi na mão que hoje são 3 sites;
+  // esta asserção é o que mantém isso verdadeiro sem depender de eu conferir de novo.
+  const sitesVarridos = linhas.filter((l, i) =>
+    /botaoAnexarPeticaoInicial\(|botaoAnexarContestacao\(/.test(l) && !/^function botaoAnexar/.test(l)).length;
+  ok(sitesVarridos >= 3, '4z: o scan realmente inspecionou os pontos de postagem (não passou vazio)', `varreu ${sitesVarridos}`);
+
   ok(/const ehLegado = /.test(src), '4b: existe um único helper de decisão (ehLegado), não a regra copiada em cada ponto');
 }
 
