@@ -43,6 +43,7 @@ function fakeInteraction(userId, customId, campos = {}) {
     isButton: () => !customId.startsWith('modal'),
     isModalSubmit: () => customId.startsWith('modal'),
     reply: async (o) => { rec.replies.push(o); },
+    followUp: async (o) => { rec.replies.push(o); },
     editReply: async (o) => { rec.edits.push(o); },
     deferReply: async () => { rec.defer = true; },
     showModal: async (m) => { rec.modais.push(m); },
@@ -123,7 +124,9 @@ function novoProcesso(modo = 'ingame', extra = {}) {
   {
     // Intimação vai para Advogado; sem habilitação aprovada, não há a quem dirigir.
     const p = novoProcesso('ingame', { habilitacoes: [] });
-    const i = fakeInteraction(JUIZ, 'modal', { tese: 'Intime-se.' });
+    // O teor vem do rascunho, não do campo do modal: escreve o trecho e só então envia.
+    await emissao.receberTrecho(fakeInteraction(JUIZ, 'modal', { tese: 'Intime-se.' }), 'intimacao_juiz', p.numero);
+    const i = fakeInteraction(JUIZ, 'peca:enviar');
     await emissao.criarPeca(i, 'intimacao_juiz', p.numero);
     ok(/não há quem ocupe o papel/i.test(textoDe(i.rec.replies[0])), '5a: recusa quando ninguém ocupa o papel do destinatário');
     ok(db.todos('pecas', x => x.processoNumero === p.numero).length === 0, '5b: ...e NÃO cria peça órfã');
@@ -193,6 +196,76 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     ok(!/https?:\/\//.test(salvo), '9b: o registro salvo não contém URL nenhuma');
     ok(/totalPaginas/.test(salvo), '9c: guarda só metadado da entrega (quantas páginas)');
     ok(/"texto"/.test(salvo), '9d: e o texto, que é o original do qual o PNG se regera');
+  }
+
+  console.log('\n10) Peça escrita em trechos');
+  // O teto de 4.000 é do CAMPO do modal, não da peça. Quem precisa de mais escreve em trechos, que
+  // se acumulam e viram um documento só, paginado.
+  {
+    const p = novoProcesso();
+    const chave = ['peticao_incidental', p.numero];
+
+    // Trecho 1
+    const i1 = fakeInteraction(ADV, 'modal', { tese: 'A'.repeat(3000) });
+    await emissao.receberTrecho(i1, ...chave);
+    const painel1 = i1.rec.replies[0];
+    ok(!!painel1.embeds, '10a: escrever um trecho devolve o painel de rascunho, não a peça');
+    ok(/1 de 3/.test(painel1.embeds[0].data.description), '10b: mostra quantos trechos foram escritos');
+    ok(/3\.000 caracteres/.test(painel1.embeds[0].data.description), '10c: mostra o total de caracteres');
+    ok(/impress/i.test(painel1.embeds[0].data.description), '10d: e o custo em impressões no jogo');
+    ok(db.todos('pecas', x => x.processoNumero === p.numero).length === 0, '10e: nada é gerado ainda');
+
+    // Trecho 2 — acumula
+    const i2 = fakeInteraction(ADV, 'modal', { tese: 'B'.repeat(3000) });
+    await emissao.receberTrecho(i2, ...chave);
+    const d2 = i2.rec.replies[0].embeds[0].data.description;
+    ok(/2 de 3/.test(d2), '10f: o segundo trecho acumula');
+    // 6.002 e não 6.000: o join insere a linha em branco que separa os trechos.
+    ok(/6\.002 caracteres/.test(d2), '10g: e o contador soma os dois', d2.slice(0, 60));
+
+    // Ver o acumulado
+    const iVer = fakeInteraction(ADV, 'peca:ver');
+    await emissao.verRascunho(iVer, ...chave);
+    ok(/Trecho 1/.test(textoDe(iVer.rec.replies[0])), '10h: dá para ver o texto acumulado antes de enviar');
+
+    // Apagar o último — é o conserto para erro no primeiro pedaço
+    const iUndo = fakeInteraction(ADV, 'peca:undo');
+    await emissao.desfazerTrecho(iUndo, ...chave);
+    ok(/apagado \(3000 caracteres\)/.test(textoDe(iUndo.rec.replies[0])), '10i: apaga o último trecho');
+    ok(/1 de 3/.test(iUndo.rec.replies[0].embeds[0].data.description), '10j: e o painel volta a 1 trecho');
+
+    // Teto de 3
+    await emissao.receberTrecho(fakeInteraction(ADV, 'modal', { tese: 'C'.repeat(100) }), ...chave);
+    await emissao.receberTrecho(fakeInteraction(ADV, 'modal', { tese: 'D'.repeat(100) }), ...chave);
+    const iQuarto = fakeInteraction(ADV, 'peca:add');
+    await emissao.abrirModalTrecho(iQuarto, ...chave);
+    ok(!iQuarto.rec.modais.length && /já escreveu os 3/i.test(textoDe(iQuarto.rec.replies[0])), '10k: o 4º trecho é recusado');
+
+    // Enviar: vira UMA peça só, com os trechos concatenados
+    const iEnviar = fakeInteraction(ADV, 'peca:enviar');
+    await emissao.criarPeca(iEnviar, ...chave);
+    const pecasDoProcesso = db.todos('pecas', x => x.processoNumero === p.numero);
+    ok(pecasDoProcesso.length === 1, '10l: os 3 trechos viram UMA peça só', `saíram ${pecasDoProcesso.length}`);
+    ok(pecasDoProcesso[0].texto.length === 3000 + 100 + 100 + 4, '10m: com os trechos concatenados por linha em branco');
+
+    // Rascunho consumido: reenviar não duplica a peça
+    const iDeNovo = fakeInteraction(ADV, 'peca:enviar');
+    await emissao.criarPeca(iDeNovo, ...chave);
+    ok(/rascunho pode ter expirado/i.test(textoDe(iDeNovo.rec.replies[0])), '10n: o rascunho é consumido no envio');
+    ok(db.todos('pecas', x => x.processoNumero === p.numero).length === 1, '10o: ...e reenviar não cria segunda peça');
+  }
+
+  console.log('\n11) Estimativa de páginas — medida, não chutada');
+  {
+    // Medições reais no leiaute atual: 1.642 chars = 1 página; 4.389 = 3; 8.239 = 5; 12.089 = 7.
+    ok(emissao.estimarPaginas('x'.repeat(1642)) === 1, '11a: 1.642 chars ≈ 1 página');
+    ok(emissao.estimarPaginas('x'.repeat(4389)) >= 3, '11b: 4.389 chars ≈ 3 páginas');
+    ok(emissao.estimarPaginas('x'.repeat(12000)) >= 6, '11c: 12.000 chars (teto) ≈ 7 páginas');
+    ok(emissao.estimarPaginas('') === 1, '11d: nunca estima menos de 1 página');
+    // Errar para MAIS é o lado certo: o advogado vê o custo maior, nunca menor.
+    ok(emissao.estimarPaginas('x'.repeat(3839)) >= 2, '11e: a estimativa nunca fica abaixo do real');
+    ok(/impressões no jogo/.test(emissao.linhaCusto('x'.repeat(5000))), '11f: a linha de custo fala em impressões');
+    ok(emissao.MAX_TRECHOS * emissao.MAX_CHARS_TRECHO === 12000, '11g: teto total de 12.000 caracteres');
   }
 
   console.log('\n8) Carimbo do modo na abertura (SPEC §11.2)');

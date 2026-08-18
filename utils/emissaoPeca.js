@@ -13,6 +13,7 @@ const pecas = require('./pecas');
 const andamentos = require('./andamentos');
 const permissoes = require('./permissoes');
 const { gerarPecaPNG } = require('../services/gerarPecaPNG');
+const { RascunhoTTL } = require('./rascunhoTtl');
 const { nomeExibicao } = require('../services/gerarDocumentoPNG');
 const servidorPecas = require('../services/servidorPecas');
 
@@ -54,6 +55,40 @@ const TIPOS = {
 const tipoAtivo = (chave) => !!(TIPOS[chave] && TIPOS[chave].ativo);
 
 // ---------------------------------------------------------------------------
+// Rascunho por trechos
+// ---------------------------------------------------------------------------
+// O teto de 4.000 é do CAMPO do modal, não da peça. Quem precisa de mais escreve em trechos, que se
+// acumulam e viram uma peça só, paginada. Teto de 3 trechos: acima disso o documento passa de sete
+// páginas, e sete impressões no jogo já é mais custo do que qualquer petição justifica.
+const MAX_TRECHOS = 3;
+const MAX_CHARS_TRECHO = 4000;
+
+// Rascunho em memória com expiração — reaproveita o RascunhoTTL do fluxo de revisão in-flow, em vez
+// de inventar mecanismo. Se o advogado abandonar no meio, a entrada morre sozinha em 20 min.
+const rascunhos = new RascunhoTTL();
+const chaveRascunho = (userId, tipo, numero) => `${userId}:${tipo}:${numero}`;
+
+const lerRascunho = (userId, tipo, numero) => rascunhos.get(chaveRascunho(userId, tipo, numero)) || { trechos: [] };
+const salvarRascunho = (userId, tipo, numero, r) => rascunhos.set(chaveRascunho(userId, tipo, numero), r);
+const textoDoRascunho = (r) => r.trechos.join('\n\n');
+
+// ESTIMATIVA DE PÁGINAS — medida no leiaute atual, não chutada. Com o selo de 168px, o corpo comporta
+// cerca de 1.750 caracteres por página; medições: 1.642 chars = 1 página, 4.389 = 3, 8.239 = 5,
+// 12.089 = 7. A conta erra para MAIS em alguns pontos (a quebra real depende de onde os parágrafos
+// caem), e errar para mais é o lado certo: o advogado vê o custo maior, nunca menor.
+const CHARS_POR_PAGINA = 1750;
+const estimarPaginas = (texto) => Math.max(1, Math.ceil((texto || '').length / CHARS_POR_PAGINA));
+
+// O custo tem que ficar visível ENQUANTO ele escreve. Cada página é uma impressão separada no jogo e
+// um espaço no arquivo físico — quem escreve muito precisa ver o que está criando, não descobrir
+// depois com sete papéis na mão.
+function linhaCusto(texto) {
+  const chars = (texto || '').length;
+  const pgs = estimarPaginas(texto);
+  return `**${chars.toLocaleString('pt-BR')} caracteres ≈ ${pgs} página${pgs > 1 ? 's' : ''}** — ${pgs} impress${pgs > 1 ? 'ões' : 'ão'} no jogo`;
+}
+
+// ---------------------------------------------------------------------------
 // Passo 1 — conferência dos dados que o sistema preenche
 // ---------------------------------------------------------------------------
 // SPEC §5.1: o formulário já vem com número do processo, classe, partes, órgão e data. Nada disso é
@@ -80,21 +115,109 @@ async function abrirEmissao(interaction, tipoChave, numeroProcesso) {
     return interaction.reply({ content: `Só quem ocupa o papel de **${cfg.emissor}** neste processo pode emitir esta peça.`, ephemeral: true });
   }
 
+  return abrirModalTrecho(interaction, tipoChave, numeroProcesso);
+}
+
+// Um modal por TRECHO. O teto de 4.000 é do campo do Discord; a peça pode ter até MAX_TRECHOS deles,
+// que se acumulam no rascunho e viram um documento só, paginado.
+function abrirModalTrecho(interaction, tipoChave, numeroProcesso) {
+  const cfg = TIPOS[tipoChave];
+  const rascunho = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
+  const n = rascunho.trechos.length + 1;
+  if (n > MAX_TRECHOS) {
+    return interaction.reply({ content: `Você já escreveu os ${MAX_TRECHOS} trechos. Revise e envie, ou apague o último.`, ephemeral: true });
+  }
+
   const modal = new ModalBuilder()
-    .setCustomId(`peca:criar:${tipoChave}:${numeroProcesso}`)
-    .setTitle(`${cfg.rotulo}`.slice(0, 45));
+    .setCustomId(`peca:trecho:${tipoChave}:${numeroProcesso}`)
+    .setTitle(`${cfg.rotulo} — trecho ${n}/${MAX_TRECHOS}`.slice(0, 45));
   modal.addComponents(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId('tese')
-        .setLabel('Tese / fundamentação')
+        .setLabel(n === 1 ? 'Tese / fundamentação' : `Continuação (trecho ${n})`)
         .setPlaceholder('Separe os parágrafos com uma linha em branco.')
         .setStyle(TextInputStyle.Paragraph)
         .setRequired(true)
-        .setMaxLength(4000), // teto de produto; coincide com o do campo (SPEC §12)
+        .setMaxLength(MAX_CHARS_TRECHO),
     ),
   );
   return interaction.showModal(modal);
+}
+
+// Recebe um trecho e devolve o painel de acumulação. Nada é gerado ainda — a peça só nasce quando o
+// advogado clicar em enviar.
+async function receberTrecho(interaction, tipoChave, numeroProcesso) {
+  const cfg = TIPOS[tipoChave];
+  if (!cfg || !cfg.ativo) return interaction.reply({ content: 'Tipo de ato não ativado.', ephemeral: true });
+
+  const processo = db.buscarPorNumero(cfg.tabela, numeroProcesso);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeEmitir(interaction, cfg, processo)) {
+    return interaction.reply({ content: 'Você não ocupa o papel de emissor deste ato.', ephemeral: true });
+  }
+
+  const rascunho = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
+  rascunho.trechos.push(interaction.fields.getTextInputValue('tese'));
+  salvarRascunho(interaction.user.id, tipoChave, numeroProcesso, rascunho);
+
+  return interaction.reply({ ...painelRascunho(tipoChave, numeroProcesso, rascunho, cfg), ephemeral: true });
+}
+
+// O painel é o lugar onde o custo fica visível e onde o erro tem conserto: dá para ver o texto
+// inteiro e apagar o último trecho antes de enviar.
+function painelRascunho(tipoChave, numeroProcesso, rascunho, cfg) {
+  const texto = textoDoRascunho(rascunho);
+  const n = rascunho.trechos.length;
+  const podeMais = n < MAX_TRECHOS;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`✍️ ${cfg.rotulo} — rascunho`)
+    .setColor(0x4A6FA5)
+    .setDescription(
+      `${linhaCusto(texto)}\n\n`
+      + `Trecho${n > 1 ? 's' : ''} escrito${n > 1 ? 's' : ''}: **${n} de ${MAX_TRECHOS}**\n`
+      + (podeMais
+        ? 'Você pode **enviar agora** ou **adicionar mais texto** — tudo vira uma peça só, paginada.'
+        : `Você chegou ao limite de ${MAX_TRECHOS} trechos. Revise e envie, ou apague o último.`),
+    )
+    .setFooter({ text: 'O rascunho expira em 20 minutos sem atividade.' });
+
+  const linha = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`peca:enviar:${tipoChave}:${numeroProcesso}`).setLabel('Enviar peça').setEmoji('📄').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`peca:add:${tipoChave}:${numeroProcesso}`).setLabel('Adicionar mais texto').setEmoji('➕').setStyle(ButtonStyle.Primary).setDisabled(!podeMais),
+    new ButtonBuilder().setCustomId(`peca:ver:${tipoChave}:${numeroProcesso}`).setLabel('Ver texto').setEmoji('👁️').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`peca:undo:${tipoChave}:${numeroProcesso}`).setLabel('Apagar último trecho').setEmoji('↩️').setStyle(ButtonStyle.Danger).setDisabled(n === 0),
+  );
+  return { embeds: [embed], components: [linha] };
+}
+
+// Ver o acumulado antes de enviar. Sem isto, um erro no primeiro pedaço fica sem conserto — o
+// advogado não teria como saber o que escreveu vinte minutos atrás.
+async function verRascunho(interaction, tipoChave, numeroProcesso) {
+  const rascunho = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
+  if (!rascunho.trechos.length) return interaction.reply({ content: 'Não há rascunho — ele pode ter expirado.', ephemeral: true });
+
+  // Uma mensagem por trecho: o acumulado passa dos 2.000 do Discord com facilidade, e cortar o texto
+  // justamente na tela de conferência derrotaria o propósito dela.
+  const partes = rascunho.trechos.map((t, i) => `**— Trecho ${i + 1} (${t.length} caracteres) —**\n${t}`);
+  await interaction.reply({ content: partes[0].slice(0, 1990), ephemeral: true });
+  for (const p of partes.slice(1)) await interaction.followUp({ content: p.slice(0, 1990), ephemeral: true }).catch(() => {});
+  return null;
+}
+
+async function desfazerTrecho(interaction, tipoChave, numeroProcesso) {
+  const cfg = TIPOS[tipoChave];
+  const rascunho = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
+  if (!rascunho.trechos.length) return interaction.reply({ content: 'Não há trecho a apagar.', ephemeral: true });
+
+  const removido = rascunho.trechos.pop();
+  salvarRascunho(interaction.user.id, tipoChave, numeroProcesso, rascunho);
+  const painel = painelRascunho(tipoChave, numeroProcesso, rascunho, cfg);
+  return interaction.reply({
+    content: `↩️ Último trecho apagado (${removido.length} caracteres).`,
+    ...painel, ephemeral: true,
+  });
 }
 
 function podeEmitir(interaction, cfg, processo) {
@@ -131,7 +254,14 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
     return interaction.reply({ content: 'Você não ocupa o papel de emissor deste ato.', ephemeral: true });
   }
 
-  const texto = interaction.fields.getTextInputValue('tese');
+  // O teor vem do RASCUNHO acumulado, não de um campo de modal: a peça pode ter sido escrita em até
+  // MAX_TRECHOS partes, e é aqui que elas viram um documento só.
+  const rascunho = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
+  const texto = textoDoRascunho(rascunho);
+  if (!texto.trim()) {
+    return interaction.reply({ content: 'Não há texto para enviar — o rascunho pode ter expirado (20 min). Comece de novo.', ephemeral: true });
+  }
+
   const destinatarios = resolverDestinatarios(cfg, processo);
   if (!destinatarios.length) {
     return interaction.reply({
@@ -188,6 +318,10 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
     executorId: interaction.user.id,
     metadata: { peca: peca.numero, tipo: tipoChave, modo: peca.modoEntrega },
   }).catch(() => {});
+
+  // Rascunho consumido: a peça existe, e deixar o texto em memória permitiria reenviar o mesmo
+  // conteúdo como uma segunda peça por engano.
+  rascunhos.delete(chaveRascunho(interaction.user.id, tipoChave, numeroProcesso));
 
   const aviso = !paginas
     ? '\n⚠️ O documento foi criado, mas o PNG não pôde ser renderizado agora. O texto está salvo — peça à staff para reemitir a imagem.'
@@ -370,13 +504,17 @@ async function router(interaction) {
   const partes = interaction.customId.split(':');
   const acao = partes[1];
 
-  if (interaction.isModalSubmit() && acao === 'criar') {
-    return criarPeca(interaction, partes[2], partes.slice(3).join(':'));
+  if (interaction.isModalSubmit() && acao === 'trecho') {
+    return receberTrecho(interaction, partes[2], partes.slice(3).join(':'));
   }
   if (!interaction.isButton()) return;
 
   switch (acao) {
     case 'emitir': return abrirEmissao(interaction, partes[2], partes.slice(3).join(':'));
+    case 'add': return abrirModalTrecho(interaction, partes[2], partes.slice(3).join(':'));
+    case 'ver': return verRascunho(interaction, partes[2], partes.slice(3).join(':'));
+    case 'undo': return desfazerTrecho(interaction, partes[2], partes.slice(3).join(':'));
+    case 'enviar': return criarPeca(interaction, partes[2], partes.slice(3).join(':'));
     case 'entregar': return entregarAgora(interaction, partes.slice(2).join(':'));
     case 'encerrar': return encerrarEntrega(interaction, partes.slice(2).join(':'));
     case 'receber':
@@ -387,4 +525,8 @@ async function router(interaction) {
   }
 }
 
-module.exports = { router, TIPOS, tipoAtivo, abrirEmissao, criarPeca, entregarAgora, encerrarEntrega };
+module.exports = {
+  router, TIPOS, tipoAtivo, abrirEmissao, criarPeca, entregarAgora, encerrarEntrega,
+  receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho,
+  estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA,
+};

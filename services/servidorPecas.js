@@ -34,9 +34,39 @@ function dirCache() {
   return path.join(base, 'cache-pecas');
 }
 
-// Nome de arquivo derivado do token, sem o token em claro: quem tiver acesso ao disco não colhe uma
-// lista de links válidos de uma vez.
-const nomeCache = (token) => require('crypto').createHash('sha256').update(token).digest('hex') + '.png';
+// VERSÃO DO TEMPLATE — derivada do próprio arquivo que desenha a página, não de uma constante que
+// alguém precisa lembrar de incrementar. Mudou o leiaute, mudou o hash, muda a chave do cache.
+//
+// Sem isto, um deploy que mexesse no leiaute deixaria o cache servindo a imagem antiga: a MESMA peça
+// teria duas aparências conforme tivesse sido acessada antes ou depois — e o documento impresso no
+// jogo divergiria do que o sistema mostra.
+//
+// Falso positivo (mudar um comentário invalida o cache) custa uma regeração e nada mais. Falso
+// negativo custaria documento divergente. A assimetria manda ser conservador.
+const VERSAO_TEMPLATE = require('crypto')
+  .createHash('sha256')
+  .update(fs.readFileSync(path.join(__dirname, 'gerarPecaPNG.js')))
+  .digest('hex')
+  .slice(0, 8);
+
+// Nome do arquivo: versão + hash do token. O token não entra em claro — quem tiver acesso ao disco
+// não colhe uma lista de links válidos de uma vez.
+const nomeCache = (token) => `${VERSAO_TEMPLATE}-${require('crypto').createHash('sha256').update(token).digest('hex')}.png`;
+
+// Cache de versão anterior é lixo: nunca mais será lido, porque a chave mudou. Limpar no boot evita
+// o volume encher de PNG de leiautes velhos.
+function limparCacheAntigo() {
+  const dir = dirCache();
+  let apagados = 0;
+  try {
+    for (const arquivo of fs.readdirSync(dir)) {
+      if (arquivo.startsWith(`${VERSAO_TEMPLATE}-`)) continue;
+      try { fs.unlinkSync(path.join(dir, arquivo)); apagados++; } catch { /* segue */ }
+    }
+  } catch { return 0; } // diretório ainda não existe: nada a limpar
+  if (apagados) console.log(`[pecas-http] cache: ${apagados} arquivo(s) de leiaute anterior removido(s). Versão atual: ${VERSAO_TEMPLATE}.`);
+  return apagados;
+}
 
 function lerCache(token) {
   try { return fs.readFileSync(path.join(dirCache(), nomeCache(token))); } catch { return null; }
@@ -145,6 +175,7 @@ function urlPublica(token) {
 let servidor = null;
 function iniciar() {
   if (servidor) return servidor;
+  limparCacheAntigo();
   const porta = Number(process.env.PORT) || 3000;
   servidor = http.createServer((req, res) => {
     tratar(req, res).catch(() => naoEncontrado(res));
@@ -157,4 +188,4 @@ function iniciar() {
   return servidor;
 }
 
-module.exports = { iniciar, urlPublica, tratar, dirCache };
+module.exports = { iniciar, urlPublica, tratar, dirCache, nomeCache, limparCacheAntigo, VERSAO_TEMPLATE };

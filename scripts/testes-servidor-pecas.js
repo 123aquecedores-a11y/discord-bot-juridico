@@ -131,6 +131,36 @@ const chamar = async (url, metodo = 'GET') => { const res = fakeRes(); await ser
     ok(/<token>/.test(fonte), '4e: ...e o log de boot mostra o formato do endereço, como placeholder');
   }
 
+  console.log('\n5) Cache versionado pelo leiaute');
+  // Sem isto, um deploy que mudasse o leiaute deixaria o cache servindo a imagem antiga: a MESMA
+  // peça teria duas aparências conforme tivesse sido acessada antes ou depois, e o documento
+  // impresso no jogo divergiria do que o sistema mostra.
+  {
+    ok(/^[0-9a-f]{8}$/.test(servidor.VERSAO_TEMPLATE), '5a: há uma versão de template', servidor.VERSAO_TEMPLATE);
+
+    const nome = servidor.nomeCache('token-qualquer');
+    ok(nome.startsWith(servidor.VERSAO_TEMPLATE + '-'), '5b: a versão entra na chave do cache', nome);
+    ok(!nome.includes('token-qualquer'), '5c: e o token não entra em claro');
+
+    // A versão vem do ARQUIVO que desenha a página, não de uma constante que alguém precisa lembrar
+    // de incrementar — mudou o leiaute, mudou o hash.
+    const fonte = fs.readFileSync(path.join(__dirname, '..', 'services', 'servidorPecas.js'), 'utf-8');
+    ok(/readFileSync\(path\.join\(__dirname, 'gerarPecaPNG\.js'\)\)/.test(fonte),
+      '5d: derivada do próprio gerarPecaPNG.js, sem constante para manter à mão');
+
+    // Cache de versão anterior é lixo: nunca mais será lido, porque a chave mudou.
+    const dir = servidor.dirCache();
+    fs.mkdirSync(dir, { recursive: true });
+    const velho = path.join(dir, 'aaaaaaaa-antigo.png');
+    const atual = path.join(dir, servidor.nomeCache('tk-atual'));
+    fs.writeFileSync(velho, 'x');
+    fs.writeFileSync(atual, 'y');
+    const apagados = servidor.limparCacheAntigo();
+    ok(apagados >= 1 && !fs.existsSync(velho), '5e: o boot limpa o cache de leiaute anterior');
+    ok(fs.existsSync(atual), '5f: ...e preserva o da versão atual');
+    try { fs.unlinkSync(atual); fs.rmdirSync(dir); } catch (_) {}
+  }
+
   try { fs.unlinkSync(DB_TESTE); } catch (_) {}
   try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
