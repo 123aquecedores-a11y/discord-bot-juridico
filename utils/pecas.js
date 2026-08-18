@@ -168,6 +168,10 @@ function gerar({ processoTabela, processoNumero, tipo, autorId, autorPapel, text
     modoEntrega: modo,
     gated,
     digitos: gated ? novosDigitos() : null,
+    // RESERVA: código de arquivo físico, até 12 caracteres. Nasce vazio e NÃO há nenhuma lógica de
+    // atribuição — o arquivo in-game só será desenhado depois que a Faixa 1 rodar. O campo existe
+    // agora para que acrescentá-lo depois não exija migrar registro nem mexer no rodapé do PNG.
+    codigoArquivo: null,
     criadoEm: new Date(agora).toISOString(),
     janela: null,
     destinatarios: destinatarios.map(d => novoDestinatario(d, { gated, agora })),

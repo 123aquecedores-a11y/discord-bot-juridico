@@ -78,6 +78,13 @@ const CSS = `
   .selo .digitos .rotulo { font-size: 9px; color: #555; }
   .selo .digitos .valor { font-size: 22px; font-weight: bold; border: 1px solid #1a1a1a; padding: 0 7px; line-height: 1.25; }
   .selo .aviso { font-size: 9px; color: #333; margin-top: 5px; line-height: 1.3; }
+  /* RESERVA — código de arquivo físico, até 12 caracteres. Fica em branco de propósito: o arquivo
+     in-game só será desenhado depois que a Faixa 1 rodar, e não há nenhuma lógica de atribuição
+     aqui. O espaço existe agora para que acrescentá-lo depois não mude a diagramação nem obrigue a
+     revalidar a leitura do QR de novo. */
+  .selo .arquivo { flex: none; width: 108px; border-left: 1px solid #1a1a1a; padding-left: 10px; font-family: 'Courier New', Courier, monospace; }
+  .selo .arquivo .rotulo { font-size: 8px; color: #555; letter-spacing: 0.5px; }
+  .selo .arquivo .caixa { font-size: 13px; font-weight: bold; letter-spacing: 1px; border-bottom: 1px solid #1a1a1a; min-height: 18px; margin-top: 3px; }
   .rodape { display: flex; justify-content: space-between; font-size: 10px; color: #555; border-top: 1px solid #ccc; padding: 5px 0 8px; }
 `;
 
@@ -181,6 +188,10 @@ async function montarHtml(dados) {
           ${digitos.map((d, i) => `<div class="d"><div class="rotulo">${rotulos[i]}</div><div class="valor">${escapeHtml(d)}</div></div>`).join('')}
         </div>
         <div class="aviso">Documento entregue em ato presencial. Receber sem o encontro, ou repassar este documento fora dos autos, é sujeito a sanção administrativa.</div>
+      </div>
+      <div class="arquivo">
+        <div class="rotulo">ARQUIVO FÍSICO</div>
+        <div class="caixa">${escapeHtml(String(dados.codigoArquivo || '').slice(0, 12))}</div>
       </div>
     </div>`;
 

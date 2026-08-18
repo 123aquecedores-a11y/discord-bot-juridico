@@ -75,6 +75,14 @@ const dadosPeca = (texto) => ({
     ok((html.match(/class="valor"/g) || []).length === 6, '2d: os 6 dígitos do selo estão presentes');
     ok(/sanção administrativa/i.test(html), '2e: aviso de sanção na tela (o mecanismo é anunciado, SPEC §3.10)');
     ok(/monospace|Courier/.test(html), '2f: selo em fonte monoespaçada');
+
+    // Reserva do código de arquivo físico: espaço existe, nasce VAZIO, sem lógica de atribuição.
+    ok(/ARQUIVO FÍSICO/.test(html), '2g: o rodapé reserva espaço para o código de arquivo físico');
+    ok(/<div class="caixa"><\/div>/.test(html), '2h: ...e ele nasce em branco');
+
+    const comCodigo = await montarHtml({ ...dadosPeca(PARAGRAFO), codigoArquivo: 'AB-2026-0001X-EXCEDENTE' });
+    const caixa = comCodigo.match(/<div class="caixa">([^<]*)<\/div>/);
+    ok(caixa && caixa[1].length === 12, '2i: quando preenchido, corta em 12 caracteres', `veio "${caixa && caixa[1]}"`);
   }
 
   // -------------------------------------------------------------------------

@@ -8,14 +8,44 @@
 // nesse bot, mas é outra coisa — gera o TEXTO formal de peças (sentença, mandado, ofício), não
 // registra anexo enviado por alguém. Evita confundir os dois.
 const db = require('../database/db');
+const config = require('../config');
 
 // id de cada documento vem do autoincremento global do banco (db.inserir já garante único
 // entre todas as tabelas) — não precisa de um gerador de id à parte.
-function criarDocumento({ tipo, url, nomeArquivo, autorId, atoOrigemId = null, protocoloVinculado }) {
+//
+// `canalId` + `mensagemId` são o que faz o documento sobreviver. A `url` do CDN do Discord é um
+// link ASSINADO que expira em 24h: medido em produção em 18/08/2026, 29 dos 34 anexos gravados já
+// retornavam HTTP 404, incluindo 11 provas em processos aguardando defesa. Ela fica gravada só
+// como atalho de curta duração; o que os autos exibem é `linkMensagem()`.
+function criarDocumento({ tipo, url, canalId = null, mensagemId = null, nomeArquivo, autorId, atoOrigemId = null, protocoloVinculado }) {
   return db.inserir('documentosAnexados', {
-    tipo, url, nomeArquivo, autorId, atoOrigemId, protocoloVinculado,
+    tipo, url, canalId, mensagemId, nomeArquivo, autorId, atoOrigemId, protocoloVinculado,
     dataEnvio: new Date().toISOString(),
   });
+}
+
+// LINK QUE NÃO EXPIRA. Aponta para a MENSAGEM, não para o anexo: o Discord serve
+// `/channels/<guild>/<canal>/<mensagem>` permanentemente, e o anexo está vivo lá dentro.
+//
+// Preferido a resolver o anexo via API na leitura, que também funcionaria mas custaria uma chamada
+// por documento — um dossiê com onze provas viraria onze buscas. Aqui é zero chamada, zero cache.
+// A permissão passa a ser a do próprio canal do Discord: quem não pode ver o canal já não deveria
+// ver o documento.
+//
+// Documento antigo, gravado antes desta correção, não tem o par — devolve null, e quem exibe cai
+// no rótulo sem link em vez de mostrar uma URL que dá 404.
+function linkMensagem(documento) {
+  if (!documento || !documento.canalId || !documento.mensagemId) return null;
+  return `https://discord.com/channels/${config.guildId}/${documento.canalId}/${documento.mensagemId}`;
+}
+
+// Como o documento deve aparecer nos autos: link para a mensagem quando dá, rótulo puro quando o
+// registro é antigo. Nunca devolve a `url` do CDN — ela é o problema que esta função existe para
+// evitar.
+function rotuloComLink(documento, texto = null) {
+  const nome = texto || documento.nomeArquivo || 'documento';
+  const link = linkMensagem(documento);
+  return link ? `[${nome}](${link})` : `${nome} _(link indisponível — anexo anterior à correção)_`;
 }
 
 // Todo documento (indícios, cumprimentos, petição inicial, contestação...) cujo
@@ -32,4 +62,4 @@ function atualizarProtocolo(documentoId, novoProtocolo) {
   return db.atualizarPorFiltro('documentosAnexados', d => d.id === documentoId, { protocoloVinculado: novoProtocolo });
 }
 
-module.exports = { criarDocumento, listarPorProtocolo, atualizarProtocolo };
+module.exports = { criarDocumento, listarPorProtocolo, atualizarProtocolo, linkMensagem, rotuloComLink };

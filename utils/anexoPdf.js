@@ -64,7 +64,12 @@ async function aguardarAnexoPDF(interaction, { timeoutMs = 10 * 60 * 1000 } = {}
 
   await relockar();
   return {
+    // A URL do CDN é link ASSINADO e expira em 24h — fica aqui só como atalho de curta duração.
+    // O que dura é o par canal+mensagem: link de mensagem do Discord não expira, e é a partir dele
+    // que os autos apontam para o documento. Ver utils/anexos.js -> linkMensagem.
     url: anexo.url,
+    canalId: msg.channelId,
+    mensagemId: msg.id,
     nomeArquivo: anexo.name,
     autorId: msg.author.id,
     dataEnvio: new Date(),
@@ -102,7 +107,12 @@ async function aguardarAnexos(interaction, { timeoutMs = 90 * 1000, idleMs = 25 
   await new Promise((resolve) => {
     collector.on('collect', (msg) => {
       for (const anexo of msg.attachments.values()) {
-        arquivos.push({ url: anexo.url, nomeArquivo: anexo.name || 'arquivo' });
+        // canalId/mensagemId junto com a url: a url expira em 24h, o par não. Ver comentário em
+        // aguardarAnexoPDF.
+        arquivos.push({
+          url: anexo.url, canalId: msg.channelId, mensagemId: msg.id,
+          nomeArquivo: anexo.name || 'arquivo',
+        });
       }
     });
     collector.on('end', () => resolve());
@@ -126,7 +136,8 @@ async function coletarAnexoPdf(interaction, { numero, tipo, protocolo }) {
   const anexo = await aguardarAnexoPDF(interaction);
   if (!anexo) return null;
   const documento = anexos.criarDocumento({
-    tipo, url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
+    tipo, url: anexo.url, canalId: anexo.canalId, mensagemId: anexo.mensagemId,
+    nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
     atoOrigemId: numero, protocoloVinculado: protocolo,
   });
   return { anexo, documento };

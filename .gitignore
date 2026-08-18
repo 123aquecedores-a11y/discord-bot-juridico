@@ -14,3 +14,4 @@ fase2.js
 
 # Saída do comando de teste do selo (scripts/conferir-selo.js --gerar)
 teste-selo/
+recuperacao-anexos.json
