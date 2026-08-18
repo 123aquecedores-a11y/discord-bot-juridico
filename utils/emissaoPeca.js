@@ -1,9 +1,10 @@
-// EMISSÃO DE PEÇAS — a camada de UI da entrega in-game (SPEC §5.1, §6.1 e §6.2).
+// EMISSÃO E RECEBIMENTO DE PEÇAS — a camada de UI da entrega in-game (SPEC §5.1, §6.1, §6.2, §6.4).
 //
-// Só o lado da EMISSÃO: gerar a peça, renderizar o PNG com selo e abrir a janela de entrega. O
-// recebimento (botão `Receber`, upload da captura, decodificação, lavratura) não está aqui de
-// propósito — ele depende de o QR sobreviver ao caminho real dentro do jogo, e construir botão
-// sobre premissa não verificada é o que se evita.
+// Emissão: gerar a peça, renderizar o PNG com selo e abrir a janela de entrega. Recebimento: o
+// botão `Receber` pede a captura de tela no canal, decodifica o QR (utils/lerSelo, puro-JS, sem
+// Chromium) e chama pecas.receber() — ATIVADO em 18/08/2026 para o primeiro teste real in-game do
+// selo (0008CV). Até então o botão era postado desabilitado de propósito (não se constrói handler
+// sobre premissa não verificada); ver histórico do commit 73f9f89 para o racional original.
 //
 // A regra de negócio mora em utils/pecas.js, que não conhece discord.js. Aqui só há tradução:
 // interação -> chamada -> resposta.
@@ -16,6 +17,7 @@ const { gerarPecaPNG } = require('../services/gerarPecaPNG');
 const { RascunhoTTL } = require('./rascunhoTtl');
 const { nomeExibicao } = require('../services/gerarDocumentoPNG');
 const servidorPecas = require('../services/servidorPecas');
+const lerSelo = require('./lerSelo');
 
 // CATÁLOGO DE TIPOS DE ATO, com a ativação por tipo que a SPEC §11 pede — a flag existe para
 // reduzir raio de dano, não escopo. A arquitetura é universal desde já; o que a faixa controla é
@@ -469,7 +471,8 @@ async function postarNoCanal(interaction, peca, processo, cfg) {
   if (peca.gated) {
     linha.addComponents(
       new ButtonBuilder().setCustomId(`peca:entregar:${peca.numero}`).setLabel('Entregar agora').setEmoji('📤').setStyle(ButtonStyle.Primary),
-      // Inativo de propósito: o recebimento só entra depois do teste in-game do selo.
+      // Inativo de propósito NESTA mensagem: a janela de entrega ainda nem foi aberta, então não há
+      // o que receber ainda. Fica ativo só na mensagem de "Entrega aberta" (entregarAgora, abaixo).
       new ButtonBuilder().setCustomId(`peca:receber:${peca.numero}`).setLabel('Receber').setEmoji('📥').setStyle(ButtonStyle.Secondary).setDisabled(true),
     );
   }
@@ -493,7 +496,9 @@ async function entregarAgora(interaction, numeroPeca) {
   if (canal) {
     const linha = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`peca:encerrar:${numeroPeca}`).setLabel('Encerrar entrega').setEmoji('🔒').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`peca:receber:${numeroPeca}`).setLabel('Receber').setEmoji('📥').setStyle(ButtonStyle.Success).setDisabled(true),
+      // ATIVO aqui: é exatamente nesta janela que o destinatário deve clicar, depois do encontro em
+      // cena. abrirRecebimento() (abaixo) que pede a captura, decodifica e chama pecas.receber().
+      new ButtonBuilder().setCustomId(`peca:receber:${numeroPeca}`).setLabel('Receber').setEmoji('📥').setStyle(ButtonStyle.Success),
     );
     await canal.send({
       content: `📤 **Entrega aberta — ${numeroPeca}**\n`
@@ -527,6 +532,108 @@ async function encerrarEntrega(interaction, numeroPeca) {
 }
 
 // ---------------------------------------------------------------------------
+// Passo 4 — recebimento (upload da captura, decodificação do selo, lavratura)
+// ---------------------------------------------------------------------------
+// Um coletor por (peça, destinatário) — clique duplo no botão não abre um segundo coletor
+// concorrente escutando a mesma captura, só lembra que já está esperando.
+const coletoresRecebimento = new Map();
+const chaveColetor = (numeroPeca, userId) => `${numeroPeca}:${userId}`;
+
+async function abrirRecebimento(interaction, numeroPeca) {
+  const meta = pecas.metadados(numeroPeca);
+  if (!meta) return interaction.reply({ content: 'Peça não encontrada.', ephemeral: true });
+  if (!meta.gated) return interaction.reply({ content: 'Esta peça não exige recebimento — o teor já está visível desde a criação.', ephemeral: true });
+
+  const processo = db.buscarPorNumero(meta.processoTabela, meta.processoNumero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+
+  // Checagens de LEITURA, sem chamar pecas.receber() ainda: chamar com tokenLido=null contaria como
+  // uma tentativa ilegível de verdade (SPEC §6.4) e incrementaria o contador — aqui ainda não houve
+  // captura nenhuma, só o clique no botão.
+  const idx = meta.destinatarios.findIndex(d => pecas.ocupaDestinatario(meta.processoTabela, processo, d, interaction.user.id));
+  if (idx === -1) return interaction.reply({ content: '❌ Você não ocupa o papel de destinatário desta peça.', ephemeral: true });
+  const dest = meta.destinatarios[idx];
+  if (dest.recebidoEm) return interaction.reply({ content: '✅ Esta peça já foi recebida.', ephemeral: true });
+  if (dest.travado) return interaction.reply({ content: '🔒 O selo está travado por tentativas anteriores — só desembargador ou staff destrava.', ephemeral: true });
+  if (!pecas.janelaAberta({ janela: meta.janela })) return interaction.reply({ content: '⏰ Não há janela de entrega aberta neste momento.', ephemeral: true });
+
+  const chave = chaveColetor(numeroPeca, interaction.user.id);
+  if (coletoresRecebimento.has(chave)) {
+    return interaction.reply({ content: '📸 Já estou esperando sua captura — cole a imagem aqui no canal.', ephemeral: true });
+  }
+
+  const expira = Math.floor(new Date(meta.janela.expiraEm).getTime() / 1000);
+  await interaction.reply({
+    content: '📸 Cole aqui no canal a captura de tela **inteira**, tirada agora direto do jogo — sem cortar, sem editar, '
+      + 'sem salvar-e-reenviar depois. Precisa mostrar o documento com o selo visível.\n'
+      + `Você tem até <t:${expira}:t> (<t:${expira}:R>).`,
+    ephemeral: true,
+  });
+
+  const coletor = interaction.channel.createMessageCollector({
+    filter: (m) => m.author.id === interaction.user.id && m.attachments.size > 0,
+    time: Math.max(new Date(meta.janela.expiraEm).getTime() - Date.now(), 0),
+  });
+  coletoresRecebimento.set(chave, coletor);
+  coletor.on('end', () => coletoresRecebimento.delete(chave));
+
+  coletor.on('collect', async (msg) => {
+    const anexo = msg.attachments.find(a => (a.contentType || '').startsWith('image/')) || msg.attachments.first();
+    let r; let lido;
+    try {
+      const resp = await fetch(anexo.url);
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      lido = lerSelo.lerToken(buffer);
+      r = pecas.receber(numeroPeca, interaction.user.id, {
+        tokenLido: lido.ok ? lido.token : null,
+        capturaUrl: anexo.url,
+        capturaMensagemId: msg.id,
+      });
+    } catch (e) {
+      await msg.reply({ content: `⚠️ Não consegui processar essa imagem (${e.message}). Tente enviar de novo.` }).catch(() => {});
+      return;
+    }
+
+    if (r.ok) {
+      coletor.stop('recebido');
+      await msg.reply({ content: `✅ **Recebido.** Selo conferido — a entrega de **${numeroPeca}** está lavrada nos autos.` }).catch(() => {});
+      await andamentos.registrar(interaction.guild, meta.processoNumero, {
+        tipo: 'peca_recebida',
+        titulo: '📥 Documento recebido em cena',
+        detalhe: `${numeroPeca}: entrega pessoal confirmada pelo selo, recebida por <@${interaction.user.id}>.`,
+        executorId: interaction.user.id,
+        metadata: { peca: numeroPeca },
+      }).catch(err => console.error(`[pecas] falha ao lavrar recebimento de ${numeroPeca}:`, err.message));
+      return;
+    }
+
+    // Ilegível é falha TÉCNICA (imagem ruim) — não conta para a trava, o destinatário tenta de novo.
+    // lerSelo.mensagemDeFalha dá o motivo específico (formato/corrompida/sem_qr); pecas.js só sabe
+    // dizer "ilegível" de forma genérica.
+    if (r.motivo === 'ilegivel') {
+      const razao = lido && !lido.ok ? lerSelo.mensagemDeFalha(lido.motivo) : r.razao;
+      const aviso = r.avisarStaff ? '\n⚠️ Já são várias capturas ilegíveis seguidas — avise a staff se o problema persistir.' : '';
+      await msg.reply({ content: `❌ ${razao}${aviso}` }).catch(() => {});
+      return;
+    }
+
+    // Trava atingida agora mesmo (r.travou) OU já estava travado/já recebido/papel errado por uma
+    // condição de corrida — nos dois casos não adianta insistir, encerra o coletor.
+    if (r.travou || r.motivo === 'travado' || r.motivo === 'ja_recebido' || r.motivo === 'papel') {
+      coletor.stop(r.motivo || 'travado');
+      const sufixo = r.travou
+        ? ` — depois de ${pecas.MAX_RECUSAS_TOKEN} tentativas, o selo travou. Só desembargador ou staff destrava.`
+        : '';
+      await msg.reply({ content: `🔒 ${r.razao}${sufixo}` }).catch(() => {});
+      return;
+    }
+
+    // token_invalido / token_usado / janela: recusa que CONTA para a trava, mas ainda não travou.
+    await msg.reply({ content: `❌ ${r.razao} (tentativa ${r.recusasToken}/${pecas.MAX_RECUSAS_TOKEN} antes de travar).` }).catch(() => {});
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Router — prefixo `peca:`, no mesmo padrão do `edital:` (ver index.js)
 // ---------------------------------------------------------------------------
 async function router(interaction) {
@@ -546,10 +653,7 @@ async function router(interaction) {
     case 'enviar': return criarPeca(interaction, partes[2], partes.slice(3).join(':'));
     case 'entregar': return entregarAgora(interaction, partes.slice(2).join(':'));
     case 'encerrar': return encerrarEntrega(interaction, partes.slice(2).join(':'));
-    case 'receber':
-      // O botão existe desabilitado para anunciar o mecanismo; se algum caminho o disparar mesmo
-      // assim, responde em vez de falhar calado. O recebimento entra depois do teste in-game.
-      return interaction.reply({ content: '📥 O recebimento ainda não está ativado neste servidor.', ephemeral: true });
+    case 'receber': return abrirRecebimento(interaction, partes.slice(2).join(':'));
     default: return;
   }
 }
@@ -609,7 +713,7 @@ async function verificarValvulaEEncerramento(client, guild) {
 
 module.exports = {
   router, TIPOS, tipoAtivo, abrirEmissao, criarPeca, entregarAgora, encerrarEntrega,
-  receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho,
+  receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho, abrirRecebimento,
   estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA, TTL_RASCUNHO_MS,
   verificarValvulaEEncerramento,
 };

@@ -1,10 +1,12 @@
 /* eslint-disable */
-// Testes do lado da EMISSÃO da Faixa 1 (utils/emissaoPeca.js). Rode com:
+// Testes da Faixa 1 (utils/emissaoPeca.js) — emissão E recebimento. Rode com:
 //   node scripts/testes-emissao-peca.js
 //
-// O recebimento não está construído de propósito — ele depende de o QR sobreviver ao caminho real
-// dentro do jogo, e botão sobre premissa não verificada é o que se evita. Há teste garantindo que
-// ele continue desligado, para ninguém ligar por engano antes do teste in-game passar.
+// O recebimento (item 7/8) foi ativado em 18/08/2026 para o primeiro teste real in-game do selo
+// (0008CV): antes disso o botão "Receber" era postado desabilitado de propósito, porque não fazia
+// sentido construir o handler sobre uma premissa (o QR sobrevive ao caminho real dentro do jogo)
+// ainda não verificada. O teste 7 usa um PNG renderizado de verdade pelo Chromium (mesmo pipeline
+// da emissão real) e decodifica o selo com o leitor de produção (jsQR) — não é um token fabricado.
 
 const os = require('os');
 const path = require('path');
@@ -50,6 +52,47 @@ function fakeInteraction(userId, customId, campos = {}) {
   };
 }
 const textoDe = (o) => (typeof o === 'string' ? o : (o && o.content) || '');
+
+// ---- canal falso com coletor de mensagens, para testar abrirRecebimento sem subir Discord ----
+// O coletor de verdade (discord.js MessageCollector) aplica o filtro e dispara 'collect' sozinho
+// por tempo; aqui quem decide QUANDO simular uma mensagem chegando é o teste, mas o FILTRO usado é
+// o mesmo objeto que o código de produção passou — se o filtro de emissaoPeca.js estiver errado
+// (ex: aceitar mensagem de outro usuário), o teste também erra, honestamente.
+function fakeChannel() {
+  let coletorAtual = null;
+  return {
+    get coletor() { return coletorAtual; },
+    createMessageCollector({ filter }) {
+      const handlers = { collect: [], end: [] };
+      const coletor = {
+        on(evento, cb) { handlers[evento].push(cb); return coletor; },
+        stop(razao) { handlers.end.forEach((h) => h(razao)); },
+        async simular(msg) { if (filter(msg)) { for (const h of handlers.collect) await h(msg); } },
+      };
+      coletorAtual = coletor;
+      return coletor;
+    },
+  };
+}
+function fakeMsg(userId, url) {
+  const rec = { replies: [] };
+  return {
+    rec,
+    author: { id: userId },
+    id: `msg_${Math.random().toString(36).slice(2)}`,
+    attachments: { size: 1, find: (fn) => [{ url, contentType: 'image/png' }].find(fn), first: () => ({ url, contentType: 'image/png' }) },
+    reply: async (o) => { rec.replies.push(o); },
+  };
+}
+// fetch falso — resolve pela URL registrada em buffersPorUrl, igual ao servidorPecas real faria
+// com um Discord CDN de verdade, só que sem rede.
+const buffersPorUrl = new Map();
+const fetchOriginal = global.fetch;
+global.fetch = async (url) => {
+  const buf = buffersPorUrl.get(url);
+  if (!buf) throw new Error(`fetch falso: url não registrada em buffersPorUrl (${url})`);
+  return { arrayBuffer: async () => buf };
+};
 
 let seq = 0;
 // `modo: null` cria o registro SEM o campo — é assim que um processo anterior à feature se
@@ -210,22 +253,117 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     ok(!pecas.janelaAberta(db.buscarPorNumero('pecas', numero)), '6f: o emissor encerra a janela manualmente');
   }
 
-  console.log('\n7) O recebimento continua DESLIGADO até o teste in-game');
+  console.log('\n7) Recebimento — ATIVADO em 18/08/2026 (primeiro teste real in-game, 0008CV)');
+  let bufferRealItem7;
   {
-    const i = fakeInteraction(ADV, 'peca:receber:0101PN-P1');
-    await emissao.router(i);
-    ok(/ainda não está ativado/i.test(textoDe(i.rec.replies[0])), '7a: o botão Receber responde que não está ativado');
-
     const fonte = fs.readFileSync(path.join(__dirname, '..', 'utils', 'emissaoPeca.js'), 'utf-8');
-    ok(!/lerSelo|lerToken/.test(fonte), '7b: a emissão não importa o leitor de selo');
-    ok(!/pecas\.receber\s*\(/.test(fonte), '7c: e não chama pecas.receber em lugar nenhum');
-    ok(/setDisabled\(true\)/.test(fonte), '7d: o botão Receber é postado desabilitado (SPEC §6.1)');
+    ok(/lerSelo/.test(fonte), '7a: a emissão agora importa o leitor de selo');
+    ok(/pecas\.receber\s*\(/.test(fonte), '7b: ...e chama pecas.receber de verdade (não é mais stub)');
+
+    const proc = novoProcesso('ingame');
+    await emissao.receberTrecho(fakeInteraction(JUIZ, 'modal', { tese: 'Texto de teste do recebimento.' }), 'intimacao_juiz', proc.numero);
+    const iEmitir = fakeInteraction(JUIZ, 'peca:enviar');
+    await emissao.criarPeca(iEmitir, 'intimacao_juiz', proc.numero);
+
+    const peca = db.todos('pecas', x => x.processoNumero === proc.numero)[0];
+    const dm = iEmitir.rec.sends.find(s => textoDe(s).includes(peca.numero));
+    bufferRealItem7 = dm.files[0].attachment;
+    ok(Buffer.isBuffer(bufferRealItem7) && bufferRealItem7.length > 0, '7c: o PNG real (com selo) chegou por DM ao emissor — é ele que é "printado" no jogo');
+
+    // Quem não é o destinatário (intimação do juiz vai para Advogado habilitado) é recusado na hora.
+    const iEstranho = fakeInteraction(ESTRANHO, `peca:receber:${peca.numero}`);
+    await emissao.router(iEstranho);
+    ok(/não ocupa o papel/i.test(textoDe(iEstranho.rec.replies[0])), '7d: quem não é o destinatário é recusado sem nem abrir o coletor');
+
+    // Ninguém clicou "Entregar agora" ainda — não há janela.
+    const iSemJanela = fakeInteraction(ADV, `peca:receber:${peca.numero}`);
+    await emissao.router(iSemJanela);
+    ok(/n[ãa]o h[áa] janela/i.test(textoDe(iSemJanela.rec.replies[0])), '7e: sem janela de entrega aberta, Receber é recusado');
+
+    // Abre a janela de verdade — é aqui que o botão Receber tem que passar a reagir.
+    const iEntregar = fakeInteraction(JUIZ, 'peca:entregar');
+    await emissao.entregarAgora(iEntregar, peca.numero);
+    const msgEntregaAberta = iEntregar.rec.sends.find(s => /Entrega aberta/.test(textoDe(s)));
+    const botaoReceber = msgEntregaAberta.components[0].components
+      .map(c => c.toJSON())
+      .find(c => c.custom_id === `peca:receber:${peca.numero}`);
+    ok(botaoReceber.disabled !== true, '7f: o botão Receber da mensagem "Entrega aberta" NÃO nasce mais desabilitado — era exatamente o bug relatado no processo 0008CV');
+
+    const iReceber = fakeInteraction(ADV, `peca:receber:${peca.numero}`);
+    const canal = fakeChannel();
+    iReceber.channel = canal;
+    await emissao.router(iReceber);
+    ok(/cole aqui/i.test(textoDe(iReceber.rec.replies[0])), '7g: clique válido pede a captura, ephemeral');
+    ok(!!canal.coletor, '7h: um coletor de mensagens foi armado no canal, esperando o anexo do destinatário');
+
+    // Primeiro uma imagem sem QR nenhum — falha TÉCNICA, não pode contar como tentativa indevida.
+    buffersPorUrl.set('fake://ilegivel.png', Buffer.from('nao é png nem jpeg'));
+    const msgIlegivel = fakeMsg(ADV, 'fake://ilegivel.png');
+    await canal.coletor.simular(msgIlegivel);
+    const respIlegivel = textoDe(msgIlegivel.rec.replies[0]);
+    ok(/❌/.test(respIlegivel) && !/tentativa \d/.test(respIlegivel),
+      '7i: captura ilegível é recusada SEM contar para a trava (motivo técnico, SPEC §6.4) — e o coletor continua de pé');
+
+    // Agora a captura de verdade: o MESMO PNG que o emissor recebeu por DM, decodificado pelo jsQR.
+    buffersPorUrl.set('fake://real.png', bufferRealItem7);
+    const msgReal = fakeMsg(ADV, 'fake://real.png');
+    await canal.coletor.simular(msgReal);
+    ok(/Recebido/.test(textoDe(msgReal.rec.replies[0])), '7j: captura real decodifica o selo (jsQR) e confirma o recebimento de ponta a ponta');
+
+    const pecaAtualizada = db.buscarPorNumero('pecas', peca.numero);
+    const dest = pecaAtualizada.destinatarios[0];
+    ok(!!dest.recebidoEm && dest.recebidoPorId === ADV, '7k: fica lavrado quem recebeu e quando');
+    ok(pecas.podeVerTeor(ADV, peca.numero) === true, '7l: o destinatário passa a poder ver o teor (SPEC §8)');
+    ok(db.todos('andamentos', a => a.processoNumero === proc.numero && a.tipo === 'peca_recebida').length === 1,
+      '7m: o recebimento é lavrado nos autos como andamento');
+
+    // Idempotência: clicar Receber de novo depois de já recebida é recusado na hora.
+    const iDeNovo = fakeInteraction(ADV, `peca:receber:${peca.numero}`);
+    await emissao.router(iDeNovo);
+    ok(/já foi recebida/i.test(textoDe(iDeNovo.rec.replies[0])), '7n: clicar Receber de novo depois do recebimento é recusado');
   }
 
-  console.log('\n9) Nenhuma URL de anexo é guardada (SPEC §3.7, corrigido em 18/08)');
+  console.log('\n8) Selo de OUTRA peça é recusado e conta para a trava (SPEC §6.4)');
+  {
+    const proc2 = novoProcesso('ingame');
+    await emissao.receberTrecho(fakeInteraction(JUIZ, 'modal', { tese: 'Segunda peça, selo diferente.' }), 'intimacao_juiz', proc2.numero);
+    const iEmitir2 = fakeInteraction(JUIZ, 'peca:enviar');
+    await emissao.criarPeca(iEmitir2, 'intimacao_juiz', proc2.numero);
+    const peca2 = db.todos('pecas', x => x.processoNumero === proc2.numero)[0];
+
+    await emissao.entregarAgora(fakeInteraction(JUIZ, 'peca:entregar'), peca2.numero);
+    const iReceber2 = fakeInteraction(ADV, `peca:receber:${peca2.numero}`);
+    const canal2 = fakeChannel();
+    iReceber2.channel = canal2;
+    await emissao.router(iReceber2);
+
+    // O PNG (e o token) são reais e decodificam certo — só que são da peça do item 7, não desta.
+    buffersPorUrl.set('fake://token-errado.png', bufferRealItem7);
+    const msg1 = fakeMsg(ADV, 'fake://token-errado.png');
+    await canal2.coletor.simular(msg1);
+    ok(/tentativa 1\/3/.test(textoDe(msg1.rec.replies[0])), '8a: selo de outra peça é recusado e já conta 1 tentativa contra a trava');
+
+    await canal2.coletor.simular(fakeMsg(ADV, 'fake://token-errado.png'));
+    const msg3 = fakeMsg(ADV, 'fake://token-errado.png');
+    await canal2.coletor.simular(msg3);
+    ok(/travou/i.test(textoDe(msg3.rec.replies[0])), '8b: na 3ª tentativa errada seguida o selo trava, com a mensagem dizendo isso');
+    ok(db.buscarPorNumero('pecas', peca2.numero).destinatarios[0].travado === true, '8c: ...e fica registrado como travado no banco (só desembargador/staff destrava)');
+  }
+
+  global.fetch = fetchOriginal;
+
+  console.log('\n9) Nenhuma URL de anexo do PRÓPRIO DOCUMENTO é guardada (SPEC §3.7, corrigido em 18/08)');
   // As URLs do CDN do Discord são links assinados e expiram em 24h. Medido em produção: 29 dos 34
   // anexos guardados já retornavam 404, incluindo 11 provas em processos reais. O original da peça
   // é o REGISTRO no banco, e o PNG se regera do texto — determinístico, nada expira.
+  //
+  // Ajustado em 18/08/2026 quando o recebimento (item 7/8) foi ativado: abrirRecebimento() LÊ
+  // `msg.attachments` de propósito — é assim que decodifica a captura que o destinatário colou no
+  // canal. Isso não é a mesma violação: aquela era copiar a URL do PRÓPRIO PNG da peça (o que o bot
+  // gera e manda por DM) como se fosse o "original" dos autos; capturaUrl é metadado de EVIDÊNCIA do
+  // ato de recebimento (SPEC §6.4, campo que pecas.receber() já aceitava antes de hoje), nunca a
+  // fonte de onde o teor é regenerado. Por isso o scanner ignora só o corpo de abrirRecebimento — o
+  // resto do arquivo (emissão, renderização, DM ao emissor) continua sob a mesma proibição de sempre.
   {
     // O que se proíbe é copiar a URL do ANEXO do Discord — ela é o link assinado que expira. A URL
     // do nosso próprio servidor (BASE_URL_PECAS/p/<token>.png) é o oposto disso: não expira, e nem
@@ -233,11 +371,15 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     const fontes = ['utils/emissaoPeca.js', 'utils/pecas.js'];
     const infratores = [];
     for (const f of fontes) {
-      const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf-8')
-        .replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
+      let src = fs.readFileSync(path.join(__dirname, '..', f), 'utf-8');
+      // abrirRecebimento é a ÚNICA função autorizada a tocar `.attachments` — e só para LER a
+      // captura recebida do destinatário, nunca o anexo do PRÓPRIO documento. Corta o corpo dela
+      // (pelo nome da função, que sobrevive à remoção de comentário abaixo) antes de checar o resto.
+      src = src.replace(/async function abrirRecebimento[\s\S]*?\nasync function router/, 'async function router');
+      src = src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
       if (/\.attachments\b/.test(src) || /cdn\.discordapp/.test(src)) infratores.push(f);
     }
-    ok(infratores.length === 0, '9a: nenhuma URL de anexo do Discord é lida ou copiada', infratores.join('; '));
+    ok(infratores.length === 0, '9a: nenhuma URL de anexo do Discord é lida ou copiada fora do recebimento', infratores.join('; '));
 
     const p = novoProcesso();
     const g = pecas.gerar({
