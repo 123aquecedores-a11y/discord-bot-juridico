@@ -70,7 +70,8 @@ function novoProcesso(modo = 'ingame', extra = {}) {
 
   console.log('1) Catálogo e ativação por tipo (SPEC §11)');
   {
-    ok(emissao.tipoAtivo('peticao_inicial_penal'), '1a: petição inicial penal está na Faixa 1');
+    ok(emissao.tipoAtivo('peticao_incidental'), '1a: petição incidental está na Faixa 1');
+    ok(!emissao.TIPOS.peticao_inicial_penal, '1a2: "petição inicial penal" não existe — no penal o caso nasce de inquérito ou ato do MP');
     ok(emissao.tipoAtivo('intimacao_juiz'), '1b: intimação do juiz está na Faixa 1');
     ok(!emissao.tipoAtivo('sentenca'), '1c: tipo fora da faixa não está ativo');
     const papeis = Object.values(emissao.TIPOS).flatMap(t => [t.emissor, ...t.destinatarios]);
@@ -89,11 +90,11 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     ok(i2.rec.modais.length === 1, '2b: o juiz do processo abre o modal');
 
     const i3 = fakeInteraction(ADV, 'peca:emitir');
-    await emissao.abrirEmissao(i3, 'peticao_inicial_penal', p.numero);
+    await emissao.abrirEmissao(i3, 'peticao_incidental', p.numero);
     ok(i3.rec.modais.length === 1, '2c: advogado habilitado abre o modal da petição');
 
     const i4 = fakeInteraction(ADV2, 'peca:emitir');
-    await emissao.abrirEmissao(i4, 'peticao_inicial_penal', p.numero);
+    await emissao.abrirEmissao(i4, 'peticao_incidental', p.numero);
     ok(!i4.rec.modais.length, '2d: advogado SEM habilitação neste processo é recusado');
   }
 
@@ -163,6 +164,32 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     ok(!/lerSelo|lerToken/.test(fonte), '7b: a emissão não importa o leitor de selo');
     ok(!/pecas\.receber\s*\(/.test(fonte), '7c: e não chama pecas.receber em lugar nenhum');
     ok(/setDisabled\(true\)/.test(fonte), '7d: o botão Receber é postado desabilitado (SPEC §6.1)');
+  }
+
+  console.log('\n9) Nenhuma URL de anexo é guardada (SPEC §3.7, corrigido em 18/08)');
+  // As URLs do CDN do Discord são links assinados e expiram em 24h. Medido em produção: 29 dos 34
+  // anexos guardados já retornavam 404, incluindo 11 provas em processos reais. O original da peça
+  // é o REGISTRO no banco, e o PNG se regera do texto — determinístico, nada expira.
+  {
+    const fontes = ['utils/emissaoPeca.js', 'utils/pecas.js'];
+    const infratores = [];
+    for (const f of fontes) {
+      const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf-8')
+        .replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/(^|[^:])\/\/.*$/, '$1')).join('\n');
+      if (/\.attachments\b/.test(src) || /\burls?\s*:/.test(src)) infratores.push(f);
+    }
+    ok(infratores.length === 0, '9a: nenhuma URL de anexo é copiada para o banco', infratores.join('; '));
+
+    const p = novoProcesso();
+    const g = pecas.gerar({
+      processoTabela: 'processos', processoNumero: p.numero, tipo: 'peticao_incidental',
+      autorId: ADV, autorPapel: 'Advogado', texto: 'teor', destinatarios: [{ papel: 'Juiz' }],
+    });
+    pecas.registrarEnvio(g.peca.numero, { totalPaginas: 3 });
+    const salvo = JSON.stringify(db.buscarPorNumero('pecas', g.peca.numero));
+    ok(!/https?:\/\//.test(salvo), '9b: o registro salvo não contém URL nenhuma');
+    ok(/totalPaginas/.test(salvo), '9c: guarda só metadado da entrega (quantas páginas)');
+    ok(/"texto"/.test(salvo), '9d: e o texto, que é o original do qual o PNG se regera');
   }
 
   console.log('\n8) Carimbo do modo na abertura (SPEC §11.2)');

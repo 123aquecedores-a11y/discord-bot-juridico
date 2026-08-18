@@ -29,6 +29,13 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// Escapa PRIMEIRO e só então converte `**x**` em negrito e quebras de linha — na ordem inversa, um
+// nome de parte com `<` ou `&` entraria cru no HTML. Usado só na qualificação, que é montada pelo
+// bot a partir do registro; o texto livre do usuário nunca passa por aqui.
+function negritoSimples(s) {
+  return escapeHtml(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+}
+
 // Correção de erro Q (SPEC §5.3): mais redundância que M, e a diferença de tamanho é irrelevante —
 // medida no round-trip, 2.470 b contra 2.112 b. A redundância extra é o que faz o QR sobreviver à
 // recompressão da captura.
@@ -48,7 +55,8 @@ const CSS = `
   .cabecalho .orgao { font-size: 15px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
   .cabecalho .unidade { font-size: 12px; color: #333; margin-top: 2px; }
   .titulo { text-align: center; font-size: 17px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; margin: 20px 0 6px; }
-  .metadados { display: flex; justify-content: space-between; font-size: 11px; color: #444; border-bottom: 1px solid #ccc; padding-bottom: 8px; margin-bottom: 14px; }
+  .metadados { display: flex; justify-content: space-between; font-size: 11px; color: #444; border-bottom: 1px solid #ccc; padding-bottom: 8px; margin-bottom: 12px; }
+  .qualificacao { font-size: 12px; line-height: 1.5; border-left: 3px solid #1a1a1a; padding-left: 10px; margin-bottom: 14px; }
   /* min-height:0 é obrigatório aqui. O padrão de um flex item é min-height:auto, que o impede de
      encolher abaixo do próprio conteúdo — o .corpo cresceria junto com o texto, clientHeight
      acompanharia, e a paginação nunca detectaria estouro (documento inteiro numa folha só,
@@ -190,6 +198,7 @@ async function montarHtml(dados) {
         <span>Documento ${escapeHtml(dados.numeroPeca)}</span>
         <span>${escapeHtml(dados.data)}</span>
       </div>
+      ${dados.qualificacao ? `<div class="qualificacao">${negritoSimples(dados.qualificacao)}</div>` : ''}
       <div class="corpo"></div>
       <div class="assinatura" style="visibility:hidden">
         <div class="linha"></div>

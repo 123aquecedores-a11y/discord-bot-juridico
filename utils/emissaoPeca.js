@@ -21,10 +21,16 @@ const { nomeExibicao } = require('../services/gerarDocumentoPNG');
 //
 // `emissor` e `destinatarios` são PAPÉIS, nunca IDs (SPEC §6.2). Advogado exige habilitação
 // específica, então quem emite para advogado precisa dizer qual — ver pecas.gerar.
+// FAIXA 1 = petição INCIDENTAL + intimação do juiz. As duas ocorrem dentro de processo que já
+// existe, e é isso que faz desta a faixa de menor raio de dano: ela não toca em criação de caso.
+//
+// Não existe "petição inicial penal" neste sistema — processo penal nasce de inquérito ou de ato do
+// MP, nunca de petição de advogado. A peça que ABRE caso é fenômeno do cível (Faixa 2, com o
+// formulário de qualificação); o equivalente penal de peça inicial é a denúncia do MP (Faixa 3).
 const TIPOS = {
-  peticao_inicial_penal: {
-    rotulo: 'Petição inicial (penal)',
-    titulo: 'PETIÇÃO INICIAL',
+  peticao_incidental: {
+    rotulo: 'Petição (nos autos)',
+    titulo: 'PETIÇÃO',
     orgao: 'PODER JUDICIÁRIO',
     unidade: 'Comarca de São Paulo — Vara Criminal',
     emissor: 'Advogado',
@@ -150,19 +156,20 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   // quem acabou de escrever a peça é o autor — a permissão é conferida do mesmo jeito.
   const acesso = pecas.paraRenderizacao(peca.numero, interaction.user.id, { ehStaff: permissoes.isAdmin(interaction) });
   const renderizados = acesso.ok
-    ? await renderizar(interaction.guild, acesso.peca, cfg).catch(err => {
+    ? await renderizar(interaction.guild, acesso.peca, cfg, processo).catch(err => {
       console.error(`[peca] falha ao renderizar ${peca.numero}:`, err.message);
       return null;
     })
     : null;
 
-  let enviado = null;
+  let entregue = false;
   if (renderizados) {
-    enviado = await enviarAoEmissor(interaction, peca, renderizados).catch(() => null);
-    if (enviado) pecas.registrarEntregaveis(peca.numero, enviado, renderizados[0].paginas.length);
+    entregue = await enviarAoEmissor(interaction, peca, renderizados).catch(() => false);
+    // Registra METADADO da entrega, nunca a URL do anexo: URL do CDN do Discord é link assinado e
+    // expira em 24h. O original é o registro no banco; o PNG se regera do texto quando precisar.
+    if (entregue) pecas.registrarEnvio(peca.numero, { totalPaginas: renderizados[0].paginas.length });
   }
   const paginas = renderizados;
-  const entregue = !!enviado;
 
   await postarNoCanal(interaction, peca, processo, cfg);
   await andamentos.registrar(interaction.guild, numeroProcesso, {
@@ -187,7 +194,18 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   });
 }
 
-async function renderizar(guild, peca, cfg) {
+// Qualificação das partes, no formato dos autos. Uma petição que não identifica as partes não é
+// peça, é bilhete — e todos estes dados já existem no registro do processo (SPEC §5.1: os campos
+// vêm preenchidos pelo sistema, não digitados).
+function qualificacao(processo) {
+  const linhas = [`**Classe:** ${processo.tipo === 'Penal' ? 'Ação Penal' : 'Ação Cível'} nº ${processo.numero}`];
+  const autor = processo.autorNome || (processo.tipo === 'Penal' ? 'Ministério Público' : null);
+  if (autor) linhas.push(`**${processo.tipo === 'Penal' ? 'Autor' : 'Requerente'}:** ${autor}${processo.autorRg ? ` — RG ${processo.autorRg}` : ''}`);
+  if (processo.reuNome) linhas.push(`**${processo.tipo === 'Penal' ? 'Réu' : 'Requerido'}:** ${processo.reuNome}${processo.reuRg ? ` — RG ${processo.reuRg}` : ''}`);
+  return linhas.join('\n');
+}
+
+async function renderizar(guild, peca, cfg, processo) {
   // PNG é imagem estática: `<@id>` não vira menção clicável nela como vira no texto do Discord, e
   // sairia literal no papel. Por isso o nome de exibição é resolvido antes (mesmo motivo e mesma
   // função que os outros documentos do projeto usam).
@@ -209,6 +227,7 @@ async function renderizar(guild, peca, cfg) {
         orgao: cfg.orgao,
         unidade: cfg.unidade,
         data: new Date().toLocaleDateString('pt-BR'),
+        qualificacao: qualificacao(processo),
         texto: peca.texto,
         assinante,
         cargoAssinante: peca.autorPapel,
@@ -219,13 +238,15 @@ async function renderizar(guild, peca, cfg) {
 }
 
 // Por DM, e não no canal do processo: o canal é compartilhado com o destinatário, e postar ali
-// entregaria o teor antes da cena. As URLs dos anexos ficam guardadas — é ARQUIVO ÚNICO (SPEC §3.7):
-// no recebimento, o que se libera é a visualização deste mesmo documento, sem gerar segunda cópia.
+// entregaria o teor antes da cena.
+//
+// NENHUMA URL É GUARDADA. O anexo do Discord é conveniência de exibição, não o arquivo dos autos —
+// as URLs do CDN expiram em 24h e produziriam link morto. O original é o registro no banco, e o PNG
+// é regerado do texto sempre que precisar (SPEC §3.7).
 async function enviarAoEmissor(interaction, peca, renderizados) {
   const dm = await interaction.user.createDM().catch(() => null);
-  if (!dm) return null;
+  if (!dm) return false;
 
-  const entregaveis = [];
   for (const { dest, paginas } of renderizados) {
     const sufixo = dest.papel === 'Advogado' ? `${dest.papel}-hab${dest.habilitacaoId}` : dest.papel;
     const msg = await dm.send({
@@ -234,15 +255,9 @@ async function enviarAoEmissor(interaction, peca, renderizados) {
         + '⚠️ Repassar este documento fora dos autos é sujeito a sanção administrativa.',
       files: paginas.map((buf, i) => ({ attachment: buf, name: `${peca.numero}-${sufixo}-fls${i + 1}.png` })),
     }).catch(() => null);
-    if (!msg) return null;
-    entregaveis.push({
-      papel: dest.papel,
-      habilitacaoId: dest.habilitacaoId || null,
-      urls: [...msg.attachments.values()].map(a => a.url),
-      mensagemId: msg.id,
-    });
+    if (!msg) return false;
   }
-  return entregaveis;
+  return true;
 }
 
 // O canal vê METADADOS, nunca o teor (SPEC §8). O botão `Receber` aparece inativo — é o que diz ao

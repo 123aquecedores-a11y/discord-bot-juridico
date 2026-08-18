@@ -462,12 +462,21 @@ function paraRenderizacao(pecaNumero, usuarioId, { ehStaff = false } = {}) {
   };
 }
 
-// Onde o documento renderizado ficou guardado. Arquivo único (SPEC §3.7): no recebimento, o que se
-// libera é a visualização DESTE arquivo, sem gerar segunda cópia.
-function registrarEntregaveis(pecaNumero, entregaveis, totalPaginas) {
+// ARQUIVO ÚNICO É O REGISTRO, NÃO UM ANEXO HOSPEDADO (SPEC §3.7, corrigido em 18/08/2026).
+//
+// A versão anterior guardava a URL do anexo do Discord. Não funciona: as URLs do CDN são links
+// ASSINADOS e expiram em 24 h — medido em produção, 29 dos 34 anexos guardados já retornavam 404.
+// Guardar URL produz link morto nos autos.
+//
+// Aqui o original é o texto no banco, e o PNG é REGERADO sob demanda. A renderização é
+// determinística (mesmo texto, mesmo token, mesmo documento), então isso é mais robusto do que
+// guardar arquivo: nada expira, nada se perde, e não há segunda cópia divergente.
+//
+// Só se registra o que é METADADO da entrega — nunca uma URL.
+function registrarEnvio(pecaNumero, { totalPaginas, enviadoEm = new Date().toISOString() } = {}) {
   const peca = db.buscarPorNumero('pecas', pecaNumero);
   if (!peca) return { ok: false, razao: 'peça não encontrada' };
-  db.atualizar('pecas', pecaNumero, { entregaveis, totalPaginas });
+  db.atualizar('pecas', pecaNumero, { totalPaginas, enviadoAoEmissorEm: enviadoEm });
   return { ok: true };
 }
 
@@ -584,7 +593,7 @@ module.exports = {
   ocupanteAtual, ocupaDestinatario, isSupervisao,
   gerar, abrirEntrega, encerrarEntrega, janelaAberta, receber, destravarSelo,
   podeVerTeor, projetarParaUsuario, processoSentenciado, habilitadoNoProcesso,
-  metadados, paraRenderizacao, registrarEntregaveis,
+  metadados, paraRenderizacao, registrarEnvio,
   varrerValvula, reiniciarValvulaPorTroca, pendentesDoPapel, fecharJanelasDoProcesso,
   destravarTodasPendencias, relatorioLegado,
 };
