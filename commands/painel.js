@@ -35,6 +35,7 @@ const { detectarProcessoDoCanal } = require('../utils/contextoProcesso');
 const instituicoes = require('../utils/instituicoes');
 const instituicaoCmd = require('./instituicao');
 const preferencias = require('../utils/preferencias');
+const modoEntrega = require('../utils/modoEntrega');
 
 // ---- Menu principal ----
 
@@ -108,6 +109,20 @@ function botoesMenuPrincipal(interaction) {
     linha(
       botaoSe(staff, 'painel:acao:comunicado:abrir', '📢 Publicar comunicado', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:acao:carteiras:gerar', '🪪 Gerar carteiras', ButtonStyle.Secondary),
+    ),
+    // Interruptor da entrega in-game (SPEC §11.2). Só staff vê e só staff clica (checagem própria no
+    // handler, não só aqui — mesmo padrão do resto do painel). Rótulo sem ambiguidade, como a SPEC
+    // exige: "Modo Entrega In-Game" com o estado escrito por extenso, nunca "modo metagame" ou
+    // similar que a staff teria que decifrar.
+    //
+    // NÃO retroativo: só decide o modo do PRÓXIMO processo aberto. Processo que já existe nunca
+    // muda — nem este botão, nem nada, muda isso (é carimbado na abertura e para).
+    linha(
+      staff
+        ? (modoEntrega.ligado(interaction.guild?.id)
+          ? botaoSe(true, 'painel:acao:modoentrega:alternar', '🔀 Modo Entrega In-Game: LIGADO', ButtonStyle.Success)
+          : botaoSe(true, 'painel:acao:modoentrega:alternar', '🔀 Modo Entrega In-Game: desligado', ButtonStyle.Danger))
+        : null,
     ),
     // Preferência pessoal: quando LIGADA, a IA já revisa e publica a fundamentação sozinha (sem a
     // tela de "Revisar/Publicar"). Rótulo reflete o estado atual de quem abriu o painel.
@@ -672,6 +687,43 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   // Carteiras: botão "🪪 Gerar carteiras" do hub → backfill (mesma função do /gerar-carteirinhas).
   if (modulo === 'carteiras') {
     if (acao === 'gerar') return gerarCarteirinhasCmd.rodarBackfill(interaction);
+  }
+
+  // Interruptor da entrega in-game (SPEC §11.2). utils/modoEntrega.js já existia e já era testado
+  // isoladamente desde a Fase 1 — só faltava esta UI para a staff conseguir ligá-lo de verdade.
+  // Achado em 18/08/2026: sem este botão, nenhum processo novo conseguia nascer `ingame`, mesmo
+  // com a feature toda pronta e no ar.
+  //
+  // Checagem de staff própria aqui, não só a curadoria do botão no menu (mesmo padrão do resto do
+  // painel — ver comentário em botoesMenuPrincipal): customId batido direto tem que esbarrar no
+  // mesmo gate que o botão.
+  if (modulo === 'modoentrega') {
+    if (acao === 'alternar') {
+      if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
+        return interaction.reply({ content: 'Só Staff pode alternar o Modo Entrega In-Game.', ephemeral: true });
+      }
+      const guildId = interaction.guild.id;
+      const ligadoAgora = modoEntrega.ligado(guildId);
+      const r = ligadoAgora
+        ? modoEntrega.desligar(guildId, interaction.user.id)
+        : modoEntrega.ligar(guildId, interaction.user.id);
+      if (!r.ok) return interaction.reply({ content: `Não consegui alternar: ${r.razao}`, ephemeral: true });
+
+      // NÃO retroativo: a mensagem é explícita sobre isso para a staff não achar que ligar/desligar
+      // muda processo já aberto (SPEC §11.2, regra 2 — carimbado na abertura, nunca muda depois).
+      const mensagem = r.ligado
+        ? '🔀 **Modo Entrega In-Game LIGADO.** A partir de agora, todo processo NOVO exige selo, janela e recebimento pessoal para o destinatário ver o teor. Processos que já existem não mudam — o modo é carimbado na abertura.'
+        : '🔀 **Modo Entrega In-Game desligado.** Processo NOVO nasce em modo aberto: documento visível às partes desde a criação, sem selo. Processos que já existem (inclusive os que já eram `ingame`) não mudam.';
+
+      // Mesmo padrão do toggle de revisão automática: re-renderiza o próprio menu efêmero pra o
+      // botão já refletir o novo estado sem precisar reabrir o painel.
+      return interaction.update({
+        content: mensagem,
+        embeds: [], components: botoesMenuPrincipal(interaction), attachments: [], files: [],
+      }).catch(async () => {
+        return interaction.reply({ content: mensagem, ephemeral: true }).catch(() => {});
+      });
+    }
   }
 
   if (modulo === 'sentenca') {
