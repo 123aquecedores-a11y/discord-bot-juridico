@@ -305,21 +305,95 @@ function montarBlocoSecoes(tipoDocumento, dados) {
   }
 }
 
+// Um único Chromium é reaproveitado por todos os documentos/banners (abrir um por documento
+// estouraria a memória). O gerenciamento abaixo cuida de três coisas que faltavam:
+//  1) flags amigáveis a container — sobretudo --disable-dev-shm-usage: sem ela o Chromium tenta
+//     usar o /dev/shm minúsculo do container e trava/estoura ao renderizar (causa clássica de
+//     crash em Railway/Render e afins);
+//  2) auto-recuperação: se o Chromium morrer (OOM/crash), a instância morta é descartada e
+//     religada no próximo uso, em vez de deixar TODA geração de PNG quebrada até reiniciar o bot;
+//  3) desligamento por ociosidade: depois de um tempo sem gerar nada, o Chromium é fechado pra
+//     devolver memória ao container, e religa sozinho quando voltar a ser preciso.
+const LAUNCH_OPTS = {
+  headless: 'new',
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--no-zygote',
+  ],
+  // No Railway (Docker) o Chromium vem do apt e PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+  // aponta pra ele. Local (Windows/dev), a variável fica vazia e o Puppeteer usa o Chromium
+  // que ele mesmo baixou. Sem passar isso, com PUPPETEER_SKIP_DOWNLOAD=1 o launch não acha
+  // navegador e os PNGs não saem.
+  ...(process.env.PUPPETEER_EXECUTABLE_PATH ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH } : {}),
+};
+const BROWSER_IDLE_MS = 5 * 60 * 1000;
+
 let browserInstance = null;
+let browserBootPromise = null; // evita abrir dois Chromium em pedidos quase simultâneos
+let idleTimer = null;
+let activeJobs = 0;
 
 async function getBrowser() {
-  if (!browserInstance) {
-    // No Railway (Docker) o Chromium vem do apt e PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-    // aponta pra ele. Local (Windows/dev), a variável fica vazia e o Puppeteer usa o Chromium
-    // que ele mesmo baixou. Sem passar isso, com PUPPETEER_SKIP_DOWNLOAD=1 o launch não acha
-    // navegador e os PNGs não saem.
-    browserInstance = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      ...(process.env.PUPPETEER_EXECUTABLE_PATH ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH } : {}),
+  if (browserInstance && browserInstance.connected) return browserInstance;
+  if (!browserBootPromise) {
+    browserBootPromise = puppeteer.launch(LAUNCH_OPTS).then(browser => {
+      browserInstance = browser;
+      // Chromium caiu (ex: morto por falta de memória): esquece a instância morta pra religar
+      // no próximo uso, em vez de tentar usar um browser fantasma e quebrar todos os documentos.
+      browser.on('disconnected', () => {
+        if (browserInstance === browser) browserInstance = null;
+        browserBootPromise = null;
+      });
+      return browser;
+    }).catch(err => {
+      browserBootPromise = null; // libera nova tentativa no próximo pedido
+      throw err;
     });
   }
-  return browserInstance;
+  return browserBootPromise;
+}
+
+function agendarDesligamentoOcioso() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (activeJobs > 0) return; // ainda gerando algo — não desliga agora
+    const b = browserInstance;
+    browserInstance = null;
+    browserBootPromise = null;
+    if (b && b.connected) b.close().catch(() => {});
+  }, BROWSER_IDLE_MS);
+  if (idleTimer.unref) idleTimer.unref(); // o timer não deve segurar o processo Node vivo
+}
+
+// Renderiza um HTML em PNG reusando o Chromium compartilhado. Centraliza newPage/close e a
+// contagem de trabalhos ativos (pra não desligar o Chromium no meio de uma geração).
+// `seletor` captura só aquele elemento em vez da página inteira — é como as carteirinhas
+// recortam o cartão (.card). Sem passar por aqui, uma carteirinha não conta em activeJobs e o
+// desligamento por ociosidade pode fechar o Chromium no meio da geração.
+async function renderHtmlToPng(html, viewport, { fullPage = false, seletor = null } = {}) {
+  activeJobs++;
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  try {
+    const browser = await getBrowser();
+    const page = await browser.newPage();
+    try {
+      await page.setViewport(viewport);
+      await page.setContent(html, { waitUntil: 'networkidle0' });
+      if (!seletor) return await page.screenshot({ type: 'png', fullPage });
+      const elemento = await page.$(seletor);
+      if (!elemento) throw new Error(`elemento "${seletor}" não encontrado no template`);
+      return await elemento.screenshot({ type: 'png' });
+    } finally {
+      await page.close().catch(() => {});
+    }
+  } finally {
+    activeJobs--;
+    agendarDesligamentoOcioso();
+  }
 }
 
 // Carrega os logos uma única vez e mantém em memória como base64, pra não ler o arquivo do
@@ -401,18 +475,7 @@ async function gerarDocumentoPNG(dados) {
     .replace(/\{\{NUMERO_PROCESSO\}\}/g, () => numeroProcesso)
     .replace(/\{\{DATA_EMISSAO\}\}/g, () => dataEmissao);
 
-  const browser = await getBrowser();
-  const page = await browser.newPage();
-  await page.setViewport({ width: 794, height: 1123 });
-  await page.setContent(html, { waitUntil: 'networkidle0' });
-
-  const buffer = await page.screenshot({
-    type: 'png',
-    fullPage: true,
-  });
-
-  await page.close();
-  return buffer;
+  return renderHtmlToPng(html, { width: 794, height: 1123 }, { fullPage: true });
 }
 
 // PNG é uma imagem estática — <@id> não vira menção clicável nela como vira no texto do
@@ -425,7 +488,7 @@ async function nomeExibicao(guild, discordId) {
 }
 
 // ---- Carteirinha (identidade de advogado / OAB) ----
-// Reusa o MESMO browser Puppeteer do pipeline de documentos (getBrowser) — não sobe outro.
+// Reusa o MESMO browser Puppeteer do pipeline de documentos (renderHtmlToPng) — não sobe outro.
 // Renderiza o template compartilhado carteirinha_template.html e captura só o elemento .card
 // (1013×639) em deviceScaleFactor 2 → PNG final 2026×1278.
 const CARTEIRINHA_TEMPLATE_PATH = path.join(__dirname, '..', 'assets', 'carteirinha_template.html');
@@ -455,15 +518,8 @@ async function gerarCarteirinhaPNG({ nome, rg, oab, data }) {
     .replace(/\{\{OAB\}\}/g, () => escapeHtml(oab))
     .replace(/\{\{DATA\}\}/g, () => escapeHtml(data));
 
-  const browser = await getBrowser();
-  const page = await browser.newPage();
   // deviceScaleFactor 2 = dobro da densidade → cartão nítido (2026×1278 no PNG final).
-  await page.setViewport({ width: 1013, height: 639, deviceScaleFactor: 2 });
-  await page.setContent(html, { waitUntil: 'networkidle0' });
-  const card = await page.$('.card');
-  const buffer = await card.screenshot({ type: 'png' });
-  await page.close();
-  return buffer;
+  return renderHtmlToPng(html, { width: 1013, height: 639, deviceScaleFactor: 2 }, { seletor: '.card' });
 }
 
 // ---- Carteiras funcionais por cargo (Juiz/Desembargador/Promotor/Procurador) ----
@@ -488,14 +544,7 @@ async function gerarCarteiraCargoPNG({ arquivo, cargo, nome, rg, numero }) {
     .replace(/\{\{NOME\}\}/g, () => escapeHtml(nome))
     .replace(/\{\{RG\}\}/g, () => escapeHtml(rg))
     .replace(/\{\{NUMERO\}\}/g, () => escapeHtml(numero));
-  const browser = await getBrowser();
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1013, height: 639, deviceScaleFactor: 2 });
-  await page.setContent(html, { waitUntil: 'networkidle0' });
-  const card = await page.$('.card');
-  const buffer = await card.screenshot({ type: 'png' });
-  await page.close();
-  return buffer;
+  return renderHtmlToPng(html, { width: 1013, height: 639, deviceScaleFactor: 2 }, { seletor: '.card' });
 }
 
 // ---- Edital (processo seletivo) ----
@@ -525,13 +574,7 @@ async function gerarEditalPNG({ numero, vagasJuiz, vagasPromotor, requisitos, in
     .replace(/\{\{INICIO\}\}/g, () => escapeHtml(inicio))
     .replace(/\{\{FIM\}\}/g, () => escapeHtml(fim));
 
-  const browser = await getBrowser();
-  const page = await browser.newPage();
-  await page.setViewport({ width: 794, height: 1123 });
-  await page.setContent(html, { waitUntil: 'networkidle0' });
-  const buffer = await page.screenshot({ type: 'png', fullPage: true });
-  await page.close();
-  return buffer;
+  return renderHtmlToPng(html, { width: 794, height: 1123 }, { fullPage: true });
 }
 
-module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarCarteiraCargoPNG, gerarEditalPNG, nomeExibicao, getBrowser };
+module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarCarteiraCargoPNG, gerarEditalPNG, nomeExibicao, getBrowser, renderHtmlToPng };

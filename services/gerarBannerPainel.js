@@ -3,7 +3,7 @@
 // de portal oficial ao canal em vez de um embed de texto puro.
 const fs = require('fs');
 const path = require('path');
-const { getBrowser } = require('./gerarDocumentoPNG');
+const { renderHtmlToPng } = require('./gerarDocumentoPNG');
 
 const LOGO_PATH = path.join(__dirname, '..', 'assets', 'logo-tjsp.png');
 
@@ -86,13 +86,7 @@ async function gerarBannerPainel({ titulo, descricao }) {
     .replace('{{DESCRICAO}}', descricao)
     .replace('{{BALANCA}}', BALANCA_SVG);
 
-  const browser = await getBrowser();
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1200, height: 360 });
-  await page.setContent(html, { waitUntil: 'networkidle0' });
-  const buffer = await page.screenshot({ type: 'png' });
-  await page.close();
-  return buffer;
+  return renderHtmlToPng(html, { width: 1200, height: 360 });
 }
 
 module.exports = { gerarBannerPainel };

@@ -27,20 +27,52 @@ function tabelaVazia(tabela) {
   return tabela === 'instituicoes' ? INSTITUICOES_SEMENTE.map(i => ({ ...i })) : [];
 }
 
-function carregar() {
-  if (!fs.existsSync(DB_PATH)) {
-    const inicial = Object.fromEntries(TABELAS.map(t => [t, tabelaVazia(t)]));
-    fs.writeFileSync(DB_PATH, JSON.stringify(inicial, null, 2));
-    return inicial;
-  }
-  const dados = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
-  // garante que tabelas novas existam em bancos antigos (com semente, se a tabela tiver uma)
+// garante que tabelas novas existam em bancos antigos (com semente, se a tabela tiver uma)
+function normalizar(dados) {
   for (const t of TABELAS) if (!dados[t]) dados[t] = tabelaVazia(t);
   return dados;
 }
 
+function carregar() {
+  if (!fs.existsSync(DB_PATH)) {
+    const inicial = Object.fromEntries(TABELAS.map(t => [t, tabelaVazia(t)]));
+    salvar(inicial);
+    return inicial;
+  }
+  try {
+    return normalizar(JSON.parse(fs.readFileSync(DB_PATH, 'utf-8')));
+  } catch (e) {
+    // dados.json ilegível — o caso mais provável é uma gravação interrompida por OOM/SIGKILL
+    // (o container é morto no meio do writeFileSync e o arquivo fica cortado). Antes de desistir
+    // e derrubar o boot, tenta o backup .bak (a última versão íntegra salva). NÃO reinicializa
+    // um banco vazio por cima: isso apagaria processos/medidas/RH possivelmente recuperáveis.
+    console.error('[db] dados.json ilegível, tentando restaurar do backup .bak:', e.message);
+    const bak = `${DB_PATH}.bak`;
+    if (fs.existsSync(bak)) {
+      try {
+        const dados = normalizar(JSON.parse(fs.readFileSync(bak, 'utf-8')));
+        salvar(dados); // reescreve o dados.json íntegro a partir do backup
+        console.error('[db] banco recuperado a partir de .bak com sucesso.');
+        return dados;
+      } catch (e2) {
+        console.error('[db] backup .bak também ilegível:', e2.message);
+      }
+    }
+    throw e;
+  }
+}
+
 function salvar(dados) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(dados, null, 2));
+  // Gravação atômica: escreve num arquivo temporário e só então o renomeia por cima do
+  // definitivo (rename é atômico no mesmo disco). Se o processo morrer no meio da escrita
+  // — ex: OOM/SIGKILL, que é o crash que este bot vinha sofrendo — o dados.json continua
+  // íntegro; o que fica cortado é só o .tmp descartável.
+  const conteudo = JSON.stringify(dados, null, 2);
+  const tmp = `${DB_PATH}.tmp`;
+  fs.writeFileSync(tmp, conteudo);
+  // guarda a última versão boa como .bak antes de sobrescrever (rede de segurança pro carregar)
+  try { if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, `${DB_PATH}.bak`); } catch {}
+  fs.renameSync(tmp, DB_PATH);
 }
 
 // Estrutura de um banco NOVO: todas as tabelas vazias, com a semente de instituições (a única
