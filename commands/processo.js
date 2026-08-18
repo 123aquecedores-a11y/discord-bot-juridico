@@ -3615,6 +3615,13 @@ module.exports = {
   finalizarApelacao,
   extrairMencoes,
 
+  // Exportados só para scripts/testes-limite-componentes.js: garantir que o catálogo de ações por
+  // hub (HUBS_PROCESSO/ACOES_UNIVERSAIS_PAINEL) nunca cresça a ponto de o empacotamento por 5
+  // (empacotarBotoes) estourar o limite de 5 ActionRows por mensagem do Discord.
+  HUBS_PROCESSO,
+  ACOES_UNIVERSAIS_PAINEL,
+  empacotarBotoes,
+
   async autocomplete(interaction) {
     const foco = interaction.options.getFocused().toLowerCase();
     const resultados = db.todos('processos', p => p.numero.toLowerCase().includes(foco))

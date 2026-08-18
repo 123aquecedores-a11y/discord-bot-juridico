@@ -106,18 +106,20 @@ function botoesMenuPrincipal(interaction) {
       botaoSe(staff, 'painel:acao:dados:gerenciar', '🪪 Gerenciar dados', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:acao:edital:abrir', '📢 Abrir edital', ButtonStyle.Secondary),
     ),
+    // ACHADO EM 18/08/2026 (produção, DiscordAPIError 50035 "components must be 5 or fewer"): o
+    // Discord aceita no máximo 5 ActionRow POR MENSAGEM — não é o limite de 5 botões dentro de uma
+    // linha, é o limite de 5 LINHAS no total. Este menu já vivia exatamente nas 5 linhas permitidas;
+    // o botão do interruptor tinha entrado como uma SEXTA linha nova, e qualquer staff que abrisse
+    // o painel batia nesse erro na hora. Por isso ele entra AQUI, na linha de comunicado/carteiras,
+    // que tinha só 2 de 5 vagas — não numa linha própria. scripts/testes-limite-componentes.js
+    // garante que isso não volte a acontecer com um botão futuro.
     linha(
       botaoSe(staff, 'painel:acao:comunicado:abrir', '📢 Publicar comunicado', ButtonStyle.Secondary),
       botaoSe(staff, 'painel:acao:carteiras:gerar', '🪪 Gerar carteiras', ButtonStyle.Secondary),
-    ),
-    // Interruptor da entrega in-game (SPEC §11.2). Só staff vê e só staff clica (checagem própria no
-    // handler, não só aqui — mesmo padrão do resto do painel). Rótulo sem ambiguidade, como a SPEC
-    // exige: "Modo Entrega In-Game" com o estado escrito por extenso, nunca "modo metagame" ou
-    // similar que a staff teria que decifrar.
-    //
-    // NÃO retroativo: só decide o modo do PRÓXIMO processo aberto. Processo que já existe nunca
-    // muda — nem este botão, nem nada, muda isso (é carimbado na abertura e para).
-    linha(
+      // Interruptor da entrega in-game (SPEC §11.2). Rótulo sem ambiguidade, como a SPEC exige:
+      // "Modo Entrega In-Game" com o estado escrito por extenso, nunca "modo metagame" ou similar
+      // que a staff teria que decifrar. NÃO retroativo: só decide o modo do PRÓXIMO processo
+      // aberto — processo que já existe nunca muda, nem por este botão nem por nada.
       staff
         ? (modoEntrega.ligado(interaction.guild?.id)
           ? botaoSe(true, 'painel:acao:modoentrega:alternar', '🔀 Modo Entrega In-Game: LIGADO', ButtonStyle.Success)
@@ -1632,4 +1634,5 @@ module.exports = {
 
   router,
   postarPainelFixo,
+  botoesMenuPrincipal, // exportado só para scripts/testes-limite-componentes.js sweep-ar todas as combinações de cargo/flags
 };
