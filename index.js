@@ -157,6 +157,10 @@ client.once('ready', async () => {
     verificarPrazosContestacao(client, guild).catch(err => console.error('Erro na checagem de prazos de contestação:', err));
     verificarPrazoHabilitacao(client, guild).catch(err => console.error('Erro na checagem de prazo de habilitação (48h):', err));
     verificarPrazoDefesa(client, guild).catch(err => console.error('Erro na checagem de prazo de defesa (24h):', err));
+    // Entrega in-game: válvula de 24h (SPEC §7) + revogação de links públicos de processo encerrado
+    // (ver utils/emissaoPeca.js). A válvula existia sem estar ligada a nenhuma varredura — corrigido
+    // junto da revogação, porque as duas precisam da mesma infraestrutura periódica.
+    require('./utils/emissaoPeca').verificarValvulaEEncerramento(client, guild).catch(err => console.error('Erro na varredura de peças (válvula/revogação):', err));
   };
   rodarChecagensFrequentes();
   setInterval(rodarChecagensFrequentes, DEZ_MIN_MS);

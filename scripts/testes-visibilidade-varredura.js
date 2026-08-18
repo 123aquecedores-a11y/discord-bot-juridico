@@ -52,16 +52,48 @@ const PERMITIDOS = new Set([
 const PORTAS = ['podeVerTeor', 'projetarParaUsuario', 'paraRenderizacao'];
 const REGEX_PORTAS = new RegExp(`(?:${PORTAS.join('|')})\\s*\\(`, 'g');
 
-// Funções de utils/pecas.js que devolvem um OBJETO DE PEÇA — as únicas por onde `.texto` pode
-// chegar a um arquivo. É o gatilho da regra B.
+// GATILHO DA REGRA B — lista de EXCLUSÃO, não de inclusão.
 //
-// Sem esta lista, a regra dispararia em qualquer arquivo que importasse `pecas` por qualquer motivo
-// e tivesse um `.texto` em outro contexto — commands/processo.js usa só `modoDoProcesso` (que devolve
-// uma string) e tem `preset.texto` do rascunho de sentença, que não tem relação nenhuma com peça.
-// Achado falso é como se ensina uma equipe a ignorar a varredura, então a precisão aqui é o que
-// mantém os achados verdadeiros levados a sério.
-const DEVOLVEM_PECA = ['gerar', 'paraRenderizacao', 'projetarParaUsuario', 'receber', 'resolverTokenPublico', 'pendentesDoPapel'];
-const REGEX_DEVOLVEM_PECA = new RegExp(`(?:pecas|pecasModulo)\\.(?:${DEVOLVEM_PECA.join('|')})\\s*\\(`);
+// A primeira versão desta regra era o oposto: uma lista de funções "arriscadas" que disparavam o
+// gatilho, e qualquer coisa fora dela passava batido. Isso tinha um furo real, provado com um teste
+// isolado antes deste consertar: uma função NOVA em utils/pecas.js que devolvesse teor — por
+// map/array, por interpolação de string, por campo de embed montado à mão, por autocomplete — não
+// dispararia NADA até alguém lembrar de cadastrá-la na lista. O arquivo inteiro era pulado, silêncio
+// total. Achado falso (a versão de inclusão evitava) é ruim; achado que nunca dispara é pior.
+//
+// Agora é o contrário: QUALQUER chamada `pecas.<algo>(` aciona a suspeita por padrão. Só escapa
+// quem está nesta lista — e cada nome aqui foi conferido, campo por campo, no código-fonte de
+// utils/pecas.js em 18/08/2026, confirmando que a função NUNCA devolve `.texto`:
+//   modoDoProcesso, janelaMinutos, ocupanteAtual, ocupaDestinatario, isSupervisao → string/boolean/ID
+//   abrirEntrega, encerrarEntrega, janelaAberta, destravarSelo → { ok, janela, minutos... }, sem texto
+//   podeVerTeor, processoSentenciado, habilitadoNoProcesso → boolean
+//   metadados → projeção explícita campo a campo, texto excluído de propósito (e o token também)
+//   registrarPaginasPublicas, registrarEnvio → só metadado de entrega (páginas, tokens públicos)
+//   varrerValvula, reiniciarValvulaPorTroca, destravarTodasPendencias, fecharJanelasDoProcesso →
+//     arrays de { peca: NÚMERO, processoNumero, processoTabela }, nunca o registro inteiro
+//   relatorioLegado → contagem agregada
+//   revogarLinksDeProcessosEncerrados → array de NÚMEROS de peça, nunca o registro (auditada em
+//     18/08/2026 junto da correção que a criou)
+// Uma função nova entra AQUI só depois de alguém ler o `return` dela e confirmar que não vaza —
+// até lá, ela aciona a varredura, que é o lado seguro do erro.
+const SEGURAS_SEM_TEOR = new Set([
+  'modoDoProcesso', 'janelaMinutos', 'ocupanteAtual', 'ocupaDestinatario', 'isSupervisao',
+  'abrirEntrega', 'encerrarEntrega', 'janelaAberta', 'destravarSelo', 'podeVerTeor',
+  'processoSentenciado', 'habilitadoNoProcesso', 'metadados', 'registrarPaginasPublicas',
+  'registrarEnvio', 'varrerValvula', 'reiniciarValvulaPorTroca', 'destravarTodasPendencias',
+  'relatorioLegado', 'fecharJanelasDoProcesso', 'revogarLinksDeProcessosEncerrados',
+]);
+
+// Acha qualquer `pecas.<nome>(` (ou `pecasModulo.<nome>(`, alias usado nalgum teste) cujo nome NÃO
+// esteja na lista segura. Uma ocorrência só já basta para acender o gatilho.
+function chamaFuncaoArriscada(src) {
+  const re = /\bpecas(?:Modulo)?\.(\w+)\s*\(/g;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    if (!SEGURAS_SEM_TEOR.has(m[1])) return true;
+  }
+  return false;
+}
 
 let passes = 0; const falhas = [];
 function ok(cond, nome, detalhe = '') {
@@ -163,9 +195,10 @@ console.log('\nB) Ninguém devolve teor sem passar pela camada');
   const infratores = [];
   for (const [arquivo, src] of FONTES) {
     if (PERMITIDOS.has(arquivo)) continue;
-    // Só interessa quem pode TER uma peça em mãos. Importar `pecas` para chamar `modoDoProcesso`
-    // não põe teor nenhum no arquivo.
-    if (!REGEX_DEVOLVEM_PECA.test(src)) continue;
+    // Só interessa quem pode TER uma peça em mãos. Importar `pecas` para chamar uma função da
+    // lista segura (modoDoProcesso, janelaAberta...) não põe teor nenhum no arquivo — qualquer
+    // outra chamada aciona o gatilho por padrão (ver SEGURAS_SEM_TEOR acima).
+    if (!chamaFuncaoArriscada(src)) continue;
     const leTeor = /\.texto\b/.test(src);
     REGEX_PORTAS.lastIndex = 0;
     const passaPelaCamada = REGEX_PORTAS.test(src);
@@ -224,12 +257,38 @@ console.log('\nD) A varredura pega o vazamento quando ele aparece (auto-teste)')
     {
       nome: 'handler que devolve `.texto` sem a camada',
       src: `const pecas = require('./pecas');\nconst r = pecas.gerar(dados);\nreturn r.peca.texto;`,
-      regra: (s) => !(REGEX_DEVOLVEM_PECA.test(s) && /\.texto\b/.test(s) && !/podeVerTeor\s*\(|projetarParaUsuario\s*\(|paraRenderizacao\s*\(/.test(s)),
+      regra: (s) => !(chamaFuncaoArriscada(s) && /\.texto\b/.test(s) && !/podeVerTeor\s*\(|projetarParaUsuario\s*\(|paraRenderizacao\s*\(/.test(s)),
     },
     {
       nome: 'handler que chama a camada sem ehStaff',
       src: `const pecas = require('./pecas');\nif (pecas.podeVerTeor(uid, num, processo)) mostrar();`,
       regra: (s) => /podeVerTeor\s*\([^)]*ehStaff/.test(s),
+    },
+    // Os quatro casos abaixo vieram de uma cobrança concreta: a regra anterior (lista de INCLUSÃO)
+    // provou-se cega a qualquer função nova em pecas.js que ainda não tivesse sido cadastrada — um
+    // teste isolado, fora deste arquivo, mostrou os quatro escapando por completo (arquivo pulado
+    // inteiro, gatilho nem disparava). Ficam aqui como PROVA PERMANENTE de que a regra atual
+    // (lista de EXCLUSÃO — chamaFuncaoArriscada) fecha essa lacuna, e para que uma futura
+    // "otimização" da regra não a reabra em silêncio.
+    {
+      nome: 'vazamento via array/map de função NOVA (não cadastrada em SEGURAS_SEM_TEOR)',
+      src: `const pecas = require('../utils/pecas');\nasync function listarAbertas(processoNumero) {\n  const lista = pecas.buscarTodasDoProcesso(processoNumero);\n  return lista.map(p => p.texto).join('\\n');\n}`,
+      regra: (s) => !(chamaFuncaoArriscada(s) && /\.texto\b/.test(s) && !/podeVerTeor\s*\(|projetarParaUsuario\s*\(|paraRenderizacao\s*\(/.test(s)),
+    },
+    {
+      nome: 'vazamento via interpolação de string',
+      src: `const pecas = require('../utils/pecas');\nfunction resumo(n) {\n  const doc = pecas.buscarTodasDoProcesso(n)[0];\n  return { description: \`Teor: \${doc.texto}\` };\n}`,
+      regra: (s) => !(chamaFuncaoArriscada(s) && /\.texto\b/.test(s) && !/podeVerTeor\s*\(|projetarParaUsuario\s*\(|paraRenderizacao\s*\(/.test(s)),
+    },
+    {
+      nome: 'vazamento via campo de embed montado à mão',
+      src: `const pecas = require('../utils/pecas');\nfunction embedRolDeProvas(n) {\n  const doc = pecas.buscarTodasDoProcesso(n)[0];\n  embed.addFields({ name: 'Conteúdo', value: doc.texto });\n}`,
+      regra: (s) => !(chamaFuncaoArriscada(s) && /\.texto\b/.test(s) && !/podeVerTeor\s*\(|projetarParaUsuario\s*\(|paraRenderizacao\s*\(/.test(s)),
+    },
+    {
+      nome: 'vazamento via autocomplete construído a partir do documento',
+      src: `const pecas = require('../utils/pecas');\nasync function autocomplete(i) {\n  const docs = pecas.buscarTodasDoProcesso(i.options.getString('processo'));\n  return docs.map(d => ({ name: d.texto.slice(0, 90), value: d.numero }));\n}`,
+      regra: (s) => !(chamaFuncaoArriscada(s) && /\.texto\b/.test(s) && !/podeVerTeor\s*\(|projetarParaUsuario\s*\(|paraRenderizacao\s*\(/.test(s)),
     },
   ];
   for (const c of casos) ok(c.regra(c.src) === false, `D: reprova ${c.nome}`);
@@ -242,7 +301,13 @@ console.log('\nD) A varredura pega o vazamento quando ele aparece (auto-teste)')
   // string, não uma peça. É o caso real de commands/processo.js, que tem `.texto` do rascunho de
   // sentença e nenhuma relação com teor. Achado falso ensina a equipe a ignorar a varredura.
   const soModo = "const pecas = require('./pecas');\nif (pecas.modoDoProcesso(processo) !== 'legado') abrir();\nif (preset.texto) campo.setValue(preset.texto);";
-  ok(!REGEX_DEVOLVEM_PECA.test(soModo), 'D: aprova quem usa pecas só para ler o modo do processo');
+  ok(!chamaFuncaoArriscada(soModo), 'D: aprova quem usa pecas só para ler o modo do processo');
+
+  // E funções seguras de verdade (as 19 auditadas) não podem, sozinhas, acender o gatilho — senão
+  // toda vez que alguém chamar abrirEntrega ou janelaAberta num arquivo que por acaso tenha um
+  // `.texto` de outra coisa, a varredura reprovaria à toa.
+  const chamaSegura = "const pecas = require('./pecas');\nconst r = pecas.abrirEntrega(num, uid);\nif (outraCoisa.texto) usar();";
+  ok(!chamaFuncaoArriscada(chamaSegura), 'D: função segura (abrirEntrega) não aciona o gatilho sozinha');
 }
 
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);

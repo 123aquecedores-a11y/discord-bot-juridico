@@ -326,6 +326,67 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     ok(modoEntrega.modoParaNovoProcesso('guild1') === 'ingame', '8d: com o interruptor ligado, nasce ingame');
   }
 
+  console.log('\n14) Válvula de 24h ligada à varredura periódica (achado: nunca estava)');
+  // A função pecas.varrerValvula() sempre existiu e sempre passou nos testes isolados, mas nada em
+  // produção a chamava — o boot não tinha esse fio. Descoberto ao investigar a pergunta sobre o link
+  // público, que precisa da mesma varredura periódica.
+  {
+    const fakeGuild = { channels: { fetch: async () => null } };
+    const p = novoProcesso();
+    const g = pecas.gerar({
+      processoTabela: 'processos', processoNumero: p.numero, tipo: 'intimacao_juiz',
+      autorId: JUIZ, autorPapel: 'Juiz', texto: 'teor', destinatarios: [{ papel: 'Advogado', habilitacaoId: 1 }],
+    });
+    // Força o horário-limite para o passado — sem isso o teste levaria 24h de verdade.
+    const vencida = db.buscarPorNumero('pecas', g.peca.numero);
+    db.atualizar('pecas', g.peca.numero, {
+      destinatarios: vencida.destinatarios.map(d => ({ ...d, valvulaEm: new Date(Date.now() - 1000).toISOString() })),
+    });
+
+    await emissao.verificarValvulaEEncerramento({}, fakeGuild);
+
+    const depois = db.buscarPorNumero('pecas', g.peca.numero);
+    ok(depois.destinatarios[0].recebidoEm && depois.destinatarios[0].automatico, '14a: a varredura periódica destrava a peça vencida');
+
+    const autos = require('../utils/andamentos').doProcesso(p.numero);
+    const lavrado = autos.find(a => a.tipo === 'peca_valvula_24h');
+    ok(!!lavrado, '14b: e LAVRA nos autos — sem isso a válvula estourava em silêncio');
+    ok(/cart[óo]rio/i.test(lavrado.titulo) && !/teor|conteúdo/i.test(lavrado.titulo), '14c: título genérico por tipo (SPEC §10), sem entregar o que aconteceu além disso');
+  }
+
+  console.log('\n15) Revogação de links públicos de processo encerrado (o vazamento que a Resposta 16 apontou)');
+  // resolverTokenPublico nunca checava estado: link gerado ficava valendo pra sempre. Pior num
+  // processo ARQUIVADO (não sentenciado), que a camada mantém fechado para sempre — o link cru
+  // ignorava essa trava por completo.
+  {
+    const aberto = novoProcesso();
+    const gAberto = pecas.gerar({
+      processoTabela: 'processos', processoNumero: aberto.numero, tipo: 'peticao_incidental',
+      autorId: ADV, autorPapel: 'Advogado', texto: 'teor', destinatarios: [{ papel: 'Juiz' }],
+    });
+    const rAberto = pecas.registrarPaginasPublicas(gAberto.peca.numero, 'Juiz', null, 2);
+    const tokenAberto = rAberto.paginas[0].token;
+
+    const encerrado = novoProcesso();
+    const gEncerrado = pecas.gerar({
+      processoTabela: 'processos', processoNumero: encerrado.numero, tipo: 'peticao_incidental',
+      autorId: ADV, autorPapel: 'Advogado', texto: 'teor', destinatarios: [{ papel: 'Juiz' }],
+    });
+    const rEncerrado = pecas.registrarPaginasPublicas(gEncerrado.peca.numero, 'Juiz', null, 2);
+    const tokenEncerrado = rEncerrado.paginas[0].token;
+
+    ok(!!pecas.resolverTokenPublico(tokenEncerrado), '15a: antes de encerrar, o link ainda resolve');
+
+    // Processo ARQUIVADO — não sentenciado, a camada mantém o teor fechado para sempre, e é
+    // exatamente esse caso que o link cru ignorava.
+    db.atualizar('processos', encerrado.numero, { status: 'Arquivado' });
+
+    await emissao.verificarValvulaEEncerramento({}, { channels: { fetch: async () => null } });
+
+    ok(pecas.resolverTokenPublico(tokenEncerrado) === null, '15b: depois de arquivado, o link do processo encerrado NÃO resolve mais (404 na prática)');
+    ok(!!pecas.resolverTokenPublico(tokenAberto), '15c: ...enquanto o de um processo ainda ABERTO continua valendo — a varredura não revoga tudo, só o que encerrou');
+  }
+
   try { fs.unlinkSync(DB_TESTE); } catch (_) {}
   try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);

@@ -631,6 +631,47 @@ function relatorioLegado(processoTabela = 'processos') {
   return { abertos: abertos.length, porModo, podeAposentarLegado: porModo.legado === 0 };
 }
 
+// REVOGAÇÃO DOS LINKS PÚBLICOS QUANDO O PROCESSO ENCERRA — decisão registrada em 18/08/2026.
+//
+// resolverTokenPublico() nunca checava prazo nem estado: um token gerado permanecia válido para
+// sempre, independente de sentença, arquivamento ou qualquer outra coisa. Isso é maior que o risco
+// já aceito de "o emissor pode mandar o documento por DM" (SPEC §2) — um processo ARQUIVADO (não
+// sentenciado) mantém o teor fechado pela camada PARA SEMPRE, porque processoSentenciado() só abre
+// em Sentenciado/Encerrado/Julgado/Deferido/Indeferido, nunca em Arquivado — mas o link cru
+// continuava servindo a imagem pra qualquer um que o tivesse, ignorando essa trava por completo.
+//
+// A correção: quando o TICKET deixa de estar aberto — mesmo `aberto()` que TABELAS_TICKET já usa em
+// todo o projeto para essa mesma pergunta, reusado aqui e não duplicado — os links públicos daquele
+// processo são apagados. Depois disso resolverTokenPublico devolve null e a rota HTTP responde 404,
+// igual a um token que nunca existiu.
+//
+// Chamada pela varredura periódica de 10 min (ver index.js), não no instante da transição: hookar em
+// todo lugar que fecha um processo seria invasivo e frágil a esquecimento; varredura persistida é o
+// padrão que o projeto já usa para tudo que precisa sobreviver a restart (SPEC §12).
+function revogarLinksDeProcessosEncerrados() {
+  const revogadas = [];
+  for (const peca of db.todos('pecas', p => (p.destinatarios || []).some(d => (d.paginasPublicas || []).length > 0))) {
+    const cfg = TABELAS_TICKET[peca.processoTabela];
+    const processo = db.buscarPorNumero(peca.processoTabela, peca.processoNumero);
+    // Sem processo (não deveria acontecer) ou sem regra conhecida de "aberto" para a tabela: não
+    // mexe — errar para o lado de NÃO revogar é mais seguro que apagar link de um caso que talvez
+    // ainda esteja em curso.
+    if (!processo || !cfg) continue;
+    if (cfg.aberto(processo)) continue;
+
+    let mudou = false;
+    const destinatarios = peca.destinatarios.map(d => {
+      if (!(d.paginasPublicas || []).length) return d;
+      mudou = true;
+      return { ...d, paginasPublicas: [] };
+    });
+    if (!mudou) continue;
+    db.atualizar('pecas', peca.numero, { destinatarios });
+    revogadas.push(peca.numero);
+  }
+  return revogadas;
+}
+
 // SPEC §11.4: processo arquivado ou anulado fecha as janelas pendentes, para não sobrar estado
 // órfão. Não marca nada como recebido — só encerra a janela.
 function fecharJanelasDoProcesso(processoTabela, processoNumero, { agora = Date.now() } = {}) {
@@ -651,5 +692,5 @@ module.exports = {
   podeVerTeor, projetarParaUsuario, processoSentenciado, habilitadoNoProcesso,
   metadados, paraRenderizacao, registrarEnvio, registrarPaginasPublicas, resolverTokenPublico,
   varrerValvula, reiniciarValvulaPorTroca, pendentesDoPapel, fecharJanelasDoProcesso,
-  destravarTodasPendencias, relatorioLegado,
+  destravarTodasPendencias, relatorioLegado, revogarLinksDeProcessosEncerrados,
 };

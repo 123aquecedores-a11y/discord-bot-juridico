@@ -553,8 +553,44 @@ async function router(interaction) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Varredura periódica — válvula de 24h e revogação de links de processo encerrado
+// ---------------------------------------------------------------------------
+// Chamada a cada 10 min pelo boot (ver index.js), mesmo padrão das demais checagens frequentes do
+// projeto (utils/prazos.js). Nunca setTimeout: os horários-limite ficam persistidos no banco
+// (SPEC §12) e é aqui que eles são conferidos.
+//
+// Mora neste arquivo, e não em utils/pecas.js, porque lavrar nos autos e logar exigem Discord
+// (guild) — pecas.js não importa discord.js de propósito, para a camada de visibilidade continuar
+// testável sem subir bot.
+async function verificarValvulaEEncerramento(client, guild) {
+  // VÁLVULA DE 24H (SPEC §7). pecas.varrerValvula() só atualiza o banco; lavrar nos autos é
+  // responsabilidade de quem chama.
+  const destravadas = pecas.varrerValvula();
+  for (const d of destravadas) {
+    await andamentos.registrar(guild, d.processoNumero, {
+      // Título genérico por tipo, não descritivo (SPEC §10) — o índice não pode entregar o que
+      // aconteceu além de "a válvula estourou".
+      tipo: 'peca_valvula_24h',
+      titulo: '⏰ Distribuição automática pelo cartório',
+      detalhe: `${d.peca}: passadas 24h sem entrega pessoal, o cartório distribuiu automaticamente. Não houve encontro registrado.`,
+      executorId: null,
+      metadata: { peca: d.peca },
+    }).catch(err => console.error(`[pecas] falha ao lavrar válvula de ${d.peca}:`, err.message));
+  }
+  if (destravadas.length) console.log(`[pecas] válvula de 24h: ${destravadas.length} peça(s) destravada(s) automaticamente.`);
+
+  // REVOGAÇÃO DE LINKS PÚBLICOS de processos que encerraram — ver utils/pecas.js. O motivo de
+  // existir: resolverTokenPublico nunca checava prazo nem estado, e um processo ARQUIVADO (sem
+  // sentença) mantinha o teor fechado pela camada para sempre, enquanto o link cru continuava
+  // servindo a imagem pra qualquer um que o tivesse.
+  const revogadas = pecas.revogarLinksDeProcessosEncerrados();
+  if (revogadas.length) console.log(`[pecas] links públicos revogados (processo encerrado): ${revogadas.join(', ')}.`);
+}
+
 module.exports = {
   router, TIPOS, tipoAtivo, abrirEmissao, criarPeca, entregarAgora, encerrarEntrega,
   receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho,
   estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA, TTL_RASCUNHO_MS,
+  verificarValvulaEEncerramento,
 };
