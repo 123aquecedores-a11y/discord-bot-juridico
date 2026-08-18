@@ -597,6 +597,13 @@ async function verificarValvulaEEncerramento(client, guild) {
     console.log(`[pecas] links públicos revogados (processo encerrado): ${revogadas.map(r => r.peca).join(', ')} `
       + `— ${arquivosApagados} arquivo(s) de cache apagado(s) junto.`);
   }
+
+  // LOG INCONDICIONAL — de propósito, mesmo quando não há nada a fazer. As duas linhas acima só
+  // imprimem quando destravam ou revogam algo; enquanto a tabela `pecas` estiver vazia (como está
+  // hoje em produção), a varredura roda a cada 10 min em silêncio total, e silêncio não distingue
+  // "rodou e não achou nada" de "não está agendada". Esta linha é a prova de execução: se ela
+  // aparecer no log a cada ~10 min, a varredura está de fato rodando, não só presente no código.
+  console.log(`[pecas] varredura periódica (válvula + revogação) executada às ${new Date().toISOString()} — ${destravadas.length} destravada(s), ${revogadas.length} revogação(ões).`);
 }
 
 module.exports = {
