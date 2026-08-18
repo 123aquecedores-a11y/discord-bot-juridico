@@ -131,6 +131,37 @@ console.log('\n5) Proteção: nada pode apagar ou zerar um contador');
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n7) Refundação — reset do tribunal recomeça em 0001');
+// Os pisos preservam continuidade com o que já circulou no jogo. Num reset deliberado, em que todos
+// os processos são apagados de propósito, não há continuidade a preservar: o primeiro processo do
+// tribunal recém-fundado tem que ser 0001PN, não 0009PN.
+{
+  const { refundarNumeracao, refundada, CHAVE_REFUNDACAO } = require('../utils/numeracao');
+  ok(refundada() === false, '7a: antes da refundação, os pisos valem');
+
+  const r = refundarNumeracao({ motivo: 'teste' });
+  ok(!!estado.obter(CHAVE_REFUNDACAO), '7b: a refundação fica registrada (não é efeito colateral silencioso)');
+  ok(refundada() === true, '7c: e o estado passa a valer para a semeadura');
+  ok(r.zerados.length > 0, '7d: reporta quais séries tinham contador', `zerou ${r.zerados.length}`);
+
+  // Simula o banco recém-apagado.
+  const dados = JSON.parse(fs.readFileSync(DB_TESTE, 'utf-8'));
+  dados.processos = []; dados.medidas = []; dados.oficios = []; dados.apelacoes = [];
+  fs.writeFileSync(DB_TESTE, JSON.stringify(dados, null, 2));
+
+  ok(proximoNumero(db, 'processos', 'PN', p => p.tipo === 'Penal') === '0001PN', '7e: PN recomeça em 0001, ignorando o piso 8');
+  ok(proximoNumero(db, 'processos', 'CV', p => p.tipo === 'Civil') === '0001CV', '7f: CV idem, ignorando o piso 5');
+  ok(proximoNumeroClassico(db, 'oficios', 'OFI') === 'OFI-0001', '7g: e o formato clássico também');
+  ok(proximoNumero(db, 'processos', 'PN', p => p.tipo === 'Penal') === '0002PN', '7h: e segue monotônico a partir daí');
+
+  // A garantia principal não pode ter sido perdida: depois da refundação, apagar registro continua
+  // sem fazer o número voltar.
+  const dados2 = JSON.parse(fs.readFileSync(DB_TESTE, 'utf-8'));
+  dados2.processos = [];
+  fs.writeFileSync(DB_TESTE, JSON.stringify(dados2, null, 2));
+  ok(proximoNumero(db, 'processos', 'PN', p => p.tipo === 'Penal') === '0003PN', '7i: e apagar registro AINDA não faz retroceder');
+}
+
 console.log('\n6) Mil emissões seguidas, sem repetir uma');
 {
   const vistos = new Set();

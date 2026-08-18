@@ -39,11 +39,15 @@ function linkMensagem(documento) {
   return `https://discord.com/channels/${config.guildId}/${documento.canalId}/${documento.mensagemId}`;
 }
 
-// Como o documento deve aparecer nos autos: link para a mensagem quando dá, rótulo puro quando o
-// registro é antigo. Nunca devolve a `url` do CDN — ela é o problema que esta função existe para
-// evitar.
+// Como o documento deve aparecer nos autos: link para a mensagem quando dá, ausência DECLARADA
+// quando não dá. Nunca devolve a `url` do CDN — ela é o problema que esta função existe para evitar.
+//
+// O caso `arquivoNaoLocalizado` é o mais importante dos três: documento perdido não pode sumir em
+// silêncio dos autos. O Juiz precisa VER que falta uma peça, em vez de julgar um dossiê que parece
+// completo. Um item que some sem deixar rastro é pior que um item quebrado que se anuncia.
 function rotuloComLink(documento, texto = null) {
   const nome = texto || documento.nomeArquivo || 'documento';
+  if (documento.arquivoNaoLocalizado) return `⚠️ ${nome} — **arquivo não localizado**`;
   const link = linkMensagem(documento);
   return link ? `[${nome}](${link})` : `${nome} _(link indisponível — anexo anterior à correção)_`;
 }

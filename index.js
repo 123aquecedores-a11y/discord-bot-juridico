@@ -85,6 +85,18 @@ client.once('ready', async () => {
     return;
   }
 
+  // REFUNDAÇÃO DA NUMERAÇÃO (REFUNDAR_NUMERACAO=1) — descarta os pisos históricos e zera os
+  // contadores, para que a primeira emissão de cada série seja 0001.
+  //
+  // É uma env SEPARADA de RESETAR_BANCO de propósito. Apagar o banco e refundar a numeração são
+  // duas decisões diferentes: alguém pode limpar dados por outro motivo sem querer que o tribunal
+  // volte a numerar do zero. Para o reset do tribunal, ligue as DUAS — e depois remova as duas, ou
+  // todo redeploy repete o efeito.
+  if (String(process.env.REFUNDAR_NUMERACAO || '').trim() === '1') {
+    require('./utils/numeracao').refundarNumeracao({ motivo: 'REFUNDAR_NUMERACAO=1 no ambiente' });
+    console.warn('[numeracao] REMOVA a variável REFUNDAR_NUMERACAO para não repetir no próximo deploy.');
+  }
+
   // Em que modo este servidor está? Registro perdido tem que ser visível na primeira linha do log,
   // não descoberto uma semana depois por um jogador reclamando — ver utils/modoEntrega.js.
   require('./utils/modoEntrega').logarNoBoot(guild.id);

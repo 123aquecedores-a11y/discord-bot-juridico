@@ -34,6 +34,34 @@ const PISOS = {
   MO: 16, OFI: 10, PA: 4, PN: 8, REC: 1, REQ: 1, SB: 1,
 };
 
+// REFUNDAÇÃO — os pisos existem para preservar continuidade com o que já circulou no jogo. Num
+// RESET deliberado do tribunal, em que todos os processos e documentos são apagados de propósito,
+// não há continuidade a preservar: o primeiro processo do tribunal recém-fundado tem que ser
+// 0001PN, não 0009PN.
+//
+// Por isso o descarte dos pisos é PASSO EXPLÍCITO, nunca efeito colateral do reset. Quem apaga o
+// banco precisa dizer também que quer a numeração do zero — são duas decisões, e confundi-las
+// faria a numeração voltar sozinha um dia em que alguém limpasse dados por outro motivo.
+const CHAVE_REFUNDACAO = 'numeracaoRefundadaEm';
+const refundada = () => !!estado.obter(CHAVE_REFUNDACAO);
+
+/**
+ * Descarta os pisos e zera todos os contadores. Chamar JUNTO do reset do banco, de propósito.
+ * Depois disso, toda série recomeça em 0001.
+ */
+function refundarNumeracao({ motivo = 'reset do tribunal' } = {}) {
+  const agora = new Date().toISOString();
+  const zerados = [];
+  for (const sigla of Object.keys(PISOS)) {
+    if (estado.obter(chaveContador(sigla)) != null) zerados.push(sigla);
+    estado.definir(chaveContador(sigla), '0');
+  }
+  estado.definir(CHAVE_REFUNDACAO, agora);
+  console.warn(`[numeracao] REFUNDAÇÃO (${motivo}) em ${agora} — pisos históricos DESCARTADOS e contadores zerados. `
+    + `A próxima emissão de cada série é 0001. Séries que tinham contador: ${zerados.join(', ') || '(nenhuma)'}.`);
+  return { em: agora, zerados };
+}
+
 // Fica junto de contadorOAB/contadorMatricula, que já moram em `estado`. Vale notar a inconsistência
 // para quem vier depois: `estado` foi descrito como o balde do derivado e regenerável (foi por isso
 // que a flag do Modo Entrega In-Game foi para `configGuild`), mas contadores NÃO são regeneráveis —
@@ -57,7 +85,12 @@ function maiorExistente(db, tabela, filtro, extrair) {
 function proximoValor(sigla, semear) {
   const chave = chaveContador(sigla);
   let atual = parseInt(estado.obter(chave), 10);
-  if (!Number.isFinite(atual) || atual < 0) atual = Math.max(semear(), PISOS[sigla] || 0);
+  if (!Number.isFinite(atual) || atual < 0) {
+    // Depois de uma refundação os pisos não valem mais: o histórico foi apagado de propósito e não
+    // há documento antigo circulando para colidir. `semear()` continua entrando porque o banco pode
+    // ter ganho registros depois da refundação.
+    atual = refundada() ? semear() : Math.max(semear(), PISOS[sigla] || 0);
+  }
   const proximo = atual + 1;
   estado.definir(chave, String(proximo));
   return proximo;
@@ -82,4 +115,4 @@ function proximoNumeroClassico(db, tabela, prefixo) {
   return `${prefixo}-${String(n).padStart(4, '0')}`;
 }
 
-module.exports = { proximoNumero, proximoNumeroClassico, PISOS, chaveContador };
+module.exports = { proximoNumero, proximoNumeroClassico, PISOS, chaveContador, refundarNumeracao, CHAVE_REFUNDACAO, refundada };
