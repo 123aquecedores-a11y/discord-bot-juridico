@@ -1,0 +1,206 @@
+// RENDERIZAÇÃO DA PEÇA COM SELO DE AUTENTICAÇÃO (SPEC §5.2 e §5.3).
+//
+// O desenho inteiro depende de o documento ser legível na tela do jogo e de o selo sobreviver a uma
+// captura de tela recomprimida. Por isso duas decisões guiam este arquivo:
+//
+// 1) PAGINAÇÃO MEDIDA, não estimada. Quebrar por contagem de caracteres erra: a mesma quantidade de
+//    texto ocupa alturas diferentes conforme o tamanho dos parágrafos. Aqui quem decide onde quebrar
+//    é o próprio Chromium, medindo altura real no DOM — o mesmo motor que vai renderizar.
+//
+// 2) QR EM TODAS AS PÁGINAS, não só na última. A spec original punha o selo apenas na última página.
+//    Num documento de três páginas exibido no jogo, o receptor captura a página que estiver na tela
+//    e a leitura falharia sem motivo aparente — ele não teria como saber que precisava rolar até o
+//    fim. Mesmo token em todas as folhas: qualquer página capturada decodifica igual. Os dígitos, que
+//    são só para conferência humana, ficam na última.
+const QRCode = require('qrcode');
+const { renderHtmlToPngs } = require('./gerarDocumentoPNG');
+
+// A4 a 96dpi, mesma medida do resto do projeto.
+const LARGURA = 794;
+const ALTURA = 1123;
+
+// Altura útil do corpo, descontados cabeçalho, rodapé e margens. É o orçamento que a paginação
+// respeita; se o layout mudar, este número muda junto.
+const ALTURA_CORPO = 640;
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Correção de erro Q (SPEC §5.3): mais redundância que M, e a diferença de tamanho é irrelevante —
+// medida no round-trip, 2.470 b contra 2.112 b. A redundância extra é o que faz o QR sobreviver à
+// recompressão da captura.
+const qrDataUri = (token) => QRCode.toDataURL(token, { errorCorrectionLevel: 'Q', margin: 1, width: 220 });
+
+const CSS = `
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #888; font-family: 'Times New Roman', Times, serif; }
+  .folha {
+    width: ${LARGURA}px; height: ${ALTURA}px;
+    padding: 48px 60px 0 60px;
+    background: #fdfdfb; color: #1a1a1a;
+    position: relative; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .cabecalho { text-align: center; border-bottom: 2px solid #1a1a1a; padding-bottom: 12px; }
+  .cabecalho .orgao { font-size: 15px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
+  .cabecalho .unidade { font-size: 12px; color: #333; margin-top: 2px; }
+  .titulo { text-align: center; font-size: 17px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; margin: 20px 0 6px; }
+  .metadados { display: flex; justify-content: space-between; font-size: 11px; color: #444; border-bottom: 1px solid #ccc; padding-bottom: 8px; margin-bottom: 14px; }
+  /* min-height:0 é obrigatório aqui. O padrão de um flex item é min-height:auto, que o impede de
+     encolher abaixo do próprio conteúdo — o .corpo cresceria junto com o texto, clientHeight
+     acompanharia, e a paginação nunca detectaria estouro (documento inteiro numa folha só,
+     com o excedente cortado pelo overflow da folha). */
+  .corpo { flex: 1; min-height: 0; font-size: 14px; line-height: 1.65; text-align: justify; overflow: hidden; }
+  .corpo p { margin: 0 0 11px 0; text-indent: 34px; }
+  .assinatura { text-align: center; font-size: 13px; margin: 14px 0 6px; }
+  .assinatura .linha { border-top: 1px solid #1a1a1a; width: 260px; margin: 0 auto 4px; }
+
+  /* SELO — fonte monoespaçada, corpo grande, alto contraste (SPEC §5.3). Precisa sobreviver a
+     recompressão de captura, então nada de cinza claro nem fonte fina. */
+  .selo { border: 2px solid #1a1a1a; display: flex; align-items: center; gap: 14px; padding: 8px 12px; margin-bottom: 10px; background: #fff; }
+  .selo .qr { width: 96px; height: 96px; flex: none; }
+  .selo .qr img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  .selo .info { flex: 1; font-family: 'Courier New', Courier, monospace; }
+  .selo .titulo-selo { font-size: 11px; font-weight: bold; letter-spacing: 1px; }
+  .selo .digitos { display: flex; gap: 10px; margin-top: 6px; }
+  .selo .digitos .d { text-align: center; }
+  .selo .digitos .rotulo { font-size: 9px; color: #555; }
+  .selo .digitos .valor { font-size: 22px; font-weight: bold; border: 1px solid #1a1a1a; padding: 0 7px; line-height: 1.25; }
+  .selo .aviso { font-size: 9px; color: #333; margin-top: 5px; line-height: 1.3; }
+  .rodape { display: flex; justify-content: space-between; font-size: 10px; color: #555; border-top: 1px solid #ccc; padding: 5px 0 8px; }
+`;
+
+// A paginação roda DENTRO do Chromium porque só ele sabe a altura real do texto renderizado.
+// Move parágrafo a parágrafo para a folha corrente; quando estoura o orçamento, devolve o
+// parágrafo e abre folha nova. Parágrafo que sozinho não cabe fica na sua própria folha em vez de
+// entrar em laço infinito.
+const SCRIPT_PAGINACAO = `
+  (function () {
+    var molde = document.getElementById('molde');
+    var paragrafos = Array.prototype.slice.call(molde.children);
+    molde.remove();
+    var container = document.getElementById('documento');
+    var modelo = document.getElementById('modelo-folha');
+
+    function novaFolha() {
+      var f = modelo.cloneNode(true);
+      f.id = '';
+      // O modelo vive escondido para não aparecer como uma folha em branco na captura; o clone
+      // precisa perder esse display:none, senão o Puppeteer recusa capturar elemento invisível.
+      f.removeAttribute('style');
+      f.classList.add('folha');
+      container.appendChild(f);
+      return f;
+    }
+
+    var folha = novaFolha();
+    var corpo = folha.querySelector('.corpo');
+    for (var i = 0; i < paragrafos.length; i++) {
+      var p = paragrafos[i];
+      corpo.appendChild(p);
+      // Compara com a altura REAL disponível no elemento, não com uma constante: o espaço livre
+      // depende do cabeçalho, do selo e da assinatura, e uma constante chutada quebra silenciosamente
+      // sempre que o layout mudar um pixel. clientHeight é o que o Chromium reservou de fato.
+      if (corpo.scrollHeight > corpo.clientHeight && corpo.children.length > 1) {
+        corpo.removeChild(p);
+        folha = novaFolha();
+        corpo = folha.querySelector('.corpo');
+        corpo.appendChild(p);
+      }
+    }
+
+    // Assinatura só na última folha — repetir em todas faria parecer que cada página é um ato.
+    // Sai por VISIBILITY, não display: assim ela ocupa o mesmo espaço em todas as folhas durante a
+    // medição, e a última não estoura ao ganhá-la de volta.
+    var folhas = container.querySelectorAll('.folha');
+    var ultima = folhas[folhas.length - 1];
+    ultima.querySelector('.assinatura').style.visibility = 'visible';
+    // Dígitos do selo só na última (são para conferência humana, não para a máquina).
+    for (var j = 0; j < folhas.length; j++) {
+      var dig = folhas[j].querySelector('.digitos');
+      if (dig && folhas[j] !== ultima) dig.style.visibility = 'hidden';
+      folhas[j].querySelector('.n-folha').textContent = 'fls. ' + (j + 1) + ' de ' + folhas.length;
+    }
+    document.body.setAttribute('data-paginas', folhas.length);
+  })();
+`;
+
+// `texto` é a fonte da verdade guardada no banco; aqui ele vira exibição (SPEC §5.1). Linhas em
+// branco separam parágrafos.
+function paragrafosHtml(texto) {
+  const blocos = String(texto || '').split(/\n\s*\n/).map(b => b.trim()).filter(Boolean);
+  if (!blocos.length) return '<p>(sem conteúdo)</p>';
+  return blocos.map(b => `<p>${escapeHtml(b).replace(/\n/g, '<br>')}</p>`).join('');
+}
+
+/**
+ * Gera as páginas PNG de uma peça, com selo em todas.
+ * @param {Object} dados
+ * @param {string} dados.token       - token de uso único do destinatário; é o que vai no QR
+ * @param {string} dados.digitos     - 6 dígitos do selo (leitura humana)
+ * @param {string} dados.numeroPeca  - ex: "0001PN-P1"
+ * @param {string} dados.titulo      - ex: "PETIÇÃO INICIAL"
+ * @param {string} dados.orgao       - ex: "PODER JUDICIÁRIO"
+ * @param {string} [dados.unidade]
+ * @param {string} dados.numeroProcesso
+ * @param {string} dados.data
+ * @param {string} dados.texto
+ * @param {string} dados.assinante
+ * @param {string} dados.cargoAssinante
+ * @returns {Promise<Buffer[]>} uma página por posição do array
+ */
+async function gerarPecaPNG(dados) {
+  const html = await montarHtml(dados);
+  return renderHtmlToPngs(html, { width: LARGURA, height: ALTURA }, { seletorPagina: '#documento .folha' });
+}
+
+// Montagem separada da renderização: o HTML é a parte com regra de layout (paginação, selo em todas
+// as páginas) e precisa ser inspecionável sem subir Chromium.
+async function montarHtml(dados) {
+  const qr = await qrDataUri(dados.token);
+  const digitos = String(dados.digitos || '').padEnd(6, '0').slice(0, 6).split('');
+  const rotulos = ['A', 'B', 'C', 'D', 'E', 'F'];
+
+  const seloHtml = `
+    <div class="selo">
+      <div class="qr"><img src="${qr}"></div>
+      <div class="info">
+        <div class="titulo-selo">SELO DE AUTENTICAÇÃO — DOC. ${escapeHtml(dados.numeroPeca)}</div>
+        <div class="digitos">
+          ${digitos.map((d, i) => `<div class="d"><div class="rotulo">${rotulos[i]}</div><div class="valor">${escapeHtml(d)}</div></div>`).join('')}
+        </div>
+        <div class="aviso">Documento entregue em ato presencial. Receber sem o encontro, ou repassar este documento fora dos autos, é sujeito a sanção administrativa.</div>
+      </div>
+    </div>`;
+
+  return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>${CSS}</style></head><body>
+    <div id="documento"></div>
+    <div id="molde" style="display:none">${paragrafosHtml(dados.texto)}</div>
+    <div id="modelo-folha" style="display:none">
+      <div class="cabecalho">
+        <div class="orgao">${escapeHtml(dados.orgao)}</div>
+        ${dados.unidade ? `<div class="unidade">${escapeHtml(dados.unidade)}</div>` : ''}
+      </div>
+      <div class="titulo">${escapeHtml(dados.titulo)}</div>
+      <div class="metadados">
+        <span>Processo nº ${escapeHtml(dados.numeroProcesso)}</span>
+        <span>Documento ${escapeHtml(dados.numeroPeca)}</span>
+        <span>${escapeHtml(dados.data)}</span>
+      </div>
+      <div class="corpo"></div>
+      <div class="assinatura" style="visibility:hidden">
+        <div class="linha"></div>
+        <div><strong>${escapeHtml(dados.assinante)}</strong></div>
+        <div>${escapeHtml(dados.cargoAssinante)}</div>
+      </div>
+      ${seloHtml}
+      <div class="rodape"><span class="n-folha"></span><span>Autenticidade conferível pelo selo acima</span></div>
+    </div>
+    <script>${SCRIPT_PAGINACAO}</script>
+  </body></html>`;
+}
+
+module.exports = { gerarPecaPNG, montarHtml, LARGURA, ALTURA };

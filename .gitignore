@@ -11,3 +11,6 @@ limpar-servidor.bat
 limpar-historico.js
 limpar-historico.bat
 fase2.js
+
+# Saída do comando de teste do selo (scripts/conferir-selo.js --gerar)
+teste-selo/
