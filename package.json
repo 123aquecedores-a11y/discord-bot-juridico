@@ -14,7 +14,11 @@
   "dependencies": {
     "discord.js": "^14.14.1",
     "dotenv": "^16.4.5",
-    "puppeteer": "^25.5.0"
+    "jpeg-js": "^0.4.4",
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
+    "puppeteer": "^25.5.0",
+    "qrcode": "^1.5.4"
   },
   "allowScripts": {
     "puppeteer@25.5.0": true

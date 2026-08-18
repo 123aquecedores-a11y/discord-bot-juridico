@@ -37,6 +37,9 @@ process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err instanceof Error ? err.stack : err);
 });
 
+// Linha de base de memória antes de a paginação de PNG existir — ver utils/memoria.js.
+require('./utils/memoria').logar('boot');
+
 const DEZ_MIN_MS = 10 * 60 * 1000;
 
 // GuildMembers é intent privilegiada — precisa estar habilitada em "Server Members Intent"
