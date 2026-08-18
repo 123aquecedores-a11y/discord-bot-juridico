@@ -2,6 +2,31 @@
 // publicados automaticamente. O ID do canal fica no storage `estado` (chave 'diarioOficialId'),
 // NÃO em env (o Railway é read-only em runtime). NÃO reutiliza a env legada CANAL_DIARIO_OFICIAL_ID
 // (essa é do canal "advogar-pegar-casos", que é outra coisa).
+//
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// DECISÃO DE POLÍTICA — 18/08/2026. LEIA ANTES DE ESTENDER ESTE MÓDULO.
+//
+// ENQUANTO O MODO ENTREGA IN-GAME ESTIVER ATIVO, NENHUM ATO PROCESSUAL VAI AO DIÁRIO OFICIAL.
+//
+// Não entram: sentença condenatória, sentença absolutória, resultado de processo cível, petição
+// administrativa deferida ou indeferida, indeferimento de inicial. Nada que venha de processo.
+//
+// O Diário passa a ser EXCLUSIVAMENTE canal de comunicados administrativos — contratação,
+// promoção, edital.
+//
+// MOTIVO: se o resultado é publicado, ninguém precisa procurar o juiz. A sentença é entregue em
+// mãos e ponto. É RP — o desenho força o encontro in-game de propósito. Publicar o ato processual
+// destrói a razão de existir de toda a entrega in-game.
+//
+// A decisão é CONDICIONAL ao interruptor: se o Modo Entrega In-Game for desligado um dia, a
+// política do Diário volta a ser discutida do zero, não volta automaticamente ao que era.
+//
+// ESTADO ATUAL DO CÓDIGO (não alinhado — de propósito, aguardando o reset): as publicações de ato
+// processual abaixo (`sentenca`, `peticaoAdministrativa`, `arquivamentoInquerito`,
+// `indeferimentoInicial`, `desarquivamento`, cumprimento de mandado) CONTINUAM LIGADAS. A ordem
+// foi registrar a decisão sem implementá-la agora. Quem for mexer nisso: o corte é por ORIGEM do
+// ato (processo x administrativo), não por tipo de documento.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 const estado = require('./estado');
 const guildGuard = require('./guildGuard');
 const { EmbedBuilder } = require('discord.js');

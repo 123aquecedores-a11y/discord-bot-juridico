@@ -755,6 +755,18 @@ function botoesCivilAbertura(numero) {
   );
 }
 
+// CAMINHO LEGADO (anexo de PDF) — só existe para processo que NASCEU nele. A bifurcação canônica
+// é a do botão "📄 Peticionar" (ver `peticionar`, abaixo): processo legado segue no PDF até o fim,
+// processo novo vai para o formulário que gera a peça com selo.
+//
+// ACHADO EM 18/08/2026 (verificação pedida no briefing, item 1): a bifurcação existia SÓ no
+// Peticionar. Os botões de anexo de PDF continuavam sendo POSTADOS incondicionalmente em três
+// pontos — abertura do cível, aprovação de habilitação e citação — inclusive em processo `ingame`.
+// Efeito prático: o processo nascia gated, mas a primeira coisa que o advogado lia no canal era
+// "clique aqui pra juntar o PDF", que é exatamente o rito que o modo in-game substitui, e que
+// entrega o teor no canal compartilhado sem selo, sem janela e sem recebimento.
+const ehLegado = (processo) => require('../utils/pecas').modoDoProcesso(processo) === 'legado';
+
 // Botão do Advogado do autor pra juntar a petição inicial em PDF aos autos (aguardarAnexoPDF —
 // Discord não aceita upload dentro de modal). Some depois de usado uma vez.
 function botaoAnexarPeticaoInicial(numero) {
@@ -891,11 +903,18 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
   });
 
   const processo = db.buscarPorNumero('processos', numero);
-  const componentes = [botoesCivilAbertura(numero), botaoAnexarPeticaoInicial(numero)];
+  // Processo NOVO nunca é legado (modoParaNovoProcesso só devolve 'ingame' ou 'aberto'), então na
+  // prática este botão só reaparece se um processo legado for reaberto por aqui. O caminho do
+  // processo novo é o "📄 Peticionar" do painel, que bifurca para o formulário com selo.
+  const legado = ehLegado(processo);
+  const componentes = [botoesCivilAbertura(numero), ...(legado ? [botaoAnexarPeticaoInicial(numero)] : [])];
   if (juizId) componentes.push(...montarPainelAcoes(processo));
   const avisoSemJuiz = juizId ? '' : '\n\n⚠️ **Nenhum Juiz foi sorteado ainda.** Não há Juiz elegível — provavelmente porque o único Juiz cadastrado é parte/advogado deste processo (juiz não julga a própria causa), ou não há Juiz cadastrado. Assim que existir um Juiz elegível, o sorteio acontece **automaticamente** (o bot tenta de novo a cada 10 min). O painel completo (Julgar, etc.) aparece quando houver Juiz.';
+  const instrucao = legado
+    ? '\n📎 Clique em **"Anexar petição inicial"** abaixo pra juntar o PDF aos autos.'
+    : '\n📄 Clique em **"Peticionar"** no painel abaixo pra protocolar a inicial — ela é gerada pelo sistema, com selo, e entregue em mãos ao Juiz na cena.';
   await canal.send({
-    content: `<@${advogadoId}>${juizId ? ` <@${juizId}>` : ''}\n📎 Clique em **"Anexar petição inicial"** abaixo pra juntar o PDF aos autos.${avisoSemJuiz}`,
+    content: `<@${advogadoId}>${juizId ? ` <@${juizId}>` : ''}${instrucao}${avisoSemJuiz}`,
     embeds: [embedProcesso(processo)], components: componentes,
   });
 
@@ -917,6 +936,11 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
 async function anexarPeticaoInicial(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  // Trava no HANDLER, não só na exibição do botão: mensagem antiga ainda na tela, ou replay do
+  // customId, chegariam aqui de outro jeito e o PDF cairia no canal sem passar pelo selo.
+  if (!ehLegado(processo)) {
+    return interaction.reply({ content: 'Este processo usa o rito novo: a petição é gerada pelo sistema, com selo, e entregue em mãos. Use **"📄 Peticionar"** no painel do processo.', ephemeral: true });
+  }
   if (interaction.user.id !== processo.autor && !isSuperStaff(interaction)) {
     return interaction.reply({ content: `Só o Advogado responsável pela autoria pode anexar a petição inicial — no caso, <@${processo.autor}>.`, ephemeral: true });
   }
@@ -994,6 +1018,10 @@ async function anexarContestacao(interaction, chave) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
 
+  // Mesma trava de handler da petição inicial — ver anexarPeticaoInicial.
+  if (!ehLegado(processo)) {
+    return interaction.reply({ content: 'Este processo usa o rito novo: a contestação é gerada pelo sistema, com selo, e entregue em mãos. Use **"📄 Peticionar"** no painel do processo.', ephemeral: true });
+  }
   const habilitacao = (processo.habilitacoes || []).find(h => h.id === habId);
   if (!habilitacao || habilitacao.status !== 'Aprovado') {
     return interaction.reply({ content: 'Essa habilitação não existe mais ou não está aprovada.', ephemeral: true });
@@ -1650,7 +1678,11 @@ async function decidirHabilitacao(interaction, chave, aprovar) {
       // Só faz sentido oferecer o botão de contestação se a citação já aconteceu — se ainda
       // não, o botão é postado depois, no momento da citação (ver emitirIntimacao).
       if (processo.tipo === 'Civil' && processo.status === 'Aguardando contestação') {
-        await canal.send({ content: `<@${alvo.advogadoId}> — clique abaixo para anexar a contestação em nome de ${reuRef}.`, components: [botaoAnexarContestacao(numero, alvo.id)] });
+        // Só o legado ganha o botão de PDF; no rito novo a contestação sai pelo "📄 Peticionar"
+        // (advogado com habilitação aprovada passa no gate de `peticionar`).
+        await canal.send(ehLegado(processo)
+          ? { content: `<@${alvo.advogadoId}> — clique abaixo para anexar a contestação em nome de ${reuRef}.`, components: [botaoAnexarContestacao(numero, alvo.id)] }
+          : { content: `<@${alvo.advogadoId}> — para contestar em nome de ${reuRef}, use **"📄 Peticionar"** no painel do processo. A peça é gerada com selo e entregue em mãos ao Juiz na cena.` });
       }
     }
   }
@@ -1987,7 +2019,9 @@ async function emitirIntimacao(interaction, numero) {
       // possível), o botão de contestação ainda não tinha sido postado — posta agora.
       const jaHabilitados = (processo.habilitacoes || []).filter(h => h.status === 'Aprovado');
       for (const h of jaHabilitados) {
-        await canal.send({ content: `<@${h.advogadoId}> — clique abaixo para anexar a contestação em nome de <@${h.reuId}>.`, components: [botaoAnexarContestacao(numero, h.id)] });
+        await canal.send(ehLegado(processo)
+          ? { content: `<@${h.advogadoId}> — clique abaixo para anexar a contestação em nome de <@${h.reuId}>.`, components: [botaoAnexarContestacao(numero, h.id)] }
+          : { content: `<@${h.advogadoId}> — para contestar em nome de <@${h.reuId}>, use **"📄 Peticionar"** no painel do processo. A peça é gerada com selo e entregue em mãos ao Juiz na cena.` });
       }
     }
   }
