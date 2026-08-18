@@ -1,13 +1,13 @@
 {
   "name": "discord-bot-juridico",
   "version": "3.0.0",
-  "description": "Bot Discord jurÃ­dico de RP â€” processos penais/civis, medidas cautelares e RH por cargo",
+  "description": "Bot Discord jurÃƒÂ­dico de RP Ã¢â‚¬â€ processos penais/civis, medidas cautelares e RH por cargo",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node index.js",
     "deploy": "node deploy-commands.js",
-    "test": "node scripts/testes-correcoes.js && node scripts/testes-guard-guild.js && node scripts/testes-skip-boot.js && node scripts/testes-diario-e-prazo-mp.js && node scripts/testes-pecas-entrega.js && node scripts/testes-visibilidade-varredura.js && node scripts/testes-selo.js",
+    "test": "node scripts/testes-correcoes.js && node scripts/testes-guard-guild.js && node scripts/testes-skip-boot.js && node scripts/testes-diario-e-prazo-mp.js && node scripts/testes-pecas-entrega.js && node scripts/testes-visibilidade-varredura.js && node scripts/testes-selo.js && node scripts/testes-numeracao.js",
     "test:guard": "node scripts/testes-guard-guild.js",
     "test:manutencao": "node scripts/testes-skip-boot.js"
   },
