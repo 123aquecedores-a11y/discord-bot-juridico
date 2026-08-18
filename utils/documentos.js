@@ -6,6 +6,57 @@
 // razões de recurso, fundamentação) são truncados aqui pra nunca estourar isso mesmo somados.
 const { truncar } = require('./texto');
 
+const LIMITE_MENSAGEM = 2000;
+// Margem pro que o chamador cola ANTES do documento — a menção do destinatário no mandado
+// (`<@delegado>\n\n`, em commands/medida.js), prefixos de emoji etc. Sem reservar isso o documento
+// cabe sozinho e estoura mesmo assim na hora do send.
+const RESERVA_PREFIXO = 120;
+
+// Cada campo de texto livre tinha um teto fixo (600/1200/1500) e ninguém conferia o SOMATÓRIO: o
+// mandado da medida cautelar somava 2206 caracteres com os três campos no talo (representação do
+// Delegado + manifestação do MP + fundamentação do Juízo) e a API recusava a mensagem inteira com
+// `content[BASE_TYPE_MAX_LENGTH]` — a medida ficava gravada como deferida e o mandado nunca
+// aparecia no canal.
+//
+// Aqui o teto é do documento montado, não de cada campo. A estrutura fixa (cabeçalho, dispositivo,
+// data, assinatura) é intocável — cortar pelo fim comeria justamente a assinatura do ato — e o
+// corte cai só nos textos livres. O teor íntegro continua no banco e no PNG; isto limita só a
+// exibição em texto.
+function montarDocumento(montar, livres, reserva = RESERVA_PREFIXO) {
+  const textos = livres.map(t => t || '');
+  const documento = montar(textos);
+  const orcamento = LIMITE_MENSAGEM - reserva;
+  if (documento.length <= orcamento) return documento;
+
+  // `- textos.length` paga o "…" que o truncar acrescenta a cada campo cortado.
+  const fixo = documento.length - textos.reduce((soma, t) => soma + t.length, 0);
+  const cortado = montar(cotas(textos, orcamento - fixo - textos.length).map((cota, i) => truncar(textos[i], cota)));
+  if (cortado.length <= LIMITE_MENSAGEM) return cortado;
+  // Rede final: se nem assim coube, quem é grande demais é a estrutura fixa (ex.: sentença com
+  // dezenas de réus mencionados). Mandar truncado é melhor que estourar a interação no meio de um
+  // ato que já foi gravado no banco.
+  console.warn(`[documentos] documento de ${cortado.length} caracteres truncado no limite do Discord`);
+  return `${cortado.slice(0, LIMITE_MENSAGEM - 1)}…`;
+}
+
+// Divide `total` caracteres entre os textos livres: quem cabe na cota igualitária leva só o que
+// precisa e devolve a sobra pra próxima rodada; quem não cabe divide o que restou. Sem isso um
+// campo de duas linhas desperdiçaria a cota inteira enquanto a fundamentação do Juízo era cortada.
+function cotas(textos, total) {
+  const cota = new Array(textos.length).fill(0);
+  let pendentes = textos.map((_, i) => i);
+  // Piso de 80 por campo: nenhum campo do ato pode sumir por completo do documento.
+  let restante = Math.max(total, 80 * textos.length);
+  while (pendentes.length) {
+    const parcela = Math.floor(restante / pendentes.length);
+    const cabem = pendentes.filter(i => textos[i].length <= parcela);
+    if (!cabem.length) { pendentes.forEach(i => { cota[i] = parcela; }); break; }
+    cabem.forEach(i => { cota[i] = textos[i].length; restante -= textos[i].length; });
+    pendentes = pendentes.filter(i => textos[i].length > parcela);
+  }
+  return cota;
+}
+
 function dataExtenso() {
   return new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
 }
@@ -41,7 +92,7 @@ function textoSentenca(processo) {
     Improcedente: 'Julgo **IMPROCEDENTE** o pedido.',
   }[processo.resultado] || 'Resultado não estruturado.';
 
-  return [
+  return montarDocumento(([fund]) => [
     '**PODER JUDICIÁRIO**',
     `**Processo nº ${processo.numero} (${processo.tipo})**`,
     '',
@@ -53,7 +104,7 @@ function textoSentenca(processo) {
     partes.join('\n'),
     '',
     '**Fundamentação:**',
-    truncar(processo.sentenca, 1200),
+    fund,
     '',
     `**Dispositivo:** ${dispositivo}`,
     '',
@@ -62,7 +113,7 @@ function textoSentenca(processo) {
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${processo.juiz}> — Juiz(a) de Direito`,
-  ].join('\n');
+  ].join('\n'), [processo.sentenca]);
 }
 
 function textoAcordao({ apelacao, decisaoTexto, statusFinal }) {
@@ -72,7 +123,7 @@ function textoAcordao({ apelacao, decisaoTexto, statusFinal }) {
     Anulada: 'A Câmara, por decisão do Desembargador relator, **ANULA** a sentença de origem e determina a remessa dos autos a novo julgamento, com novo sorteio de Juiz.',
   }[statusFinal];
 
-  return [
+  return montarDocumento(([razoes, doRelator]) => [
     '**TRIBUNAL DE JUSTIÇA**',
     `**Apelação nº ${apelacao.numero}** (processo originário ${apelacao.processoOriginalNumero})`,
     '',
@@ -81,15 +132,15 @@ function textoAcordao({ apelacao, decisaoTexto, statusFinal }) {
     `Vistos, relatados e discutidos os autos da apelação interposta por <@${apelacao.recorrenteId}> em face de <@${apelacao.parteContrariaId || 'parte contrária'}>.`,
     '',
     '**Razões do recurso:**',
-    truncar(apelacao.razoes, 600),
+    razoes,
     '',
     `**Decisão:** ${decisaoLinha}`,
-    ...(decisaoTexto ? ['', '**Fundamentação do relator:**', truncar(decisaoTexto, 600)] : []),
+    ...(decisaoTexto ? ['', '**Fundamentação do relator:**', doRelator] : []),
     '',
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${apelacao.desembargadorId}> — Desembargador(a) Relator(a)`,
-  ].join('\n');
+  ].join('\n'), [apelacao.razoes, decisaoTexto]);
 }
 
 const TIPO_PETICAO_TITULO = { PorteArma: 'PORTE DE ARMA', TrocaNome: 'TROCA DE NOME', LimpezaFicha: 'LIMPEZA DE FICHA CRIMINAL' };
@@ -114,7 +165,7 @@ function textoSentencaPeticao({ peticao, status, motivo }) {
       ].join('\n')
     : `Requerente: <@${peticao.requerenteId}>`;
 
-  return [
+  return montarDocumento(([fund]) => [
     '**PODER JUDICIÁRIO**',
     `**Petição nº ${peticao.numero} (${TIPO_PETICAO_TITULO[peticao.tipo]})**`,
     '',
@@ -125,7 +176,7 @@ function textoSentencaPeticao({ peticao, status, motivo }) {
     qualificacao,
     '',
     '**Fundamentação:**',
-    truncar(motivo, 800) || 'Presentes os requisitos legais exigidos para a espécie, conforme análise dos documentos e diligências constantes dos autos.',
+    fund || 'Presentes os requisitos legais exigidos para a espécie, conforme análise dos documentos e diligências constantes dos autos.',
     '',
     `**Dispositivo:** ${dispositivo}`,
     '',
@@ -134,34 +185,34 @@ function textoSentencaPeticao({ peticao, status, motivo }) {
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${peticao.juiz}> — Juiz(a) de Direito`,
-  ].join('\n');
+  ].join('\n'), [motivo]);
 }
 
 function textoMandado({ numero, medida, fundamentacaoPromotor, fundamentacaoJuiz, codigoExterno }) {
-  return [
+  return montarDocumento(([alvo, motivo, doMinisterioPublico, doJuizo]) => [
     '**PODER JUDICIÁRIO**',
     `**Mandado nº ${numero}** (medida ${medida.numero})`,
     '',
     `**MANDADO DE ${medida.tipo.toUpperCase()}**`,
     '',
     ...(codigoExterno ? [`Pedido advindo do Inquérito Policial nº ${codigoExterno}.`, ''] : []),
-    `Alvo: ${medida.alvo}`,
+    `Alvo: ${alvo}`,
     '',
     '**Representação do Delegado:**',
-    truncar(medida.motivo, 600),
+    motivo,
     '',
     '**Manifestação do Ministério Público:**',
-    truncar(fundamentacaoPromotor, 600),
+    doMinisterioPublico,
     '',
     '**Fundamentação do Juízo:**',
-    truncar(fundamentacaoJuiz, 600),
+    doJuizo,
     '',
     `**Determino** o cumprimento do presente mandado de ${medida.tipo.toLowerCase()}, na forma da lei.`,
     '',
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${medida.juiz}> — Juiz(a) de Direito`,
-  ].join('\n');
+  ].join('\n'), [medida.alvo, medida.motivo, fundamentacaoPromotor, fundamentacaoJuiz]);
 }
 
 // Mandado emitido direto de dentro de um processo (painel-contexto-e-tipo-mandado.md, seção
@@ -169,22 +220,22 @@ function textoMandado({ numero, medida, fundamentacaoPromotor, fundamentacaoJuiz
 // o objeto `medida` inteiro). Mais enxuto: só o teor que o Juiz escreveu, sem a cadeia
 // Delegado→MP→Juízo que só existe no fluxo antigo de medida cautelar.
 function textoMandadoDireto({ numero, processoNumero, tipoRotulo, alvo, teor, juizId }) {
-  return [
+  return montarDocumento(([alvoTxt, teorTxt]) => [
     '**PODER JUDICIÁRIO**',
     `**Mandado nº ${numero}** (Processo ${processoNumero})`,
     '',
     `**MANDADO DE ${tipoRotulo.toUpperCase()}**`,
     '',
-    `Alvo: ${alvo}`,
+    `Alvo: ${alvoTxt}`,
     '',
-    truncar(teor, 1200),
+    teorTxt,
     '',
     `**Determino** o cumprimento do presente mandado, na forma da lei.`,
     '',
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${juizId}> — Juiz(a) de Direito`,
-  ].join('\n');
+  ].join('\n'), [alvo, teor]);
 }
 
 // Sentença sobre o pedido de medida cautelar — mesmo formato de textoSentenca/
@@ -196,7 +247,7 @@ function textoSentencaMandado({ medida, decisao, fundamentacao, numeroMandado, j
     ? `Ante o exposto, **DEFIRO** o pedido de ${medida.tipo.toLowerCase()}, e determino a expedição do respectivo mandado.`
     : `Ante o exposto, **INDEFIRO** o pedido de ${medida.tipo.toLowerCase()}, por ausência dos requisitos legais para a espécie.`;
 
-  return [
+  return montarDocumento(([alvo, fund]) => [
     '**PODER JUDICIÁRIO**',
     `**Medida Cautelar nº ${medida.numero}**`,
     '',
@@ -207,10 +258,10 @@ function textoSentencaMandado({ medida, decisao, fundamentacao, numeroMandado, j
       : 'Vistos, relatados e examinados os autos do pedido de medida cautelar em epígrafe.',
     '',
     `**Tipo:** ${medida.tipo}`,
-    `**Alvo:** ${truncar(medida.alvo, 300)}`,
+    `**Alvo:** ${alvo}`,
     '',
     '**Fundamentação:**',
-    truncar(fundamentacao, 1000) || 'Presentes os requisitos legais exigidos para a espécie, conforme análise dos indícios constantes dos autos.',
+    fund || 'Presentes os requisitos legais exigidos para a espécie, conforme análise dos indícios constantes dos autos.',
     '',
     `**Dispositivo:** ${dispositivo}`,
     ...(decisao === 'Deferido' && numeroMandado ? [`Expeça-se o Mandado nº ${numeroMandado}.`] : []),
@@ -220,23 +271,23 @@ function textoSentencaMandado({ medida, decisao, fundamentacao, numeroMandado, j
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${juizId}> — Juiz(a) de Direito`,
-  ].join('\n');
+  ].join('\n'), [medida.alvo, fundamentacao]);
 }
 
 function textoDespacho({ numero, tipo, titulo, texto, autorId, cargoAutor, referenciaExterna }) {
-  return [
+  return montarDocumento(([corpo]) => [
     '**PODER JUDICIÁRIO**',
     `**Processo nº ${numero} (${tipo})**`,
     '',
     `**${titulo}**`,
     '',
     ...(referenciaExterna ? [`Pedido advindo do Inquérito Policial nº ${referenciaExterna}.`, ''] : []),
-    truncar(texto, 1200),
+    corpo,
     '',
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${autorId}> — ${cargoAutor}`,
-  ].join('\n');
+  ].join('\n'), [texto]);
 }
 
 // Intimação genérica — usada tanto pelo Juiz num processo (emitir intimação/receber e intimar)
@@ -247,7 +298,7 @@ function textoDespacho({ numero, tipo, titulo, texto, autorId, cargoAutor, refer
 // atualizacoes-bot-juridico.md, seção 3/4) — sem discordId não tem @menção possível.
 function textoIntimacao({ numero, rotulo = 'Processo', destinatarioId, destinatarioNome, teor, prazo, consequencia }) {
   const destinatarioTexto = destinatarioId ? `<@${destinatarioId}>` : (destinatarioNome || 'a parte');
-  return [
+  return montarDocumento(([teorTxt, prazoTxt, consequenciaTxt]) => [
     '**PODER JUDICIÁRIO**',
     `**${rotulo} nº ${numero}**`,
     '',
@@ -255,19 +306,19 @@ function textoIntimacao({ numero, rotulo = 'Processo', destinatarioId, destinata
     '',
     `Fica ${destinatarioTexto} intimado(a) nos autos em epígrafe.`,
     '',
-    teor,
-    ...(prazo ? ['', `**Prazo:** ${prazo}`] : []),
-    ...(consequencia ? ['', `**Consequência do não cumprimento:** ${consequencia}`] : []),
+    teorTxt,
+    ...(prazo ? ['', `**Prazo:** ${prazoTxt}`] : []),
+    ...(consequencia ? ['', `**Consequência do não cumprimento:** ${consequenciaTxt}`] : []),
     '',
     `Comarca, ${dataExtenso()}.`,
-  ].join('\n');
+  ].join('\n'), [teor, prazo, consequencia]);
 }
 
 // Certidão de antecedentes/não constar como investigado — pode ser pedida por Juiz/
 // Desembargador (Judiciário) OU Promotor/Procurador (Ministério Público), por isso o cabeçalho
 // muda conforme quem pede — instituições diferentes, papel timbrado diferente.
 function textoRequisicaoCertidao({ numero, rg, nomeCliente, finalidade, autorId, instituicao }) {
-  return [
+  return montarDocumento(([nome, finalidadeTxt]) => [
     `**${instituicao}**`,
     `**Requisição de Certidão nº ${numero}**`,
     '',
@@ -275,57 +326,57 @@ function textoRequisicaoCertidao({ numero, rg, nomeCliente, finalidade, autorId,
     '',
     `Requisita-se certidão de antecedentes criminais e de não constar como investigado(a) em inquérito policial em nome de:`,
     '',
-    `**Nome:** ${nomeCliente}`,
+    `**Nome:** ${nome}`,
     `**RG:** ${rg}`,
-    `**Finalidade:** ${finalidade}`,
+    `**Finalidade:** ${finalidadeTxt}`,
     '',
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${autorId}>`,
-  ].join('\n');
+  ].join('\n'), [nomeCliente, finalidade]);
 }
 
 // Requisição do MP — instrumento COERCITIVO (art. 129, VI, CF/88): o destinatário é obrigado a
 // atender, diferente de uma recomendação. Precisa de fundamentação jurídica/fática, igual no
 // mundo real (senão a requisição não tem lastro nenhum).
 function textoRequisicaoMP({ numero, destinatario, fundamentacao, prazo, autorId }) {
-  return [
+  return montarDocumento(([destino, fund, prazoTxt]) => [
     '**MINISTÉRIO PÚBLICO**',
     `**Requisição nº ${numero}**`,
     '',
     '**REQUISIÇÃO DE DOCUMENTOS/INFORMAÇÕES/DILIGÊNCIAS**',
     '',
-    `Com fundamento no art. 129, incisos VI e VIII, da Constituição Federal, o Ministério Público REQUISITA de ${destinatario} o atendimento do quanto abaixo especificado, sob as penas da lei.`,
+    `Com fundamento no art. 129, incisos VI e VIII, da Constituição Federal, o Ministério Público REQUISITA de ${destino} o atendimento do quanto abaixo especificado, sob as penas da lei.`,
     '',
     '**Fundamentação:**',
-    truncar(fundamentacao, 1000),
-    ...(prazo ? ['', `**Prazo para atendimento:** ${prazo}`] : []),
+    fund,
+    ...(prazo ? ['', `**Prazo para atendimento:** ${prazoTxt}`] : []),
     '',
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${autorId}> — Membro do Ministério Público`,
-  ].join('\n');
+  ].join('\n'), [destinatario, fundamentacao, prazo]);
 }
 
 // Recomendação do MP — instrumento PERSUASIVO, sem força coercitiva (diferente da requisição):
 // expõe razões fáticas e jurídicas pra convencer o destinatário a agir ou deixar de agir, mas
 // não obriga. Instrumento de atuação extrajudicial consolidado nas resoluções do CNMP.
 function textoRecomendacaoMP({ numero, destinatario, fundamentacao, autorId }) {
-  return [
+  return montarDocumento(([destino, fund]) => [
     '**MINISTÉRIO PÚBLICO**',
     `**Recomendação nº ${numero}**`,
     '',
     '**RECOMENDAÇÃO**',
     '',
-    `O Ministério Público, no exercício de suas atribuições extrajudiciais, RECOMENDA a ${destinatario} a adoção (ou abstenção) das medidas a seguir expostas, sem caráter coercitivo, com base nas razões fáticas e jurídicas apontadas.`,
+    `O Ministério Público, no exercício de suas atribuições extrajudiciais, RECOMENDA a ${destino} a adoção (ou abstenção) das medidas a seguir expostas, sem caráter coercitivo, com base nas razões fáticas e jurídicas apontadas.`,
     '',
     '**Razões fáticas e jurídicas:**',
-    truncar(fundamentacao, 1000),
+    fund,
     '',
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${autorId}> — Membro do Ministério Público`,
-  ].join('\n');
+  ].join('\n'), [destinatario, fundamentacao]);
 }
 
 // Portaria de instauração de Inquérito Civil — procedimento investigatório administrativo,
@@ -333,23 +384,23 @@ function textoRecomendacaoMP({ numero, destinatario, fundamentacao, autorId }) {
 // patrimônio público, meio ambiente ou outros interesses difusos/coletivos — nada a ver com
 // inquérito policial (que é do Delegado, pra apuração de crime).
 function textoPortariaInqueritoCivil({ numero, objeto, fundamentacao, autorId }) {
-  return [
+  return montarDocumento(([objetoTxt, fund]) => [
     '**MINISTÉRIO PÚBLICO**',
     `**Portaria nº ${numero} — Instauração de Inquérito Civil**`,
     '',
     'Com fundamento no art. 129, III, da Constituição Federal, e na Lei nº 7.347/1985, o Ministério Público RESOLVE instaurar o presente INQUÉRITO CIVIL, para apurar:',
     '',
-    truncar(objeto, 600),
+    objetoTxt,
     '',
     '**Fundamentação:**',
-    truncar(fundamentacao, 800),
+    fund,
     '',
     'Autue-se, registre-se e cientifique-se.',
     '',
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${autorId}> — Membro do Ministério Público`,
-  ].join('\n');
+  ].join('\n'), [objeto, fundamentacao]);
 }
 
 // Ofício — correspondência formal expedida a um destinatário externo (órgão, instituição,
@@ -357,21 +408,21 @@ function textoPortariaInqueritoCivil({ numero, objeto, fundamentacao, autorId })
 // Procurador, Juiz), então o cabeçalho segue a instituição de quem assina, igual já acontece na
 // certidão — a mesma peça pode sair como Polícia Civil, Ministério Público ou Poder Judiciário.
 function textoOficio({ numero, processoNumero, destinatario, assunto, conteudo, autorId, instituicao }) {
-  return [
+  return montarDocumento(([destino, assuntoTxt, corpo]) => [
     `**${instituicao}**`,
     `**Ofício nº ${numero}**`,
     processoNumero ? `*Referente ao processo nº ${processoNumero}*` : '*Expediente avulso (não vinculado a processo)*',
     '',
-    `Ao(À) ${destinatario},`,
+    `Ao(À) ${destino},`,
     '',
-    `**Assunto:** ${assunto}`,
+    `**Assunto:** ${assuntoTxt}`,
     '',
-    truncar(conteudo, 1500),
+    corpo,
     '',
     `Comarca, ${dataExtenso()}.`,
     '',
     `<@${autorId}>`,
-  ].join('\n');
+  ].join('\n'), [destinatario, assunto, conteudo]);
 }
 
 // ---- Atos do processo (textos formais antes inline em commands/processo.js, reunidos aqui) ----

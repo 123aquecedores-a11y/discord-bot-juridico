@@ -3,4 +3,9 @@ node_modules/
 dados.json
 dados.backup.json
 dados.json.bak-reset
+limpar-servidor.js
 *.log
+fase2.js
+limpar-servidor.bat
+limpar-historico.js
+limpar-historico.bat

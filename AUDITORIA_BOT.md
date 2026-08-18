@@ -1,270 +1,478 @@
-# AUDITORIA_BOT.md — Mapa completo e auditoria do bot jurídico
+# AUDITORIA DO BOT JURÍDICO
 
-> **Auditoria READ-ONLY.** Nenhum arquivo de código foi alterado para produzir este documento.
-> Repositório: `D:\discord-bot-juridico` · Node.js + discord.js v14 · banco JSON (`database/db.js` → `dados.json`).
-> Citações no formato `arquivo:linha`. As mudanças planejadas (mover Petições→Processos, Ofício/Mandado→Medidas, Ficha→Supervisão, remover "Revisar texto", "medida provisória"→"medida cautelar", renomear Diário Oficial) estão mapeadas na **seção 5, Parte 2**.
-
----
-
-## Índice
-1. [Mapa funcional completo](#1-mapa-funcional-completo)
-2. [Permissões por cargo](#2-permissões-por-cargo)
-3. [Modelo de dados](#3-modelo-de-dados)
-4. [Fluxos ponta a ponta](#4-fluxos-ponta-a-ponta)
-5. [Redundâncias + impacto das mudanças planejadas](#5-redundâncias--impacto-das-mudanças-planejadas)
-6. [Pontos de risco / inconsistência](#6-pontos-de-risco--inconsistência)
-7. [Tabela-resumo final](#7-tabela-resumo-final)
+> **Escopo:** leitura completa do projeto `discord-bot-juridico` (discord.js v14, storage em `dados.json`).
+> **Natureza:** documento de **mapa/diagnóstico**. Nenhum arquivo de código foi alterado nesta tarefa.
+> **Data:** 13/08/2026. **Versão do código auditada:** `processo.js` com 3561 linhas, `painel.js` com 1500 linhas.
+> **Método:** varredura de todos os `commands/`, `utils/`, `services/`, `database/`, `config.js`, `index.js` + inspeção do `dados.json` real.
 
 ---
 
-## 1. Mapa funcional completo
+## COMO LER / PRINCIPAIS ACHADOS
+
+**Arquitetura em uma frase:** `index.js` roteia; cada arquivo em `commands/` é um slash command; **quase toda interação de botão/select/modal tem `customId` com prefixo `painel:` e é despachada por `painel.router()`**; alguns botões "nus" `modulo:acao:numero` vão direto pra handlers de `medida.js`/`processo.js`. O painel de ações dentro do canal do processo (a "HUD") é montado em `processo.js` a partir de um **catálogo central** (`CATALOGO_ACOES`), não em `painel.js`.
+
+**Top achados desta auditoria (detalhe nas seções 5 e 6):**
+
+| # | Achado | Gravidade | Onde |
+|---|---|---|---|
+| A | Webhook da Polícia Civil aceito **sem validação de origem** por padrão → medida cautelar forjada com Delegado arbitrário | 🔴 Alto | `integracaoPoliciaCivil.js:175-183` |
+| B | `indeferirMedidaDireta` responde **sem `ephemeral`** → teor de indeferimento vaza no canal | 🟠 Médio | `medida.js:301` |
+| C | `verRolProvas` e "Listar recentes" de medida/mandado **não checam acesso** → vazam teor/rol a não-partes | 🟠 Médio | `processo.js:2258`; `painel.js:304-308,794,810` |
+| D | `cumprirMandado` tem checagem de permissão **pulável** quando não há delegado responsável | 🟠 Médio | `medida.js:877-880` |
+| E | PNG dos documentos **só escapa `corpoTexto`** → nome/crime/pena crus quebram/injetam o template | 🟠 Médio | `gerarDocumentoPNG.js:150-272` |
+| F | Divergência de schema na tabela `mandados` (referendo grava `medidaNumero`, direto grava `processoVinculado`) → acesso/exibição inconsistentes | 🟡 Baixo | `medida.js:712` vs `mandado.js:173` |
+| G | Ações de `processo`/`supervisao`/`cargo` **sem gate no `painel.js`** — dependem 100% da revalidação interna (a maioria revalida; ver ressalvas) | 🟡 Verificar | `painel.js:701-756` |
+
+**Sobre a nomenclatura a renomear (importante):** **"medida provisória" NÃO existe no código** — o termo usado em toda parte é **"medida cautelar"**. **"Diário Oficial" NÃO aparece em texto de usuário** (já migrado pra "Advogar - Pegar Casos"); sobra só como **identificador interno** (`config.canalDiarioOficialId`, função `postarOuAtualizarDiario`, campo `diarioMessageId`). O **botão "Revisão de texto" já foi removido** (hoje é o toggle "Revisão automática (IA)"). Detalhe na **seção 9**.
+
+**Sobre as mudanças "que vamos fazer depois" (importante):** **parte já está implementada** no menu de navegação — Petições já está dentro de Processos, Ofício/Mandado dentro de Medidas, Ficha do Judiciário dentro de Supervisão (`painel.js:158,174-175,231`). O que **falta** é reorganizar a **HUD de ações dentro do canal** por cargo (seção 8) e os renames de identificadores (seção 9). **Fivemanage não existe no projeto** (PDFs vêm do CDN do Discord).
+
+---
+
+## 1. MAPA FUNCIONAL COMPLETO
 
 ### 1.1 Comandos slash
-Registro por-guild: `deploy-commands.js:6-13` varre `commands/*.js`, lê `command.data.toJSON()`. Carregamento no runtime: `index.js:39-45`. **10 arquivos de comando**, todos com `data` + `execute`.
 
-| Comando | Subcomandos (parâmetros) | O que faz | Arquivo |
+| Comando | Subcomando(s) · parâmetros | Gate de cargo | Arquivo |
 |---|---|---|---|
-| `/crime` | `buscar(termo*)` autocomplete | Consulta a base do Código Penal, devolve a tipificação | `crime.js:22` |
-| `/ficha` (SISBAJUS) | `buscar(rg, discord, discord_id, termo)` | Consulta ficha central do cidadão (antecedentes) — Promotor+ | `ficha.js:303` |
-| `/instituicao` | `adicionar`, `listar` | Cadastro de instituições destinatárias de ofício (árvore) | `instituicao.js:19` |
-| `/mandado` | `ver(numero*)`, `listar(status)` | Consulta mandados (gerados ao referendar medida) | `mandado.js:198` |
-| `/medida` | `solicitar(tipo*, alvo*, motivo*, alvo_discord, promotor)`, `ver(numero*)`, `listar(status)` | Pedido de medida (fase de inquérito); `solicitar` sorteia Promotor e envia ao MP | `medida.js:329` |
-| `/oficio` | `criar(processo, destinatario*, assunto*, conteudo*, aguarda_retorno)` | Emite ofício (processo vazio = **avulso**); gera PNG; cópia à P. Civil se Delegado | `oficio.js:192` |
-| `/painel` | — (sem opções) | Posta o menu interativo com todos os módulos em botões | `painel.js:1488` |
-| `/peticao` | `porte-arma`, `troca-nome`, `limpeza-ficha`, `alvara-evento` (cada um com dados do cliente) | Petições administrativas protocoladas por Advogado em nome do cliente | `peticao.js:771` |
-| `/processo` | `penal(crimes*, motivo*, promotor, reus, medida)`, `civil(nome_acao*, autor_nome*, reu_nome*, autor_discord*, reu_discord*)`, `listar`, `ver(numero*)`, `historico(numero*)` | Abre/consulta processos penais e civis | `processo.js:2222` |
-| `/rh` | `contratar(usuario*, cargo*)`, `demitir(usuario*)`, `licenca(usuario*, afastado*)`, `listar(cargo*)` | Gestão de cargos jurídicos — **só Staff** | `rh.js:273` |
+| **/processo** | `penal` (crimes*, motivo*, promotor, reus, medida) · `civil` (nome_acao*, autor_nome*, autor_discord*, reu_nome*, reu_discord*) · `listar` (status) · `ver` (numero*) · `historico` (numero*) | penal→Delegado; civil→Advogado; ver/histórico→partes | `processo.js:3229` |
+| **/medida** | `solicitar` (tipo*, alvo*, motivo*, alvo_rg, alvo_discord, promotor) · `ver` (numero*) · `listar` (status) | solicitar→Delegado; ver→acesso à medida | `medida.js:342` |
+| **/mandado** | `ver` (numero*) · `listar` (status) — **sem emissão manual** (nasce do referendo) | ver→partes/emissor | `mandado.js:223` |
+| **/oficio** | `criar` (destinatario*, assunto*, conteudo*, processo, aguarda_retorno) | Delegado ∨ MP ∨ Juiz | `oficio.js:190` |
+| **/peticao** | `porte-arma` · `troca-nome` · `limpeza-ficha` · `alvara-evento` (cada um com rg*, nome*, endereco* etc.) | Advogado (comando inteiro) | `peticao.js:822` |
+| **/ficha** | `buscar` (rg, discord, discord_id, termo) — SISBAJUS | Promotor/Juiz/Des./Procurador/Staff | `ficha.js:302` |
+| **/rh** | `contratar` (usuario*, cargo*) · `demitir` (usuario*) · `licenca` (usuario*, afastado*) · `listar` (cargo*) | Staff (isAdmin) | `rh.js:273` |
+| **/crime** | `buscar` (termo*) — base de 126 tipificações, autocomplete | aberto a todos | `crime.js:22` |
+| **/instituicao** | `adicionar` (modal) · `listar` | adicionar→Admin ∨ Procurador; listar→todos | `instituicao.js:18` |
 
-**Interações fora do `data`** (roteadas no mapa "bare" de `index.js:143-167`): `medida:{aprovar,negar,recorrer,referendar,cumprir,abrirprocesso,anexarindicios}`, `processo:{oferecer,arquivar,julgar}`, e o modal `medida:processomodal`.
+Todos com `autocomplete` onde há parâmetro `numero`/`termo` (roteado por `index.js:136`). `deploy-commands.js` registra os 9 comandos por guild.
 
-### 1.2 Botões / modais / selects (por módulo)
-Convenção de customId: `painel:acao:<modulo>:<acao>:<extra>` (botão), `painel:select:<mod>:<campo>:<extra>`, `painel:userselect:...`, `painel:modal:<mod>:<acao>:<extra>`. O `<extra>` às vezes carrega um segundo parâmetro após `#`. Tudo roteado por `painel.js` (`router` em `painel.js:1356-1391`), exceto os customIds "bare" acima.
+### 1.2 Botões — roteamento e catálogo
 
-**Menu principal do painel** — `botoesMenuPrincipal` (`painel.js` ~85-116), cada botão filtrado por predicado de cargo:
-`📁 Processo`, `📋 Medida`, `📜 Mandado`, `✉️ Ofício`, `🔍 Crime`, `📄 Petição`, `🗂️ SISBAJUS`, `🏛️ Ministério Público`, `⚖️ Supervisão`, `📌 Minhas pendências`, `🪪 Solicitar cargo`, `🏅 Ficha do judiciário`, `✨ Revisar texto`, `👥 RH` (staff), e a linha do toggle **✨ Revisão automática (IA): LIGADA/desligada** (`painel:acao:pessoal:revisaoauto`).
+**Dois caminhos de roteamento** (`index.js:124-176`):
+- **`customId` começa com `painel:`** → `painel.router()` (o hub; `painel.js:1392`). Formato: `painel:<tipo>:<modulo>:<acao>:<extra>`, onde `tipo` ∈ {`menu`, `acao`, `select`, `userselect`, `modal`}.
+- **Botão "nu" `modulo:acao:numero`** → mapa fixo em `index.js:152-153`: `medida:{aprovar,negar,recorrer,referendar,cumprir→cumprirMandado,abrirprocesso→abrirProcesso,anexarindicios→anexarIndicios}` e `processo:{oferecer,arquivar,julgar}`.
 
-#### Processo (`commands/processo.js`)
-- **Botões (fase denúncia, penal sem juiz):** `processo:oferecer` (Oferecer denúncia, `:90/:358`), `processo:arquivar` (Arquivar, `:91/:363`), `painel:acao:processo:partetardia` (Identificar réu, `:92/:368`), `painel:acao:processo:historicoclique` (Histórico, `:93`), `painel:acao:processo:anexarrelatorio` (Anexar relatório, `:94/:373`).
-- **Botões (fase Juiz):** `processo:julgar` (Julgar, `:318`), `gerenciardefesa` (`:319`), `partetardia` (Adicionar parte tardia, `:320`), `intimar` (Emitir intimação, `:321`), `arquivarmanual` (`:322`), `historicoclique` (`:325`); catálogo `CATALOGO_ACOES`/`montarPainelAcoes` (`:353-477`) — fonte-da-verdade das ações por fase; `recebereintimar` (Receber e citar réu — civil, `:388`), `solicitardocumento` (`:442`).
-- **Depoimento:** `regdepoimento` (`:519`); **Recurso/civil/instrução:** `recorrer` (`:592`), `arquivarcivil` (`:599`), `recebereintimar` (`:600`), `anexarpeticaoinicial` (`:608`), `anexarcontestacao:<numero>#<habId>` (`:617`), `decretarrevelia` (`:625`), `concluirinstrucao` (`:935`).
-- **Habilitação:** `habilitacao:solicitar` (`:1023`), `habilitacao:aprovar/negar:<numero>#<novoId>` (`:1293-1294`).
-- **Petição avulsa:** `peticionar` (`:1713`), `deferirpeticao/indeferirpeticao:<numero>#<peticaoId>` (`:1718-1719`).
-- **Apelação:** `apelacao:manter/reformar/anular/arquivarmanual:<numeroApelacao>` (`:1922-1925`).
-- **Revisão de arquivamento:** `pedirrevisao` (`:1640`), `supervisao:manterarquivamento` (`:1674`), `supervisao:forcardenunciadireto` (`:1675`).
-- **Modais:** sentença `sentenca:<numero>#<resultado>` (campos `texto`, e `pena`+`regime` se Condenado, `:102`); parecer MP `parecermp:<numero>#<acao>` (`parecer`, `:175`); depoimento (`:555`); parte tardia (`nomeCompleto`, `rg`, `mencao` — todos opcionais, `:1178`); habilitação (`nome`, `rg`, `reu`, `:1256`); intimação (`destinatario`, `teor`, `:1415`); intimação fora/genérica (`:1484/:1516`); razões do recurso (`razoes`, `:1843`); fundamentação da reforma/decisão de apelação (`fundamentacao`, `:1989/:2003`).
-- **Selects:** atenuantes (multi, de `utils/atenuantes.js`, `:153`); testemunha do depoimento (`:547`); papel de parte tardia (`:1166`); remover habilitação (`:1376`); destinatário de intimação (de `partesProcesso`, `:1476`); teor de intimação (presets, `:1493/1508`); resultado da reforma (`:1982`); **resultado da sentença** (`:2336`, Penal: Condenado/Absolvido; Civil: Procedente/Improcedente).
+**HUD do processo — `CATALOGO_ACOES` (`processo.js:389-538`):** fonte única dos botões do painel dentro do canal. Cada ação declara `id`, `grupo` (1/2/3, empacotamento em linhas), `cargo` (para quem serve) e `quando(processo)` (condição de fase/tipo/status). `montarPainelAcoes` (`:553`) filtra por `quando()` e empacota por `grupo`. **Hoje o painel mostra a UNIÃO de todos os botões aplicáveis à fase** (botões do Discord são compartilhados, não por-usuário) — daí a poluição visual que a seção 8 ataca.
 
-#### Medida (`commands/medida.js`) — `TIPOS_MEDIDA` (`:41`): Busca e Apreensão, Prisão Preventiva, Interceptação Telefônica, Quebra de Sigilo Bancário, Outra
-- **Botões:** `medida:aprovar/negar` (análise MP, `:63-64`); `medida:anexarindicios` (`:96`); `medida:referendar` + `painel:acao:medida:negarjuiz` + `arquivarmanual` (decisão do Juiz, `:72-74`); `medida:recorrer` + `pedirreconsideracao` (recurso do Delegado, `:80-81`); `decidirreconsideracao:<n>#aprovar|#manter` (`:505-506`); `pedirreconsideracaojuiz` (`:799`) e `decidirreconsideracaojuiz:<n>#aprovar|#manter` (`:602-603`); `medida:cumprir:<numeroMandado>` (`:87`); `medida:abrirprocesso` (`:102`); medida direta `solicitardireta` (`:118`), `deferirdireta/indeferirdireta` (`:176-177`).
-- **Modais:** aprovação MP `aprovarmp` (`fundamentacao`, `:402`); referendar (`fundamentacao`, `:675`); negar provimento `negarjuiz` (`fundamentacao`, `:769`); justificativa da medida direta (`tipoLivre`/`nomeCompleto`/`idTexto`/`justificativa`, condicionais, `:151`); abrir processo `medida:processomodal` (`motivo`, `reus`, `:951`).
-- **Selects:** tipo da medida direta (de `utils/tiposMedidaCoercitiva.js` — 6 tipos, `:132`); destinatário (de `partesProcesso`, `:146`). As decisões do Juiz passam pela tela de revisão-IA (`revisaoIA.telaEscolha`, `:824`).
+Inventário do catálogo (id · label · cargo · condição):
 
-#### Petição administrativa (`commands/peticao.js`)
-- **Modais de abertura:** `porte-arma`, `troca-nome`, `limpeza-ficha`, `alvara-evento` (`:402/:417/:432/:448`); "mais dados" (`:359`); "vincular manual" (`:320`); decisão indeferir/diligência (`motivo`, `:698`).
-- **Botões:** `anexardocumento` (`:81`); `deferir/indeferir/diligencia/certidao/arquivarmanual` (linha de decisão, `:101-107`); `vincularmanual` (`:309`); `maisdados` (`:349`); `confirmardeferir/cancelardecisao` (`:688-689`).
-- **Selects:** UserSelect `vincularcliente#<numero>` (`:306`); StringSelect `risco:<numero>` (níveis 0-3, só porte de arma, `:721`).
-
-#### Ofício (`commands/oficio.js`) e Mandado (`commands/mandado.js`)
-- **Ofício — botões:** `arquivarmanual` (`:46`), `cumprir` (só se `aguardaRetorno`, `:50`). Emissão é via slash (não modal). `podeEmitirOficio` = Delegado/Promotor/Procurador/Juiz/Staff (`:40`); cabeçalho por cargo (`instituicaoDoEmissor`, `:34`).
-- **Mandado — botão** `medida:cumprir` (bare, `:19`) e `painel:acao:mandado:emitir` (`:43`). **Cadeia:** emitir → select tipo (`:57`) → select destinatário (`:72`) → modal teor (`tipoLivre?/nomeCompleto?/idTexto?/teor`, `:80`) → `emitirMandado` (`:117`). Só o Juiz do processo (`:49,121`), exige processo penal.
-
-#### Ficha/SISBAJUS (`commands/ficha.js`) e RH (`commands/rh.js`)
-- **Ficha — botões:** `consultarrg`, `consultardiscordid`, `consultartermo` (`:128/132/138`); UserSelect `consultarpessoa` (`:125`); 3 modais de consulta. Gate `podeConsultar` = Promotor/Juiz/Desembargador/Procurador/Staff (`:23`) — **Delegado e Advogado NÃO**.
-- **RH — botões:** `cargo:aprovar/negar:<solId>` (só Staff, `:120-121`); modal `cargo:solicitar:<cargo>` (`nome`, `:80`); StringSelect `cargo:desejado` (`:71`). Contratar/demitir/licença = subcomandos slash (só `isAdmin`).
-
-#### Supervisão (`utils/supervisao.js`) e Ministério Público (`utils/ministerioPublico.js`)
-- **Supervisão — 6 modais:** trocar juiz/promotor/desembargador (`numero`/`novo`/`motivo`), forçar denúncia (`:175/190`), manter arquivamento (`:282`). Sem botões/selects próprios (reusa `montarPainelAcoes`). Gate `podeSupervisionar` = Desembargador/Procurador/Staff (`:26`); troca de juiz/relator → Desembargador; trocar promotor/forçar denúncia → Procurador.
-- **MP — botões:** `mp:abrirprocesso` (Abrir processo penal/denúncia), `mp:arquivarmanual` (`:48-49`); modal `mp:denunciamodal` (`motivo`, `reus`, `:121`). Atos: `abrirRequisicao`(REQ)/`abrirRecomendacao`(REC)/`abrirInqueritoCivil`(IC). Gate `ehMembroDoMP` = Promotor/Procurador/Staff (`:33`).
-
-### 1.3 Jobs / tarefas automáticas
-Disparo em `client.once('ready')` (`index.js:47-90`). Dois timers `setInterval`. **DMs DESLIGADAS por padrão** — toda notificação privada passa por `dmSeguro` (`prazos.js:51`), que retorna cedo se `!config.avisosPorDmLigado` (env `AVISOS_POR_DM=1`, `config.js:84`). Sem a var, só há avisos **no canal**.
-
-**Job diário** (`rodarChecagens`, 24h, `index.js:62`):
-- `verificarPrazosJulgamento` (`prazos.js:68`): processo com Juiz e sem desfecho; **7 dias** desde `juizDesde` → arquiva "sem julgamento de mérito".
-- `verificarRenovacoesPorteArma` (`prazos.js:102`): porte deferido, **validade 15 dias**, aviso 3 dias antes, marca "Vencido".
-
-**Job frequente** (`rodarChecagensFrequentes`, 10 min, `index.js:73`):
-- `verificarVinculosPendentes` (`:125`): petição "Aguardando vínculo" → **cancela aos 60min**.
-- `verificarProcessosSemJuiz` (`:157`) e `verificarProcessosPenaisSemJuiz` (`:183`): **sorteio automático de Juiz** (civil / penal aguardando).
-- `verificarPeticoesSemJuiz` (`:242`): sorteio automático para petição.
-- `verificarDiligenciasPendentes` (`:210`): diligência 24h → **indeferimento automático**.
-- `verificarMedidasAguardandoMP` (`:264`) / `verificarMedidasAguardandoJuiz` (`:288`): avisos + escalonamento (48h) a Procuradores/Desembargadores.
-- `verificarMandadosPendentes` (`:313`): lembra o Delegado às 40h.
-- `verificarApelacoesPendentes` (`:335`): aviso 8 dias, escalonamento 15 dias.
-- `verificarPrazosContestacao` (`:365`): só **avisa** ao vencer (revelia continua manual).
-- `postarPainelFixo` (boot), `guildMemberAdd` (sincroniza apelido), `messageCreate` (alimenta integração da P. Civil).
-
-### 1.4 Integrações
-- **Sistema Integrado / Polícia Civil.** *Entrada* (`utils/integracaoPoliciaCivil.js`): `messageCreate` no canal `config.canalRequerimentoPoliciaCivilId`, só age se **`message.webhookId`** existir; lê o campo "Evento" do embed → "encerramento de inquérito" vira processo penal (`processoCmd.criarProcessoPenal`), caso padrão vira medida (`medidaCmd.solicitarMedida`, a mesma do `/painel`). *Volta* (`utils/devolutivaPoliciaCivil.js`): POST ao webhook `config.webhookDevolutivaPoliciaCivilUrl` — devolutiva de mandado (`enviarDevolutivaMandado`), ofício de Delegado (`enviarOficioPoliciaCivil`), sentença de processo nascido de medida (`enviarSentencaPoliciaCivil`).
-- **PNG de documentos** (`services/gerarDocumentoPNG.js`): Puppeteer renderiza HTML A4 (TJSP/MPSP) e captura PNG; browser singleton. Tipos: sentenças penal/cível (condenatória/absolutória/procedente/improcedente), indeferimento de inicial, parecer MP (denúncia/arquivamento), ofício, mandado (citação/intimação/genérico), decisões de revisão. Serviço irmão `gerarBannerPainel.js`.
-- **IA (Google Gemini)** (`utils/cartorio.js`, `utils/analiseDocumento.js`): REST via `fetch`, modelo `gemini-flash-latest`, chave `config.geminiApiKey`. `fetchComTimeout` (AbortController 25s). `gerarResumoCartorio`/`despachoParaCanal` (despacho de apoio), `revisarTexto` (botão Revisar + toggle inline), `analisarPdfEstruturado` (PDF multimodal → JSON) consumido por `analiseDocumento.gerarAnaliseEmbed` (8 tipos: relatorio_inquerito com schema próprio + petição inicial, contestação, resposta de ofício, cumprimento de mandado, indícios de medida, petição avulsa, documento). **Fallback gracioso** em todas (sem chave → null, fluxo segue).
-- **Fivemanage / hospedagem de mídia:** **não existe.** PDFs são baixados por URL de anexo do Discord; PNGs anexados direto na mensagem/webhook.
-
----
-
-## 2. Permissões por cargo
-
-**Base:** `isAdmin` (`permissoes.js:9`) = `Administrator` do Discord OU role Staff. `temCargo` (`:16`) = `isAdmin` **OU** cargo no RH — ⚠️ *qualquer Administrator passa em todo cargo*. `isSuperStaff` (`:29`) = role "Staff Salve", único override nas **decisões de mérito**. Ações "de responsável" checam `user.id === entidade.{juiz|promotor|delegado|autor}` **|| isSuperStaff**. Teor de processo: `temAcessoTotal` (`processo.js:996`) = partes + advogado **habilitado** + isAdmin/isSuperStaff.
-
-Legenda: ✅ pode · ⛔ não · 🔒 só o responsável do caso (`user.id === X`).
-
-| Ação | Delegado | Promotor | Juiz | Advogado | Desemb. | Procurador | Staff/Dono |
-|---|---|---|---|---|---|---|---|
-| Abrir processo penal | ✅ | ✅ (via ato MP / da medida 🔒) | ⛔ | ⛔ | ⛔ | ✅ forçar denúncia | ✅ |
-| Abrir processo civil | ⛔ | ⛔ | ⛔ | ✅ | ⛔ | ⛔ | ✅ |
-| Oferecer denúncia / sortear juiz | ⛔ | 🔒 `=== promotor` | ⛔ | ⛔ | ⛔ | ✅ forçar | ✅ |
-| Solicitar medida | ✅ | 🔒 direta no processo | ⛔ | ⛔ | ⛔ | ⛔ | ✅ |
-| Aprovar/negar medida (MP) | ⛔ | 🔒 `=== medida.promotor` | ⛔ | ⛔ | ⛔ | ⛔ (só reconsideração) | ✅ |
-| Referendar / negar medida | ⛔ | ⛔ | 🔒 `=== medida.juiz` | ⛔ | ⛔ | ⛔ | ✅ |
-| Reconsideração de medida | ✅ pedir | ✅ pedir | ⛔ | ⛔ | ✅ decidir (juiz) | ✅ decidir (MP) | ✅ |
-| Cumprir mandado / ofício | 🔒 emissor | 🔒 emissor | 🔒 emissor | ⛔ | — | — | ✅ |
-| Emitir mandado (no processo) | ⛔ | ⛔ | 🔒 `=== processo.juiz` | ⛔ | ⛔ | ⛔ | ✅ |
-| Emitir ofício | ✅ (P. Civil) | ✅ (MP) | ✅ (Judiciário) | ⛔ | ⛔ | ✅ (MP) | ✅ |
-| Peticionar (avulsa no processo) | ⛔ | ⛔ | ⛔ | ✅ (só `temCargo('Advogado')`, **sem exigir habilitação**) | ⛔ | ⛔ | ✅ |
-| Petição administrativa | ⛔ | ⛔ | 🔒 decide | ✅ protocola | ⛔ | ⛔ | ✅ |
-| Habilitar-se (defesa) | ⛔ | ⛔ | 🔒 decide/remove | ✅ solicita | ⛔ | ⛔ | ✅ |
-| Anexar contestação | ⛔ | ⛔ | ⛔ | 🔒 só habilitação Aprovada do réu | ⛔ | ⛔ | ✅ |
-| Sentenciar / julgar | ⛔ | ⛔ | 🔒 `=== juiz` (revalida em `executarSentenca:2159`) | ⛔ | ⛔ | ⛔ | ✅ |
-| Intimar / citar | ⛔ | ⛔ | 🔒 | ⛔ | ⛔ | ⛔ | ✅ |
-| Decidir apelação | ⛔ | ⛔ | ⛔ | ⛔ | 🔒 `=== desembargadorId` | ⛔ | ✅ |
-| Recorrer / apelar | ⛔ | 🔒 se perdeu | ⛔ | 🔒 defesa habilitada que perdeu | ⛔ | 🔒 autor que perdeu | ✅ |
-| Supervisão — trocar Juiz/relator | ⛔ | ⛔ | ⛔ | ⛔ | ✅ | ⛔ | ✅ |
-| Supervisão — trocar Promotor / forçar denúncia | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ✅ | ✅ |
-| Ficha / SISBAJUS / certidão | ⛔ | ✅ | ✅ | ⛔ | ✅ | ✅ | ✅ |
-| Atos do MP | ⛔ | ✅ | ⛔ | ⛔ | ⛔ | ✅ | ✅ |
-| Cadastrar instituições | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ✅ | ✅ |
-| RH (contratar/demitir/aprovar cargo) | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ⛔ | ✅ |
-| Ver TEOR dos autos | 🔒 se parte | 🔒 se parte | 🔒 se parte | 🔒 só habilitado | ⛔ (salvo isAdmin) | ⛔ (salvo isAdmin) | ✅ |
-
-Predicados-chave: `podeEmitirOficio` (`oficio.js:40`), `podeConsultar`/SISBAJUS (`ficha.js:23`), `ehMembroDoMP` (`ministerioPublico.js:33`), `podeSupervisionar` (`supervisao.js:26`), `podeRecorrer` (`processo.js:1795`), `temAcessoTotal`/`processoPublico` (`processo.js:996/991`).
-
----
-
-## 3. Modelo de dados
-Banco JSON plano. Todo registro ganha `id` (autoincremento global) + `criado_em` (`db.js:69`). Tabelas (`db.js:8`): processos, medidas, mandados, oficios, rh, apelacoes, peticoes, fichas, consultas, estado, certidoes, atosMp, documentosAnexados, dossiesInquerito, instituicoes, andamentos, solicitacoesCargo, preferencias.
-
-- **`processos`** (`processo.js:654/722`): `numero`, `tipo` (Penal/Civil), `status`, `canalId`; penal: `delegado/promotor/juiz/juizDesde/reus[]/advogados[]/crimes[]/motivo`; civil: `autor/autorNome/autorRg/autorDiscordId/reuNome/reuRg/reus[]`; `partes[]` (registro unificado — `{id:'pN',papel,nome,discordId,rg,origem,...}`), `depoimentos[]`, `habilitacoes[]` (`{id,reuId,advogadoId,nomeCliente,rgCliente,status}` ∈ Pendente/Aprovado/Negado/Removido), `peticoes[]` (avulsas — **≠ tabela `peticoes`**), `sentenca/resultado/pena/regime/sentencaEm`, `revelia/contestacaoEm/prazoContestacaoAte`, vínculos (`medidaVinculada/atoMpVinculado/apelacaoNumero/codigoExterno`), UI (`painelMsgId/diarioMessageId/revisaoArquivamento`).
-  - **status:** Aguardando decisão do MP · Aguardando sorteio de juiz · Aguardando defesa · Denúncia oferecida - aguardando juiz · Instrução · Aguardando contestação · Concluso para julgamento · Em instrução · Encerrado · Arquivado · Arquivado sem julgamento de mérito.
-- **`medidas`** (`medida.js:307/189`): `numero`, `tipo`, `alvo/alvoDiscordId/nomeAlvo/rgAlvo`, `motivo`, `status`, `delegado/promotor/juiz`, `canalId`, `processoVinculado`, `codigoExterno`, `fundamentacaoPromotor/fundamentacaoJuiz`, reconsideração + campos de job.
-  - **status:** Aguardando anexo de indícios · Aguardando MP · Aprovada - aguardando juiz · Negada · Deferida · Indeferida pelo Juiz.
-- **`mandados`** (`mandado.js:147`/`medida.js:698`): `numero`, `medidaNumero`, `processoVinculado`, `tipo`, `alvo`, `status` (Emitido/Cumprido), `emitidoPor`, `cumpridoPor`.
-- **`oficios`** (`oficio.js:162`): `numero`, `processoNumero` (null=avulso), `destinatario/assunto/conteudo`, `emitidoPor`, `status` (Pendente/Cumprido), `aguardaRetorno`, `cumpridoPor/cumpridoEm`.
-- **`apelacoes`** (`processo.js:1905`): `numero`, `processoOriginalNumero`, `tipo`, `recorrenteId/parteContrariaId/desembargadorId`, `razoes`, `status` (Aguardando decisão → Mantida/Reformada/Anulada), `decisao`, `canalId`.
-- **`peticoes`** (administrativas, `peticao.js:140`): `numero`, `tipo` (PorteArma/TrocaNome/LimpezaFicha/AlvaraEvento), `requerenteId/promotor/juiz`, `status`, `discordIdCliente`, dados do cliente, `validadeAte` (porte). status: Aguardando vínculo → Pendente → Diligência/Deferido/Indeferido/Vencido/Cancelada.
-- **`atosMp`** (`ministerioPublico.js`): `numero` (REQ/REC/IC), `tipo`, `destinatario/fundamentacao/objeto/prazo`, `executorId`, `processoVinculado`.
-- **`documentosAnexados`** (`anexos.js:15`): todo PDF juntado — `tipo`, `url`, `nomeArquivo`, `autorId`, `atoOrigemId`, `protocoloVinculado`.
-- **`dossiesInquerito`** (`dossie.js:16`): `protocoloInquerito`, `medidas[]/mandados[]/documentos[]`, `processoVinculado`.
-- **`fichas`** (chave RG, `ficha.js:23`): `rg`, `nomeCivil`, `historicoNomes[]`, `trocasDeNome`, `discordIds[]`, `enderecos[]/telefones[]/redesSociais[]`.
-- **`rh`** (`rh.js:21`): `discordId`, `cargo`, `ativo`, `licenca`, `nomePersonagem`. **`solicitacoesCargo`**: auto-atendimento de contratação. **`preferencias`**: `{discordId, revisaoAutomatica}`. **`instituicoes`/`andamentos`/`consultas`/`certidoes`/`estado`** conforme seção 1.
-- **Objeto "parte"** (`partesProcesso.js`): dentro de `processo.partes[]`; `papel` ∈ reu/autor/testemunha_acusacao/testemunha_defesa/terceiro.
-
----
-
-## 4. Fluxos ponta a ponta
-**[CADEIA]** = botão que leva ao próximo passo · **[MANUAL]** = exige slash / anexar PDF / @menção digitada.
-
-### (a) Penal
-1. **Abertura** → `criarProcessoPenal` (`processo.js:629`, status `Aguardando decisão do MP`), por 3 vias: [MANUAL] `/medida solicitar` → Promotor clica "Abrir processo penal" [CADEIA] → crime picker; [CADEIA] a partir de ato do MP; [CADEIA] direto no painel.
-2. **Relatório de inquérito** → [MANUAL, anexa PDF] "📎 Anexar relatório" (IA analisa pro Promotor).
-3. **Parecer/denúncia** → [CADEIA] "Oferecer denúncia"/"Arquivar" → parecer → revisão-IA → `executarParecerMp`.
-4. **Sorteio de juiz** → automático no "oferecer" (`rh.sortearJuiz`); sem juiz → `Denúncia oferecida - aguardando juiz` + retry a cada 10 min. Capa publicada no Diário Oficial.
-5. **Instrução** → [CADEIA] habilitação (advogado solicita no Diário → Juiz Aprova/Nega); [MANUAL] petição avulsa (anexa PDF) → Juiz Defere/Indefere [CADEIA]; [MANUAL] `/oficio criar` + cumprimento [MANUAL]; [CADEIA] mandado (Juiz emite via selects) ou medida coercitiva (Promotor solicita → Juiz defere → **mandado gerado automaticamente**); [CADEIA] depoimento.
-6. **Sentença** → [CADEIA] "Julgar" → select resultado → (Condenado: atenuantes/pena) → modal → revisão-IA → `executarSentenca` (status `Encerrado`, PNG).
-7. **Apelação** → [CADEIA] só quem perdeu vê "Recorrer" → razões → `criarApelacao` sorteia Desembargador → Manter/Reformar/Anular. Anular [CADEIA] re-sorteia Juiz e reabre.
-
-### (b) Civil
-Inicial [CADEIA] (`criarProcessoCivil`, **sorteia Juiz na abertura**) → [MANUAL] anexa PDF da inicial → [CADEIA] "Receber e citar réu" (vira citação, prazo de contestação) → [MANUAL, anexa PDF] contestação **ou** [CADEIA] "Decretar revelia" após prazo → dossiê de conclusão com botão "Julgar" [CADEIA] → sentença → recurso (= penal).
-
-### (c) Medida cautelar
-[MANUAL] `/medida solicitar` (`Aguardando MP`) → [CADEIA] MP Aprova/Nega (aprovar sorteia Juiz) → [CADEIA] Juiz Referenda/Nega provimento → **mandado gerado automaticamente** no referendo (devolutiva à P. Civil) → [MANUAL, anexa PDF] "Cumprir mandado". Reconsiderações (Procurador/Desembargador) são [CADEIA].
-
-### (d) Petições administrativas
-[MANUAL] `/peticao ...` ou [CADEIA] modais do painel (`Aguardando vínculo`) → [CADEIA] vínculo obrigatório do cliente (UserSelect / manual) → sorteio automático de Promotor+Juiz → [CADEIA] Juiz Defere/Indefere/Diligência/Certidão/Arquiva (deferir pede confirmação; porte de arma abre select de risco 0-3). Efeitos aplicados em `finalizarDecisao` (ex.: troca de nome muda apelido + grava na ficha).
-
-> **Pontos que sempre quebram a cadeia (exigem ação manual):** abertura via `/medida solicitar` e `/oficio criar`; e **toda juntada de PDF** (`aguardarAnexoPDF` pede o arquivo na conversa — relatório de inquérito, contestação, cumprimento de mandado/ofício, documentos de petição, petição avulsa/inicial).
-
----
-
-## 5. Redundâncias + impacto das mudanças planejadas
-
-### Parte 1 — Redundâncias restantes
-> Nota: uma auditoria recente já consolidou parsers de menção (`utils/texto.js`), telas de revisão-in-flow (`utils/revisaoIA.js`), rascunho com TTL (`utils/rascunhoTtl.js`), análise de documento (`utils/analiseDocumento.js`) e removeu `utils/identidade.js`. Os itens abaixo são o que **ainda** sobrou.
-
-1. **[FORTE] Botões do painel de processo definidos 3×** — `botoesDenuncia` (`processo.js:88-96`), `botoesJuiz` (`:315-345`), `CATALOGO_ACOES`/`montarPainelAcoes` (`:353-477`). O próprio comentário (`:456-458`) admite que o catálogo é a fonte-da-verdade e as duas funções são "espelho por compatibilidade". Os mesmos customIds estão codificados três vezes e podem divergir. **Consolidar:** eliminar `botoesDenuncia`/`botoesJuiz`, call sites (`:669/:736/:2053`) usam `montarPainelAcoes`.
-2. **[FORTE] Filtro de busca de crime duplicado 3×** — `crime.js:40-43`, `painel.js:1111-1114`, `painel.js:1304-1307` (predicado idêntico). Os dois handlers de modal de busca (`crimepick:buscar`/`crime:buscar`) são quase iguais. **Consolidar:** `buscarCrimes(termo)` em `utils/crimesTexto.js`.
-3. **[MÉDIO] `instituicaoDoSolicitante` (`certidoes.js:25`) ≈ `instituicaoDoEmissor` (`oficio.js:34`)** — mesma função, ofício só acrescenta o ramo Delegado→Polícia Civil. **Consolidar:** helper único `papelInstitucional(interaction)`.
-4. **[MÉDIO] Checagem de MP reinlined** — `temCargo('Promotor')||temCargo('Procurador')` repetido em `certidoes.js:22/26` e `oficio.js:35/41` em vez de reusar `ehMembroDoMP`.
-5. **[BAIXO] Embeds de listagem duplicados** — `embedListaMandados` (`painel.js:300`) = inline de `mandado.js:222`; `embedListaMedidas` (`painel.js:296`) espelha `medida.js:385`.
-6. **[BAIXO/design] Dispositivos jurídicos em 2 lugares** — fórmulas de sentença/denúncia como texto em `utils/documentos.js` e como HTML em `services/gerarDocumentoPNG.js:150-271`. Mídias diferentes, mas o texto canônico pode divergir — candidato a dicionário único.
-7. **Código morto:** `limparCanalPainel` (`painel.js:1400-1419`, nunca chamada) e `limparCanalPainelPeriodico` (`painel.js:1483-1485`, stub no-op ainda exportado e fiado em `index.js:84`). Remover ambos + a chamada.
-8. **[Arquitetural, não bug]** Duas superfícies de roteamento convivem: "bare" `modulo:acao:numero` (`index.js:143-167`) e `painel:...` (`painel.js router`). Todos os handlers bare ainda são criados — não é morto, mas vale unificar no futuro.
-
-### Parte 2 — Impacto das 6 mudanças planejadas (arquivo:linha a mexer)
-
-**1. Mover Petições → Processos.** `painel.js`: botão menu `:96`, título `:134`, `submenuPeticao :229-241`, `SUBMENUS :278`, roteamento botões `:751-765`, select `:976-978`, userselect `:1049-1052`, modais `:1215-1216`/`:1234-1239`, `TABELAS_ARQUIVAR :581`, permissão `:594`, pendências `:324/347`. Slash+módulo: `peticao.js` inteiro (`:771`). Categoria: `config.js:31` (`categoriaPeticoesId`), `peticao.js:136`. ⚠️ **Não confundir** `processo.peticoes` (avulsa) com a tabela/módulo `peticoes`.
-
-**2. Mover Ofício + Mandado → Medidas.** `painel.js`: botões menu `:90/:91/:94`, títulos `:128-130`, submenus `submenuMedida/Mandado/Oficio :167-195`, `SUBMENUS :272-274`, roteamento botões `:775-812`, selects `:895-933`, modais `:1071-1072`/`:1254-1301`. Módulos `oficio.js`/`mandado.js` inteiros. `botaoEmitirMandado` (`mandado.js:42`, usado em `processo.js:334/422`), `botaoSolicitarMedidaDireta` (`medida.js:117`, usado em `processo.js:335/427`). Ofício cria a própria categoria; mandado posta no canal do processo → mudança é de **agrupamento de UI**, não de canais.
-
-**3. Mover Ficha Judiciária → Supervisão.** São **duas fichas**: 🏅 "Ficha do judiciário" (`cargo:ficha` → `rh.mostrarFichaFuncional`, botão `painel.js:106`, rota `:632`, `rh.js:267`) e 🗂️ SISBAJUS (botão `painel.js:99`, `submenuFicha :243-253`, roteamento `:767-773`, modais `:1241-1244`, gate `ficha.js:23`). Destino Supervisão: botão `painel.js:101`, `submenuSupervisao :216-227`, gate `abrirSubmenu :287-289`.
-
-**4. Remover "Revisar texto" → toggle inline.** Botão `painel.js:107`; handler abrir modal `:659-667`; handler modal submetido `:1126-1137` → `cartorio.revisarTexto` (`utils/cartorio.js:80+`). Toggle que **já existe**: `painel.js:112-116` + roteamento `:671-683` + `utils/preferencias.js:8-24`.
-
-**5. "medida provisória" → "medida cautelar" (global).** Voltadas ao usuário (prioridade): `medida.js:45/323/330/331/343/355/385`, `painel.js:297/777`, `ficha.js:101`, `processo.js:2229`, `documentos.js:182/187/188`. Comentários/docs (coerência): `documentos.js:151/171`, `ficha.js:154`, `integracaoPoliciaCivil.js:2`, `config.js:52`, `mandado.js:39/194`, `README.md:3/7`, `package.json:4`. (grep `provis[oó]ri`.)
-
-**6. Renomear "Diário Oficial".** O código sempre referencia `config.canalDiarioOficialId` (`config.js:16`, env `CANAL_DIARIO_OFICIAL_ID`), nunca o nome literal → renomear o **canal** + a **env var** basta. Uso: `postarOuAtualizarDiario` (`processo.js:1027-1053`), chamadas `:297/751/1132`, capa `embedCapaPublica :1003`, habilitação via Diário (`botaoSolicitarHabilitacao :1021`, anexada em `:1040`). Textos/comentários a atualizar: `processo.js:311/1003/1027`, `auditoria.js:5`.
-
----
-
-## 6. Pontos de risco / inconsistência
-> Só reportado — nada corrigido.
-
-### 🔴 ALTA — Vazamento de teor de medida/mandado (sem gate + resposta pública)
-- `painel.js:1254-1259` (`medida:ver`) e `:1275-1280` (`mandado:ver`) respondem `embedMedida`/`embedMandado` **sem nenhuma checagem** de acesso; o botão "Ver" é exibido a **todos** (`painel.js:171/181`, `botaoSe(true,...)`).
-- `/medida ver` (`medida.js:373-377`) e `/mandado ver` (`mandado.js:211-215`): **pior** — `interaction.reply({embeds})` **sem `ephemeral:true`** → o teor é postado **publicamente no canal**.
-- Vaza: tipo (Prisão Preventiva/Interceptação/Quebra de Sigilo), alvo, Discord/nome/RG do alvo, motivo/indícios — dados do inquérito na fase pré-pública. O autocomplete lista todas as medidas/mandados a qualquer um, então descobrir números é trivial.
-- **Contraste que confirma esquecimento:** `verProcesso` faz o gate certo (`temAcessoTotal`/`processoPublico`, `processo.js:1057-1067`). Só medida/mandado ficaram sem. **→ prioridade máxima de correção.**
-
-### 🟠 MÉDIA
-- **Petição avulsa de qualquer Advogado** — `processo.js:1723-1726`: `peticionar` só exige `temCargo('Advogado')`, **sem** habilitação no processo → qualquer advogado protocola PDF em qualquer processo.
-- **Integração P. Civil confia no webhook** — `integracaoPoliciaCivil.js:28-51`: Delegado/réus/crimes vêm do embed; única barreira é `message.webhookId`. Quem postar via webhook (ou vazar a URL) pode forjar requerimento e criar medida/processo atribuídos a um Delegado arbitrário.
-
-### 🟡 BAIXA
-- **Entidades sem juiz/promotor** quando o sorteio falha (nunca há cargo elegível) ficam presas; só destravam com `isSuperStaff`. Habilitações Pendentes órfãs no mesmo caso.
-- **`Administrator` genérico herda todos os cargos** (`permissoes.js:16`) — pode disparar ações "de cargo" não-mérito (abrir processo, peticionar, ofício, atos do MP). Decisões de mérito estão protegidas (`isSuperStaff`), mas a amplitude nas ações de cadastro/protocolo vale registrar.
-- **Roteador de supervisão sem gate próprio** (`painel.js:741-748`) — depende 100% do self-check em `supervisao.js`; um handler novo ali sem self-check nasceria aberto.
-- **Referências a canal apagado** — em geral tratadas com `.catch(()=>null)`; campos `diarioMessageId`/`canalId` podem apontar para canais inexistentes sem limpeza (mitigado, repostam quando possível).
-
----
-
-## 7. Tabela-resumo final (índice de gatilhos)
-
-| Gatilho (comando/botão) | Função | Cargo(s) | Arquivo |
+| id | label | cargo | quando |
 |---|---|---|---|
-| `/processo penal\|civil\|ver\|historico` | Abrir/consultar processo | Delegado (penal) / Advogado (civil) | `processo.js:2222` |
-| `/medida solicitar\|ver\|listar` | Pedido de medida | Delegado / Promotor | `medida.js:329` |
-| `/oficio criar` | Emitir ofício (avulso ok) | Delegado/Promotor/Procurador/Juiz | `oficio.js:192` |
-| `/peticao porte-arma\|troca-nome\|limpeza-ficha\|alvara-evento` | Petição administrativa | Advogado | `peticao.js:771` |
-| `/ficha buscar` · `/mandado ver` · `/crime buscar` · `/instituicao` | Consultas / cadastro | ver seção 2 | `ficha.js`/`mandado.js`/`crime.js`/`instituicao.js` |
-| `/rh contratar\|demitir\|licenca\|listar` | Gestão de cargos | Staff | `rh.js:273` |
-| `/painel` | Menu interativo (todos os módulos) | todos (filtrado por cargo) | `painel.js:1488` |
-| Botão `processo:oferecer`/`arquivar` | Denúncia / arquivamento | Promotor 🔒 | `processo.js:90-91` |
-| Botão `processo:julgar` → select → modal | Sentença | Juiz 🔒 | `processo.js:318`, `executarSentenca:2154` |
-| Botão `apelacao:manter/reformar/anular` | Decidir apelação | Desembargador 🔒 | `processo.js:1922` |
-| Botão `habilitacao:solicitar`/`aprovar`/`negar` | Habilitação de defesa | Advogado / Juiz 🔒 | `processo.js:1023/1293` |
-| Botão `processo:peticionar` → PDF | Petição avulsa | Advogado (⚠️ sem vínculo) | `processo.js:1713` |
-| Botão `medida:aprovar/negar` | Aprovação MP da medida | Promotor 🔒 | `medida.js:63` |
-| Botão `medida:referendar`/`negarjuiz` | Referendo/negativa (gera mandado) | Juiz 🔒 | `medida.js:72` |
-| Botão `medida:cumprir` / `oficio:cumprir` → PDF | Cumprimento (mandado/ofício) | emissor 🔒 | `medida.js:87`/`oficio.js:50` |
-| Botão `mandado:emitir` → selects → modal | Emitir mandado no processo | Juiz 🔒 | `mandado.js:43` |
-| Botão `medida:solicitardireta` (no processo) | Medida coercitiva | Promotor 🔒 | `medida.js:117` |
-| Botão `mp:abrirprocesso` / atos MP | Denúncia a partir de ato / atos | Promotor/Procurador | `ministerioPublico.js:48` |
-| Modais Supervisão (trocar/forçar) | Supervisão | Desembargador/Procurador | `supervisao.js:36+` |
-| Botão `ficha:consultar*` / UserSelect | SISBAJUS | Promotor/Juiz/Desemb./Procurador | `ficha.js:120` |
-| Botão `cargo:solicitar`/`aprovar`/`negar` | Auto-atendimento de cargo | todos / Staff decide | `rh.js:71/120` |
-| Toggle `pessoal:revisaoauto` · botão `revisar:abrir` | Revisão de texto por IA | todos | `painel.js:107/112` |
-| Jobs `verificar*` (10 min / 24h) | Prazos, sorteio automático, escalonamento | bot | `utils/prazos.js`, `index.js:62-87` |
-| Webhook P. Civil (`messageCreate`) | Requerimento → medida/processo | bot | `integracaoPoliciaCivil.js` |
+| `oferecer_denuncia` | Oferecer denúncia | Promotor | penal sem juiz |
+| `arquivar_mp` | Arquivar | Promotor | penal sem juiz |
+| `identificar_reu` | Identificar réu | Delegado | penal sem juiz |
+| `anexar_relatorio` | 📎 Anexar relatório de inquérito | Delegado | penal sem juiz |
+| `julgar` | Julgar | Juiz | com juiz |
+| `intimar_reu` | 📃 Intimar réu (abre defesa) | Juiz | penal, juiz, réu não intimado |
+| `citar_reu_civil` | 📨 Receber e citar réu | Juiz | civil "Aguardando defesa" |
+| `gerenciar_defesa` | Gerenciar defesa | Juiz | com juiz |
+| `parte_tardia` | Adicionar parte tardia | Juiz | com juiz |
+| `emitir_intimacao` | Emitir intimação | Juiz | com juiz |
+| `arquivar_manual` | 📦 Arquivar | Juiz | com juiz |
+| `designar_juiz` | ⚖️ Designar Juiz | Desembargador/Procurador | preso sem juiz |
+| `historico` | 📜 Histórico (autos) | qualquer | sempre |
+| `emitir_mandado` | ⚖️ Emitir mandado | Juiz | penal com juiz |
+| `solicitar_medida` | 📋 Solicitar medida | Promotor | penal com juiz + promotor |
+| `registrar_depoimento` | 🗣️ Registrar depoimento | Juiz/Promotor/Delegado | penal com juiz |
+| `solicitar_documento_externo` | 📨 Solicitar documento externo | qualquer | sempre |
+| `peticionar` | 📄 Peticionar | Advogado | sempre |
+| `anexar_prova` | 🧾 Anexar prova | qualquer parte | sempre |
+| `rol_provas` | 🗂️ Rol de provas | qualquer | se há provas |
+| `gerenciar` | ⚙️ Gerenciar | Delegado/Juiz/Promotor | sempre |
+| `voltar_fase` | ↩️ Voltar fase | Juiz/Desembargador/Procurador | se há volta possível |
+| `manifestacao_mp` | 🏛️ Manifestação do MP | Promotor | penal |
+
+**Botões contextuais fora do catálogo** (nascem em mensagens específicas, não no painel geral): `recorrer` (pós-sentença), `anexarpeticaoinicial`, `anexarcontestacao`, `decretarrevelia`, `concluirinstrucao`, `habilitacao:solicitar` (capa pública), `intimarreucumprida`, `addadvogado`/`removeradvogado`, `pedirrevisao`, e os pares de decisão `deferirpeticao`/`indeferirpeticao`, `deferirreqmp`/`indeferirreqmp`, apelação `manter`/`reformar`/`anular`.
+
+**Botões de medida** (nus + painel): `medida:aprovar|negar|referendar|recorrer|cumprir|abrirprocesso|anexarindicios`, e via painel `deferirdireta`/`indeferirdireta`/`solicitardireta`/`negarjuiz`/`pedirreconsideracao[juiz]`/`decidirreconsideracao[juiz]`. Ofício: `oficio:criar|cumprir`. Todos os módulos compartilham o botão universal `arquivarmanual` (roteado pelo guard em `painel.js:629` → `arquivarManual`, gate por módulo em `podeArquivarManualmente` `painel.js:593-607`).
+
+### 1.3 Modais e select menus
+
+**Modais** (todos `painel:modal:...`, tratados em `painel.tratarModal` `painel.js:1104`; exceção: `medida:processomodal` tratado em `index.js:168`):
+- **Processo:** `sentenca`, `sentencapocrime`, `parecermp`, `depoimento`, `partetardia`, `intimar`/`intimarforadestinatario`/`intimargenerico`, `anexarprova`, `gerenciarrg`/`gerenciarnome`/`gerenciaraddcrime`, `voltarfase`, `manifestacaomplivre`, `recorrer`, `habilitacao:solicitar`. Abertura: `processo:penal`/`processo:civil`.
+- **Apelação:** `reformar`, `decidir`.
+- **Medida:** `aprovarmp`, `referendar`, `negarjuiz`, `solicitardireta`, `emitir` (mandado); `medida:processomodal` (abrir processo).
+- **Petição:** `porte-arma`, `troca-nome`, `limpeza-ficha`, `alvara-evento`, `vincularmanual`, `maisdados`, `<acao>:<numero>` (indeferir/diligência).
+- **Outros:** `mp:requisicao`/`recomendacao`/`inqueritocivil`, `oficio:criar`, `ficha:consultarrg`/`consultardiscordid`/`consultartermo`, `ficha:certidao`, `crime:buscar`, `cargo:solicitar`, `instituicao:adicionar`, supervisão `trocar*`/`forcardenuncia`/etc.
+
+**Select menus** (StringSelect + UserSelect, tratados em `tratarSelect`/`tratarUserSelect` `painel.js:888/1059`): tipo de medida/mandado, destinatário (instituição), atenuantes, veredicto por crime, resultado da sentença, papel de parte tardia, testemunha p/ depoimento, remover habilitação, risco (petição porte de arma), cargo desejado/contratação (RH), user-selects para vincular cliente/advogado/consultar pessoa.
+
+### 1.4 Jobs / tarefas automáticas (`utils/prazos.js`)
+
+Agendados em `index.js:68-94`: um bloco **diário** (`setInterval(DIA_MS)`) e um **a cada 10 min**. **Avisos por DM passam por `dmSeguro` e estão DESLIGADOS por padrão** (`config.avisosPorDmLigado`, `config.js:92`) — hoje só saem avisos **no canal**.
+
+| Job | Cadência | Dispara | Move estado? |
+|---|---|---|---|
+| `verificarPrazosJulgamento` | diária | 7 dias sem julgar → **arquiva** processo (`Arquivado sem julgamento de mérito`) | ✅ arquivamento automático |
+| `verificarRenovacoesPorteArma` | diária | porte vencido → status `Vencido`; aviso 3 dias antes | ✅ |
+| `verificarProcessosSemJuiz` / `...PenaisSemJuiz` / `verificarPeticoesSemJuiz` | 10 min | **sorteia e distribui Juiz** automaticamente; senão avisa + botão "Designar Juiz" | ✅ sorteio automático |
+| `verificarDiligenciasPendentes` | 10 min | diligência 24h não cumprida → **indefere petição automaticamente** | ✅ indeferimento automático |
+| `verificarPrazoHabilitacao` | 10 min | 48h sem defesa habilitada → **nomeia defensor dativo** (sorteio); senão avisa | ✅ cria habilitação Aprovada |
+| `verificarPrazoDefesa` | 10 min | 24h: dativo que não atuou → **re-sorteia** outro dativo; constituído → só avisa | ✅ parcial |
+| `verificarMedidasAguardandoMP` / `...AguardandoJuiz` | 10 min | avisos 20h (responsável) / escalonamento 48h (Procurador/Desembargador) | ❌ só flags |
+| `verificarMandadosPendentes` | 10 min | 40h → avisa Delegado de origem | ❌ |
+| `verificarApelacoesPendentes` | 10 min | 8d avisa relator / 15d escala | ❌ |
+| `verificarPrazosContestacao` | 10 min | avisa Juiz; **revelia continua manual** (por design) | ❌ |
+| `verificarVinculosPendentes` | 10 min | **NO-OP** (desativado na Frente 7, mantido só p/ não quebrar o agendamento) | ❌ |
+
+Idempotência: cada job grava um flag (`lembrete*Enviado`, `escalonamento*Enviado`, `avisoDefesaEnviado`) antes de enviar — padrão consistente (ressalva de entrega em 6.3).
+
+### 1.5 Integrações
+
+- **Sistema Integrado / Polícia Civil (entrada)** — `utils/integracaoPoliciaCivil.js`. `index.js:112` escuta `messageCreate` só no `canalRequerimentoPoliciaCivilId`; requerimento via webhook vira **medida cautelar** (`solicitarMedida`) ou **abre processo penal** (`ehEncerramentoInquerito`). Precisa da intent privilegiada `MessageContent` (senão embed chega vazio). **Validação de origem é opcional** — ver risco A (6.1).
+- **Polícia Civil (devolutiva)** — `utils/devolutivaPoliciaCivil.js`. Devolve decisão de mandado/ofício/**sentença integral** ao `webhookDevolutivaPoliciaCivilUrl` (egress de teor — 6.1).
+- **IA Google Gemini** — `utils/cartorio.js` (REST, sem SDK). Três usos: despacho de apoio, **revisão de forma** de textos (`revisarTexto`), **análise estruturada de PDF** (`analisarPdfEstruturado`). **Fallback gracioso sem chave** (`config.geminiApiKey` nulo → funções retornam null e o fluxo segue). Princípio "IA nunca decide o mérito" reforçado nos prompts. Chave vai na URL como query param mas **não é logada**.
+- **Fivemanage** — **não existe.** Nenhum upload de mídia próprio; PDFs são baixados por URL de anexo do Discord e PNGs seguem anexados na mensagem/webhook.
 
 ---
 
-*Fim do mapa. Documento gerado por leitura estática; nenhuma alteração de código-fonte foi feita. Aguardando revisão antes de qualquer implementação.*
+## 2. PERMISSÕES POR CARGO
+
+**Base (`utils/permissoes.js`):** `isAdmin` = Administrator do Discord ∨ `staffRoleId`. `temCargo` = a role `staffRoleId` ∨ `isSuperStaff` ∨ registro em `utils/rh` (**Administrator genérico NÃO age mais como cargo jurídico** — Frente 6). `isSuperStaff` = só a role `roleSuperStaffId` (atribuída à mão; usada como "coringa" nas decisões de mérito). Fonte de cargo = tabela `rh` (não a role do Discord).
+
+| Cargo | Pode | Não pode / limites | Onde é checado |
+|---|---|---|---|
+| **Delegado** | Abrir inquérito penal (`/processo penal`); solicitar medida (`/medida`); anexar relatório de inquérito; identificar réu; gerenciar dados no inquérito; cumprir mandado; recorrer de medida negada (reconsideração ao Procurador); pedir revisão de arquivamento; emitir ofício; registrar depoimento | Não julga, não oferece denúncia, não consulta SISBAJUS, não pede certidão | `processo.js:3255,897`; `medida.js:370,476,924`; `oficio.js:39` |
+| **Promotor** | Oferecer/arquivar denúncia (do **seu** caso); aprovar/negar medida; manifestação/requerimento do MP; solicitar medida direta no processo; consultar SISBAJUS; pedir certidão; atos extrajudiciais do MP (requisição/recomendação/inquérito civil) | Não julga; não decide reconsideração (é do Procurador) | `processo.js:234,3314`; `medida.js:413,461`; `ministerioPublico.js:33`; `ficha.js:23` |
+| **Juiz** | Referendar/deferir medida; emitir mandado; julgar/sentenciar (do **seu** processo); intimar/citar; decidir habilitação, petição e requerimento do MP; decretar revelia; arquivar civil; SISBAJUS; certidão; voltar fase | Não oferece denúncia; não decide apelação (é do Desembargador) | `processo.js:3332,1566,2123,2731`; `medida.js:686,262` |
+| **Advogado** | Abrir processo civil (`/processo civil`); protocolar petições administrativas; habilitar-se na defesa; peticionar; anexar petição inicial/contestação/prova; recorrer (quem perdeu) | Não julga; não consulta SISBAJUS; não pede certidão | `processo.js:3275,856,945,2072`; `peticao.js:846` |
+| **Desembargador** | Decidir apelação (relator): manter/reformar/anular; trocar Juiz (supervisão); designar Juiz; reconsideração de medida indeferida por Juiz; voltar fase; reabrir petição | Só o **relator** decide a apelação | `processo.js:2929`; `supervisao.js:33,240`; `medida.js:630` |
+| **Procurador** | Reconsideração de medida negada por Promotor; trocar Promotor/Delegado; forçar/manter denúncia; designar Juiz; gerir instituições; reabrir petição | — | `medida.js:535`; `supervisao.js:133,283`; `instituicao.js:7` |
+| **Staff / Dono** | `isAdmin`: visão/ação ampla, RH (`/rh`), arquivamento manual. `isSuperStaff` (role "Staff Salve", à mão): coringa nas decisões de **mérito** (aprovar/negar/referendar/sentença/petição/apelação) | `isAdmin` **não** conta como cargo jurídico para abrir/decidir casos (Frente 6); só `isSuperStaff` é o coringa de mérito | `permissoes.js:9-38` |
+
+**Padrão dominante nas decisões de medida:** checagem de **identidade da parte** (`interaction.user.id === medida.{promotor|delegado|juiz}`) com escape `isSuperStaff` — não por cargo genérico. As decisões recursais (reconsideração) usam **cargo institucional** (`temCargo('Procurador'/'Desembargador')`).
+
+**Gates de renderização vs. execução:** o menu (`painel.js`) esconde botões por cargo (UX), mas a **trava real** está no handler de cada ação. Ver risco G (6.2) sobre ações que dependem só da revalidação interna.
+
+---
+
+## 3. MODELO DE DADOS
+
+Storage: **um único `dados.json`** (`database/db.js`), com 18 tabelas declaradas em `TABELAS` + a órfã `identidades` (ver 6.5). Cada registro tem `id` (auto-incremental **global**) e `criado_em` (string pt-BR). Sem banco externo.
+
+| Entidade (tabela) | Campos principais |
+|---|---|
+| **processo** (`processos`) | `numero`, `tipo` (Penal/Civil), `status`, `crimes[]`, `motivo`, `autor`/`autorNome`/`autorRg`/`autorDiscordId`, `reuNome`/`reuRg`/`reus[]`, `delegado`, `promotor`, `juiz`, `juizDesde`, `canalId`, `painelMsgId`, `diarioMessageId`, `medidaVinculada`, `atoMpVinculado`, `codigoExterno`, `sentenca`/`resultado`/`pena`/`regime`/`sentencaPorCrime[]`/`sentencaEm`, `habilitacoes[]`, `partes[]`, `depoimentos[]`, `intimacaoReuCumpridaEm`, `defesaApresentadaEm`, `prazoContestacaoAte`, `revisaoArquivamento`/`revisaoArquivamentoCanalId`, flags de aviso |
+| **habilitacao** (subdoc de processo) | `id`, `reuId`, `reuNome`, `advogadoId`, `nomeCliente`, `rgCliente`, `status` (Pendente/Aprovado), `dativo`, `criadoEm`, `aprovadoEm`, `avisoDefesaEnviado` |
+| **parte** (subdoc) | `id` (`p1`…), `papel` (reu/autor/testemunha_acusacao/testemunha_defesa/terceiro), `nome`, `discordId`, `rg`, `origem` |
+| **depoimento** (subdoc) | `parteId`, `colhidoPor`, `papelDeQuemColheu`, `texto`, `dataHora` |
+| **medida** (`medidas`) | `numero`, `tipo`, `alvo`/`alvoDiscordId`/`rgAlvo`, `motivo`, `status`, `delegado`, `promotor`, `juiz`, `canalId`, `codigoExterno`, `processoVinculado`, `fundamentacaoPromotor`/`fundamentacaoJuiz`/`decisaoJuizEm`, `aguardandoMpDesde`/`aguardandoJuizDesde` + flags de lembrete/escalonamento, `reconsideracao[Juiz]`/`...CanalId` |
+| **mandado** (`mandados`) | `numero`, `medidaNumero`, `processoVinculado`, `tipo`, `alvo`, `status` (Emitido/Cumprido), `emitidoPor`, `cumpridoPor`, `lembreteMandadoEnviado` — **schema divergente entre origens** (6.4) |
+| **oficio** (`oficios`) | `numero` (`OFI-0001`), `processoNumero`, `destinatario`, `assunto`, `conteudo`, `emitidoPor`, `canalId`, `status`, `aguardaRetorno`, `cumpridoPor`/`cumpridoEm` |
+| **peticao** (`peticoes`) | `numero` (`0001PA`…), `tipo` (PorteArma/TrocaNome/LimpezaFicha/AlvaraEvento), `requerenteId`, `promotor`, `juiz`, `status`, `canalId`, dados do cliente (`rgCliente`/`nomeCliente`/`enderecoCliente`/`discordIdCliente`), `nivelRisco`, `validadeAte`, `nomeAtual`/`nomeNovo`/`primeiraVez`, `nomeEvento`/`localEvento`/`numeroPessoas`, `diligenciaDesde` |
+| **ficha** (`fichas`) | `rg` (PK lógica), `nomeCivil`, `nomeCivilOrigem`, `historicoNomes[]`, `trocasDeNome`, `discordIds[]`, `vinculosOrigem[]`, `enderecos[]`, `telefones[]`, `redesSociais[]`, `criadoEm`/`atualizadoEm` |
+| **rh** (`rh`) | `discordId`, `cargo`, `ativo`, `licenca`, `nomePersonagem` |
+| **solicitacaoCargo** (`solicitacoesCargo`) | `discordId`, `cargo`, `nomePersonagem`, `status`, `decididoPor`/`decididoEm` |
+| **apelacao** (`apelacoes`) | `numero`, `status`, `desembargadorId`, `recorrenteId`, `parteContrariaId`, `processoOriginalNumero`, `razoes`, `canalId` |
+| **certidao** (`certidoes`) | `numero`, `rg`, `nomeCliente`, `finalidade`, `executorId`, `instituicao`, `canalId` |
+| **atoMp** (`atosMp`) | `numero`, `tipo` (Requisição/Recomendação/Inquérito Civil), `destinatario`, `fundamentacao`, `prazo`/`objeto`, `executorId`, `canalId`, `processoVinculado`, `status` |
+| **consulta** (`consultas`) | `numero`, `executorId`, `criterioRg`/`criterioDiscordId`/`criterioTermo`, `encontrado`, `canalId` (SISBAJUS) |
+| **instituicao** (`instituicoes`) | `slug` (PK lógica), `nome`, `pai` — **nasce com semente de 10 instituições** (`db.js:13`) |
+| **andamento** (`andamentos`) | `id`, `processoNumero`, `tipo`, `titulo`, `detalhe`, `executorId`, `anexoUrl`, `metadata`, `criadoEm` (timeline dos autos) |
+| **documentoAnexado** (`documentosAnexados`) | `tipo`, `url`, `nomeArquivo`, `autorId`, `atoOrigemId`, `protocoloVinculado`, `dataEnvio` |
+| **dossieInquerito** (`dossiesInquerito`) | `protocoloInquerito`, `medidas[]`, `mandados[]`, `documentos[]`, `processoVinculado` |
+| **preferencia** (`preferencias`) | `discordId`, `revisaoAutomatica` (toggle de revisão por IA) |
+| **estado** (`estado`) | `chave`/`valor` (KV para sobreviver a restart: IDs de painel/mensagens) |
+
+**Observações estruturais:**
+- **Numeração inconsistente:** processos/medidas/petições usam sufixo (`0001CV`, `0001MD`, `0001MO`, `0001PA`); ofício usa prefixo clássico (`OFI-0001`). Esquemas diferentes convivendo (`utils/numeracao.js`).
+- **Campos de partes sobrepostos** em `processo`: coexistem `autorNome`/`autor`/`autorDiscordId`, `reuNome`/`reus[]`/`partes[]`/`habilitacoes[]` — várias representações da mesma informação (candidato a consolidação de modelo).
+- `RESETAR_BANCO=1` zera o banco a cada deploy (produção/Railway) — precisa ser removida após subir limpo (`db.js:57`).
+
+---
+
+## 4. FLUXOS PONTA A PONTA
+
+Legenda: **[botão]** = clique em cadeia; **[manual]** = exige comando/ação manual da parte; **[auto]** = job automático.
+
+### 4.1 Penal (inquérito → sentença → recurso)
+
+1. **Abertura do inquérito** — `/processo penal` (Delegado) **[manual]** → `criarProcessoPenal` (`processo.js:724`): cria canal, status `Aguardando decisão do MP`, sorteia Promotor se não informado, entra Delegado+Promotor. (Também pode nascer da Polícia Civil ou de ato do MP.)
+2. **(Opcional) Relatório de inquérito** — botão `📎 Anexar relatório` **[botão]** → IA resume pro Promotor.
+3. **Decisão do MP** — botões nus `Oferecer denúncia`/`Arquivar` **[botão]** → `modalParecerMp` → `confirmarParecerMp` → tela de revisão IA → `executarParecerMp`:
+   - **Oferecer:** **[auto]** sorteia Juiz (exclui delegado/promotor/réus). Sem Juiz → aguarda (retry por job); com Juiz → status `Instrução`.
+   - **Arquivar:** status `Arquivado`; oferece "Pedir revisão" ao Delegado.
+4. **Intimação do réu (abre defesa)** — botão `📃 Intimar réu` **[botão]** → gera código + PNG → `✅ Marcar intimação cumprida` **[botão]** libera a **capa cega** em "Advogar - Pegar Casos" e inicia prazo de **48h** **[auto]**.
+5. **Habilitação da defesa** — advogado clica na capa **[manual]** → `abrirModalHabilitacao` → valida **código + nome/RG** do réu → Juiz aprova/nega **[botão]**. Se 48h sem defesa: **[auto]** nomeia **defensor dativo**.
+6. **Instrução** — depoimentos, intimações, petições, provas, manifestação/requerimento do MP, mandado/medida — todos **[botão]** ou **[manual]** por parte responsável.
+7. **Sentença** — botão `Julgar` **[botão]** → **veredicto por crime** (≤25 crimes) → tela de apoio → `modalSentencaPorCrime` → revisão IA → `executarSentenca`: status `Encerrado`, PNG, **devolutiva à Polícia Civil**, arquiva canal, posta `Recorrer`.
+8. **Recurso** — `Recorrer` (só quem perdeu) **[botão]** → razões → `criarApelacao`: **[auto]** sorteia Desembargador. Relator decide `manter`/`reformar`/`anular` **[botão]**. **Anular** re-sorteia Juiz e reabre o processo.
+
+> **Onde ainda é manual (não encadeia sozinho):** toda a cadeia intimar → marcar cumprida → aprovar habilitação → julgar → sentença → recorrer é clique manual da parte. O único passo automático é o sorteio de Juiz (+ retry por job).
+
+### 4.2 Civil (petição inicial → julgamento)
+
+1. **Abertura** — `/processo civil` (Advogado) **[manual]** → `criarProcessoCivil` (`:800`): **[auto]** sorteia Juiz na hora. Status `Aguardando defesa`. PDF da inicial anexado depois.
+2. **Recebimento/indeferimento** — `Arquivar` (indefere a inicial) ou `📨 Receber e citar réu` **[botão]**.
+3. **Citação** — `Receber e citar réu` → `emitirIntimacao` (`ehCitacaoCivil`): status `Aguardando contestação`, calcula `prazoContestacaoAte`, posta `Decretar revelia`.
+4. **Habilitação da defesa** — capa cível detalhada **[manual]** → `criarHabilitacaoCivil` (sem código, só nome/RG + @ opcional) → Juiz aprova → posta `Anexar contestação`.
+5. **Contestação** — `📎 Anexar contestação` **[botão]** → status `Concluso para julgamento`, IA resume, dossiê de conclusão. Sem contestação após prazo → `Decretar revelia` **[botão, só após vencido]**.
+6. **Julgamento** — `Julgar` (exige `Concluso para julgamento`) → select resultado (Procedente/Improcedente) → `modalSentenca` → `executarSentenca`. Recurso idêntico ao penal (parte contrária = autor).
+
+### 4.3 Medida → apreciação → mandado
+
+1. `/medida solicitar` (Delegado) **[manual]** → ticket, status `Aguardando MP` (ou `Aguardando anexo de indícios`). Sem indícios: `📎 Anexar indícios` **[botão]**.
+2. Promotor `Aprovar` **[botão]** → **[auto]** sorteia Juiz → status `Aprovada - aguardando juiz`. `Negar` → Delegado `Juntar indícios e recorrer` ou reconsideração ao Procurador.
+3. Juiz `Referendar` **[botão]** → revisão IA → **emite mandado automaticamente** (insere em `mandados`), PNG, devolutiva PC, libera `Cumprir`. `Negar provimento` → reconsideração ao Desembargador.
+4. Delegado `Cumprir mandado` **[botão]** (exige PDF) → status `Cumprido`.
+5. Promotor `Abrir processo penal` **[botão]** → modal → inicia processo penal vinculado.
+
+> **Vias "diretas" dentro do processo já aberto:** Juiz emite mandado direto (`emitir_mandado` → select tipo/destinatário → modal), e Promotor solicita medida direta (`solicitar_medida`) sem passar por Delegado/MP — Juiz defere/indefere.
+
+### 4.4 Petições administrativas
+
+Os 4 tipos (Porte de Arma, Troca de Nome, Limpeza de Ficha, Alvará de Evento) seguem o **mesmo rito**:
+1. **Protocolo** — `/peticao <tipo>` ou botão do painel (Advogado) **[manual]** → modal → `criarPeticao*` → ticket em `categoriaPeticoesId`, status `Aguardando sorteio de juiz`, grava endereço na ficha.
+2. **Distribuição** — **[auto]** sorteia Promotor + Juiz (retry por job se faltar Juiz). Vínculo do Discord do cliente é **opcional**.
+3. **Decisão (Juiz)** — `Deferir` (com confirmação; PorteArma pede nível de risco 0-3), `Indeferir`, `Converter em diligência` **[botão]**. Diligência 24h não cumprida → **[auto]** indefere.
+4. **Efeitos** — PorteArma deferido → `validadeAte` +15d (renovação por job); TrocaNome deferido → `registrarTrocaNome` + `setNickname`; gera PNG (sentença/intimação), arquiva canal.
+
+---
+
+## 5. RELATÓRIO DE REDUNDÂNCIAS (FOCO)
+
+> A boa notícia: **PNG, textos jurídicos, análise de PDF e telas de revisão-IA já estão bem consolidados** (fonte única, ver 5.E). As redundâncias reais são de **handlers/fluxos quase idênticos** e de **botões/caminhos sobrepostos**.
+
+### 5.A — Handlers de fluxo quase idênticos (maior impacto)
+
+| # | O quê | Onde | Por que é redundante | Consolidação sugerida |
+|---|---|---|---|---|
+| R1 | **Revisão-IA in-flow ×4** (parecer, razões, acórdão, sentença) | `processo.js:247,2838,3097,3450` (+ blocos `publicar*`/`usarRevisado*`) | Mesmo esqueleto (get rascunho → guard expirou → `deferUpdate` → `cartorio.revisarTexto` → tela) diferindo só no nome da função | `revisarRascunho(interaction,{chave,campoTexto,tela})` + `resolverTextoFinal(d,modo)` |
+| R2 | **"Anexar PDF" ×3** (petição inicial, relatório, contestação) | `processo.js:853,894,935` | Sequência idêntica: busca → gate dono → "já anexado" → `aguardarAnexoPDF` → `criarDocumento` → editar → `gerarAnaliseEmbed` | `anexarDocumentoPdf({tipo,gateFn,statusPatch})` |
+| R3 | **2 pares de reconsideração** (Procurador vs Desembargador) | `medida.js:491-582` e `587-679` | ~180 linhas espelhadas (cria ticket, embed, 2 botões, on-aprovar sorteia + reencaminha) | Parametrizar por cargo/estado |
+| R4 | **Cumprimento com PDF** (mandado vs ofício) | `medida.js:870` e `oficio.js:61` | Mesma sequência perm→`aguardarAnexoPDF`→`criarDocumento`→update `Cumprido`→análise | Helper "registrar cumprimento com PDF" |
+| R5 | **Petição: SLASH × MODAL × criar ×4 tipos** | `peticao.js:844-909` (execute) refaz o que `processarModal*` (`:523-594`) e `criarPeticao*` (`:196-301`) já fazem | 3 cópias do mesmo fluxo por tipo (12 blocos) | 1 função por tipo consumida pelas duas entradas |
+| R6 | **Modais de fundamentação de campo único** (aprovar/referendar/negarjuiz) | `medida.js:416,689,783` | Só muda customId/título/label | `modalFundamentacao(customId,titulo,label)` |
+| R7 | **RH aprovar × negar solicitação** | `rh.js:135` e `:167` | Estrutura quase idêntica (gate, buscar, `atualizarPorFiltro`, DM, embed) | Função comum parametrizada por decisão |
+| R8 | **Esqueleto tipo→destinatário→modal** (mandado direto vs medida direta) | `mandado.js:72-141` vs `medida.js:135-186` | `modalTeorMandado`≈`modalJustificativaMedidaDireta`; resolução de destinatário duplicada | Helpers compartilhados de "select tipo/destinatário" |
+
+### 5.B — Ações/caminhos sobrepostos
+
+- **Duas intimações que convergem** — fluxo genérico (`abrirSelectDestinatarioIntimacao`→`confirmarIntimacaoGenerica`) e clássico (`modalIntimacao`/`emitirIntimacao`) terminam ambos em `postarIntimacaoNoCanal` (`processo.js:1773`); os próprios comentários admitem que só se distinguem "pelo momento". Consolidável.
+- **Dois caminhos pro mesmo ofício** — submenu Ofício (`painel:menu:oficio`) e HUD do processo `📨 Solicitar documento externo` (`solicitardocumento`) desembocam ambos em `oficioCmd.criarOficio`. Além disso, a chamada a `criarOficio` está **triplicada** com payload quase igual (`painel.js:983,1206,1328`) → extrair `montarChamadaOficio()`.
+- **Views legadas vs catálogo** — `botoesDenuncia`/`botoesJuiz` (`processo.js:108,357`) ainda são usadas na **abertura** do processo, mostrando um subconjunto diferente de botões frente ao `montarPainelAcoes` reposto depois. Aposentar as views legadas e abrir já com `painelAtual`.
+- **4 blocos revisar/publicar/usarrevisado idênticos no router** — `painel.js:640-662` (sentenca/parecermp/acordao/razoes) → mapa `{modulo:{revisar,publicar,usarrevisado}}`.
+- **UserSelect de RH ×3** (contratar/demitir/licenca) — mesma estrutura (`painel.js:850,854,858`).
+
+### 5.C — Textos jurídicos que deveriam ser template único
+
+- Vários teores **hardcoded inline** em `processo.js` que já poderiam morar em `utils/documentos.js` (onde já vivem `textoDespacho`/`textoIntimacao`): intimação do réu (`:1184`), decreto de revelia (`:1008`), despacho de recebimento (`:328`), indeferimento da inicial (`:1964`), citação (`:1884`), presets de intimação (`TEOR_PRESETS_INTIMACAO :1755`), crime-tardio (`:2399`).
+- **Já consolidado (não mexer):** `crimesTexto.js` unificou formatação/busca de crime que estava em 3 lugares; `documentos.js` é fonte única dos 13 textos formais.
+
+### 5.D — Código morto e exports supérfluos
+
+| Item | Onde | Situação |
+|---|---|---|
+| `rh.aplicarApelido` | `rh.js:335` (export) | **Morto** externamente (uso só interno) |
+| `rh.fichaFuncional` | `rh.js:341` (export) | **Morto** externamente (uso só interno) |
+| `ficha.enderecosDe` | `ficha.js:178` (util) | **Morto** — nenhum chamador no projeto |
+| `historico.medidaOrigem: null` | `historico.js:32` | Campo sempre nulo (resquício) |
+| `verificarVinculosPendentes` | `prazos.js:162` | **NO-OP** ainda agendado a cada 10 min |
+| Ramo `Condenado` de `modalSentenca`/`salvarSentenca` | `processo.js:125-130,3431` | **Ramo morto** — Penal+Condenado sempre vai por-crime |
+| 8 exports supérfluos de `processo.js` | `vincularReu`, `embedCapaPublica`, `processoPublico`, `temAcessoTotal`, `painelAtual`, `botoesJuiz`, `finalizarApelacao`, `criarApelacao` | Rodam por dentro, mas o `module.exports` não é consumido de fora (poluição de API) |
+| Wrappers passthrough | `certidoes.instituicaoDoSolicitante`, `oficio.instituicaoDoEmissor` | Só chamam `permissoes.papelInstitucional` — chamar direto |
+| Comentário obsoleto | `cartorio.blocoDespacho` (`:60`) cita `blocoResumoPdf` inexistente | Justificativa de dedup caducou; 1 só chamador |
+
+### 5.E — O que já está bem fatorado (para não "consolidar o que já está consolidado")
+
+PNG (único `gerarDocumentoPNG` com 15 tipos + banner reusando o mesmo browser), textos jurídicos (`documentos.js`), análise/extração de PDF (1 engine `cartorio.analisarPdfEstruturado` + `analiseDocumento.gerarAnaliseEmbed`), telas de revisão-IA (`revisaoIA.js` substituiu ~40 linhas × 5), e o cabeçalho institucional (`permissoes.papelInstitucional`). **Nenhuma duplicação real remanescente de PNG/embed/PDF entre `utils/` e `commands/`.**
+
+---
+
+## 6. PONTOS DE RISCO / INCONSISTÊNCIA
+
+### 6.1 Segurança / vazamento
+
+- **[🔴 A] Webhook da Polícia Civil sem validação por padrão** — `integracaoPoliciaCivil.js:175-183`. Sem `WEBHOOK_REQUERIMENTO_POLICIA_CIVIL_ID` no `.env`, **qualquer** webhook no canal cria medida cautelar real, atribuída a um **Delegado arbitrário** (via `@menção` extraída do embed). O código reconhece a brecha mas o default é inseguro. → Exigir a env em produção (falhar fechado).
+- **[🟠 B] `indeferirMedidaDireta` responde sem `ephemeral`** — `medida.js:301`. O texto do indeferimento vai **público** ao canal, ao contrário de todos os outros replies do arquivo. → Adicionar `ephemeral: true`.
+- **[🟠 C] Vazamento de teor por listagem/rol sem gate:**
+  - `verRolProvas` (`processo.js:2258`) **não checa parte** — mostra descrição/links de todas as provas a qualquer clicante (o `anexarprova` usa `ehParteDoProcesso`, o `rolprovas` não).
+  - "Listar recentes" de medida/mandado (`painel.js:794,810` → `listarEResponder :304`) faz `db.todos(...).slice(0,15)` **sem filtrar por acesso** — só o `ver` individual é gated (`temAcessoMedida`/`temAcessoMandado`). Medidas são sigilosas na fase de inquérito.
+  - **Autocomplete** de `/medida`, `/mandado`, `/oficio` lista **todos** os números com tipo/status, ignorando o sigilo do `ver`.
+  - `processo/ver` (`painel.js:1283`) e `verProcesso` — confirmar se travam sigilo de inquérito (medida/mandado travam, processo aparenta não travar da mesma forma).
+- **[🟠 E] PNG sem sanitização uniforme** — `gerarDocumentoPNG.js:150-272`. Só `corpoTexto` passa por `escapeHtml`; `nomeReu`, `crimeDescricao`, `pena`, `destinatario`, `subunidade`, `tituloDocumento`, `nomeAssinante` entram **crus** no HTML. Texto livre do usuário com `<` ou tag **quebra o layout** (sem exfiltração — imagem estática). → Escapar todos os campos interpolados.
+- **[🟡] Egress de teor integral** — `devolutivaPoliciaCivil.js:87` envia a **sentença completa** ao webhook externo da PC, sem revalidar o dono do webhook (URL estática). Por design, mas é saída de decisão para fora do servidor.
+
+### 6.2 Autorização
+
+- **[🟡 D] `cumprirMandado` com checagem pulável** — `medida.js:877-880`: `responsavelCumprimento = medida?.delegado || processo?.delegado`. Se ambos forem falsy (mandado direto sem delegado), o `if (responsavel && ...)` **curto-circuita** e qualquer um pode marcar como cumprido. → Exigir Staff quando não há responsável.
+- **[🟡 G] Ações sem gate no `painel.js`** — as ações de `processo` (`painel.js:701-733`), `supervisao` (`748-756`) e `cargo` (`635-636`), além das decisões de fundamentação (`640-662,737-744`), **não têm gate inline** — dependem 100% da revalidação interna do handler. **A maioria revalida** (verificado: `decidirPeticao`, `decidirRequerimentoMp`, `julgar`, `arquivarCivil`, supervisão via `podeSupervisionar`/`podeDesignar`). Ponto de atenção para replay de `customId` antigo: garantir que **toda** função de supervisão/decisão revalide (algumas só checavam na renderização do submenu).
+- **[🟡] `salvarManifestacaoLivre` com gate largo** — `processo.js:2678`: `ehMembroDoMp` aceita **qualquer** Promotor/Procurador, não o `processo.promotor`. Um MP alheio ao caso junta manifestação/requerimento em qualquer processo penal (diferente de oferecer/arquivar, que exigem o dono).
+- **[🟡] `instituicao.processarModalAdicionar` não re-checa `podeGerenciar`** — `instituicao.js:45` (contraste com `ficha.js`, que re-checa em todo `processarModal*`).
+- **[🟡] Ações sensíveis de petição sem gate de cargo** — `anexarDocumentoPeticao`, `vincularClienteDiscord`, `processarVincularManual`, `abrirModalMaisDados` (`peticao.js:92,444,386,416`) confiam só no acesso ao canal — qualquer membro do ticket pode anexar/alterar vínculo e gravar na ficha do RG.
+
+### 6.3 Consistência de dados / bugs
+
+- **[🟡 F] Divergência de schema em `mandados`** — `medida.referendar` grava `medidaNumero` **sem** `processoVinculado` (`medida.js:712`); `emitirMandadoNoProcesso` grava `processoVinculado` com `medidaNumero:null` (`mandado.js:173`). Consequência: mandado de referendo não concede acesso via partes do processo (`temAcessoMandado`) nem mostra o processo no embed. Além disso, o PNG do referendo **não** é registrado em `documentosAnexados` (o direto é) — rastreabilidade inconsistente.
+- **[🟡] `ficha.js:21` `TIPO_LABEL` sem `AlvaraEvento`** — uma petição de Alvará renderiza `undefined` na ficha do cidadão (`peticao.js` tem os 4 tipos; `ficha.js` só 3).
+- **[🟡] Comentário/lógica stale de vínculo obrigatório** — `peticao.js:619` diz "vínculo do Discord é obrigatório antes de deferir", mas `decidir` (`:732`, Frente 7) não exige mais. Efeito real: TrocaNome pode deferir sem `discordIdCliente` → `setNickname` é pulado em silêncio.
+- **[🟡] AlvaraEvento grava o local do evento como endereço pessoal** — `peticao.js:279/539`: `ficha.adicionarEndereco(rg, localEvento)` polui a ficha central do organizador.
+- **[🟡] Slash `civil` força `@` obrigatório** — `processo.js:3241,3243` exige `autor_discord`/`reu_discord`, contra todo o resto que trata Discord como opcional. Abrir cível de quem não está no Discord é impossível pelo slash.
+- **[🟡] `removerHabilitacao` monta `<@null>`** — `processo.js:1723`: quando o réu é só nome/RG (`reuId=null`), gera menção quebrada (`decidirHabilitacao` já trata com `reuRef`).
+- **[🟡] Anulação deixa `sentencaPorCrime` órfão** — `finalizarApelacao` (`:3011`) zera `sentenca`/`resultado` mas não `sentencaPorCrime`; fica stale até o re-julgamento.
+- **[🟡] Possível lockout da defesa (penal)** — `dadosBatemComReu` (`:1422`) exige `reuNome`+`reuRg`; inquérito aberto sem identificar o réu bloqueia toda habilitação (mesmo com o código certo) sem mensagem explicando a causa.
+- **[🟡] Perda silenciosa de aviso** — vários jobs de `prazos.js` gravam o flag "avisado" **antes** do `canal.send`; se o envio falhar, o aviso nunca reenvia.
+- **[🟡] `parseCriadoEm` frágil a formato** — `data.js:3` assume estritamente `DD/MM/AAAA, HH:mm:ss` pt-BR; um `criado_em` em ISO retorna `Invalid Date` e derruba cruzamentos por dias.
+- **[🟡] RH: troca de cargo deixa role antiga no Discord** — `contratarComRole` só adiciona a role nova; promover Delegado→Juiz deixa a role Delegado pendurada (o `temCargo` segue o registro, não a role).
+- **[🟡] RH: auto-atendimento sem restrição de cargo** — usuário pode solicitar Juiz/Desembargador/Procurador livremente (mitigado só pela aprovação da staff); canal de contratações tem fallback amplo (`rh.js:124-126`) que pode postar o card num canal público.
+
+### 6.4 (consolidado em F acima)
+
+### 6.5 Estrutural
+
+- **Tabela `identidades` órfã** — existe no `dados.json` (0 registros) mas **não** está na lista `TABELAS` do `db.js` (aparentemente migrada para `fichas`). Não é semeada nem garantida em banco novo. → Remover do arquivo ou reintroduzir formalmente.
+- **README desatualizado** — descreve apelação/petições como "próxima fase / fora desta versão", mas ambos já existem e estão implementados. Deriva de documentação.
+- **`AUDITORIA_BOT.md` anterior** citava números de linha de uma versão antiga do `processo.js` — este documento substitui com a numeração atual.
+
+---
+
+## 7. TABELA-RESUMO (índice gatilho → função → cargo → arquivo)
+
+> Índice de referência. "nu" = botão `modulo:acao:numero` direto por `index.js`; demais são `painel:*`.
+
+### Processo (penal/civil)
+| Gatilho | Função | Cargo | Arquivo |
+|---|---|---|---|
+| `/processo penal` | `criarProcessoPenal` | Delegado | `processo.js:3260,724` |
+| `/processo civil` | `criarProcessoCivil` | Advogado | `processo.js:3280,800` |
+| `/processo ver`·`listar`·`historico` | `verProcesso`/`listarProcessos`/`verHistoricoProcesso` | partes | `processo.js:3288-3302` |
+| `processo:oferecer` (nu) | `oferecer`→`confirmarParecerMp` | Promotor dono | `processo.js:3311,230` |
+| `processo:arquivar` (nu) | `arquivar` | Promotor dono | `processo.js:3320` |
+| `processo:julgar` (nu) | `julgar` | Juiz do caso | `processo.js:3329` |
+| `...:partetardia` | `abrirSelectPapelParteTardia` | Delegado/Juiz | `processo.js:3492` |
+| `...:anexarrelatorio` | `anexarRelatorioInquerito` | Delegado dono | `processo.js:894` |
+| `...:intimarreu`·`intimarreucumprida` | `intimarReu`/`marcarIntimacaoReuCumprida` | Juiz | `processo.js:1172,1210` |
+| `...:recebereintimar` | `abrirModalReceberEIntimar`→`emitirIntimacao` | Juiz | `processo.js:1874,1888` |
+| `...:gerenciardefesa`·`addadvogado`·`removeradvogado` | `abrirGerenciarDefesa`/`abrirAdicionarAdvogado`/`abrirRemoverAdvogado` | Juiz | `processo.js:3498,3530-3532` |
+| `habilitacao:solicitar`·`aprovar`·`negar` | `abrirModalHabilitacao`/`decidirHabilitacao` | Advogado / Juiz | `processo.js:1436,1561` |
+| `...:intimar`·`teorintimacao` | `abrirSelectDestinatarioIntimacao`/`confirmarIntimacaoGenerica` | Juiz | `processo.js:3500,1850` |
+| `...:arquivarcivil` | `arquivarCivil` | Juiz | `processo.js:1949` |
+| `...:decretarrevelia` | `decretarRevelia` | Juiz (após prazo) | `processo.js:986` |
+| `...:requererprovas`·`concluirinstrucao` | `requererNovasProvas`/`concluirInstrucaoNovamente` | Juiz | `processo.js:1030,1057` |
+| `...:regdepoimento` | `abrirSelectTestemunha`→`registrarDepoimentoHandler` | Juiz/Promotor/Delegado | `processo.js:3515,657` |
+| `...:peticionar` | `peticionar` | Advogado parte | `processo.js:2062` |
+| `...:deferirpeticao`·`indeferirpeticao` | `decidirPeticao` | Juiz | `processo.js:2118` |
+| `...:anexarprova`·`rolprovas` | `abrirModalAnexarProva`/`verRolProvas` | parte / (sem gate) | `processo.js:3522,2258` |
+| `...:gerenciar`·`gerenciarremovecrime` | `abrirGerenciar`/`tratarGerenciar`/`removerCrime` | Delegado/Juiz/Promotor | `processo.js:3525-3529` |
+| `...:voltarfase` | `abrirModalVoltarFase`→`voltarFase` | Juiz/Des./Procurador | `processo.js:2489,2547` |
+| `...:manifestacaomp`·`deferirreqmp`·`indeferirreqmp` | `abrirManifestacaoMp`/`decidirRequerimentoMp` | MP / Juiz | `processo.js:2616,2726` |
+| `...:pedirrevisao` | `pedirRevisaoArquivamento` | Delegado dono | `processo.js:1983` |
+| `...:recorrer` | `abrirModalRecorrer`→`criarApelacao` | quem perdeu | `processo.js:2808,2848` |
+| `apelacao:manter`·`reformar`·`anular` | `abrirModalFundamentacaoDecisao`/`abrirSelecaoResultadoReforma`→`finalizarApelacao` | Desembargador relator | `processo.js:3550,3548,2981` |
+| modal `processo:sentenca`/`sentencapocrime` | `salvarSentenca`/`salvarSentencaPorCrime`→`executarSentenca` | Juiz do caso | `processo.js:3418,3128` |
+
+### Medida / Mandado / Ofício
+| Gatilho | Função | Cargo | Arquivo |
+|---|---|---|---|
+| `/medida solicitar`·`ver`·`listar` | `solicitarMedida`/`embedMedida`/`embedListaMedidas` | Delegado / acesso | `medida.js:304,43,62` |
+| `medida:aprovar` (nu) | `aprovar`→`processarAprovacaoMP` | Promotor dono | `medida.js:410,423` |
+| `medida:negar` (nu) | `negar` | Promotor dono | `medida.js:458` |
+| `medida:referendar` (nu) | `referendar`→`confirmarDecisaoMedida` | Juiz da medida | `medida.js:683,827` |
+| `medida:recorrer` (nu) | `recorrer` | Delegado da medida | `medida.js:473` |
+| `medida:cumprir` (nu) | `cumprirMandado` | Delegado responsável | `medida.js:870` |
+| `medida:anexarindicios` (nu) | `anexarIndicios` | Delegado | `medida.js:921` |
+| `medida:abrirprocesso` (nu) + modal `processomodal` | `abrirProcesso`/`criarProcessoModal` | Promotor | `medida.js:955,983` |
+| `...:negarjuiz` | `abrirModalNegarJuiz`→`negarJuiz` | Juiz da medida | `medida.js:777,790` |
+| `...:pedirreconsideracao`·`decidirreconsideracao` | reconsideração (Procurador) | Delegado / Procurador | `medida.js:491,533` |
+| `...:pedirreconsideracaojuiz`·`decidirreconsideracaojuiz` | reconsideração (Desembargador) | Del./Prom. / Desembargador | `medida.js:587,628` |
+| `...:solicitardireta`·`deferirdireta`·`indeferirdireta` | medida direta no processo | Promotor / Juiz | `medida.js:135,259,285` |
+| `/mandado ver`·`listar` | `embedMandado`/`embedListaMandados` | partes | `mandado.js:23,39` |
+| `...:mandado:emitir` | `abrirSelectTipo`→`emitirMandado`→`emitirMandadoNoProcesso` | Juiz do processo | `mandado.js:72,143,169` |
+| `/oficio criar` / `...:oficio:criar` | `criarOficio` | Delegado/MP/Juiz | `oficio.js:113` |
+| `...:oficio:cumprir` | `cumprirOficio` | emissor / SuperStaff | `oficio.js:61` |
+
+### Petição / Ficha / RH / Crime / Instituição / Supervisão
+| Gatilho | Função | Cargo | Arquivo |
+|---|---|---|---|
+| `/peticao <tipo>` / `...:peticao:abrir*` | `criarPeticao*` | Advogado | `peticao.js:196-301` |
+| `...:peticao:deferir`·`indeferir`·`diligencia` | `decidir`→`finalizarDecisao` | Juiz do caso | `peticao.js:721,598` |
+| `...:peticao:certidao`·`reabrir`·`anexardocumento` | `solicitarCertidaoDaPeticao`/`reabrirCaso`/`anexarDocumentoPeticao` | Juiz+ / Des./Proc. / — | `peticao.js:122,323,92` |
+| `/ficha buscar` / `...:ficha:*` (SISBAJUS) | `abrirConsulta`/`abrirModalConsulta*`/`consultarPorPessoaSelecionada` | Promotor/Juiz/Des./Procurador | `ficha.js:119,145,280` |
+| `/rh contratar`·`demitir`·`licenca`·`listar` | `contratarComRole`/`demitirComRole`/... | Staff (isAdmin) | `rh.js:39,51` |
+| `...:cargo:solicitar`·`aprovar`·`negar` | `solicitarCargo`/`aprovarSolicitacao`/`negarSolicitacao` | qualquer / Staff | `rh.js:91,135,167` |
+| `...:cargo:ficha` | `mostrarFichaFuncional` (ficha funcional/RH) | (via Supervisão) | `rh.js:267` |
+| `/crime buscar` / `crime:resultado` | `embedCrime` | todos | `crime.js:27,44` |
+| `/instituicao adicionar`·`listar` | `processarModalAdicionar`/`embedInstituicoes` | Admin/Procurador / todos | `instituicao.js:45` |
+| `...:supervisao:trocar*`·`forcardenuncia`·`designarjulgador`·`filas` | `supervisao.abrirModal*`/`designarJulgador`/`filasPendentes` | Desembargador/Procurador | `supervisao.js:33,133,283,86,458` |
+| `...:mp:requisicao`·`recomendacao`·`inqueritocivil`·`abrirprocesso` | atos do MP | Promotor/Procurador | `painel.js:831-834`, `ministerioPublico.js` |
+| `...:pessoal:revisaoauto` (toggle) | `preferencias.alternarRevisaoAutomatica` | todos | `painel.js:666` |
+| botão-portal `pessoal:abrirmenu` | abre o menu por cargo | todos | `painel.js:1454` |
+
+---
+
+## 8. PROPOSTA DE OTIMIZAÇÃO DO HUD (FOCO)
+
+### 8.1 O problema, medido
+
+Hoje `montarPainelAcoes` (`processo.js:553`) mostra a **união de TODOS os botões aplicáveis à fase** (botões do Discord são compartilhados na mensagem, não por-usuário). Num **processo penal em instrução**, o painel exibe ~16 botões em 4 linhas: `Julgar`, `Gerenciar defesa`, `Adicionar parte tardia`, `Emitir intimação`, `📦 Arquivar`, `🏛️ Manifestação do MP`, `📜 Histórico`, `📨 Solicitar documento externo`, `📄 Peticionar`, `🧾 Anexar prova`, `🗂️ Rol de provas`, `⚙️ Gerenciar`, `↩️ Voltar fase`, `⚖️ Emitir mandado`, `📋 Solicitar medida`, `🗣️ Registrar depoimento`. Um Advogado vê o mesmo muro cheio de botões de Juiz/MP que não pode usar.
+
+### 8.2 A oportunidade: o metadado de cargo **já existe**
+
+`CATALOGO_ACOES` **já declara `cargo` em cada ação** (ex.: `julgar → ['Juiz']`, `oferecer_denuncia → ['Promotor']`, `peticionar → ['Advogado']`). Hoje o empacotamento é por `grupo` (função); **basta reagrupar por `cargo`**. O custo de implementação é baixo — a informação está pronta.
+
+### 8.3 Proposta: HUD enxuta com hubs por cargo
+
+Substituir o muro de botões por **poucos botões-hub** (cada um abre um submenu efêmero com as ações daquele cargo, filtradas por fase) + uma linha fixa de **ações universais**. Sugestão de agrupamento a partir do catálogo atual:
+
+**Linha fixa — Ações universais (sempre visíveis, sem hub):**
+- `📜 Histórico (autos)` · `📨 Solicitar documento externo` · `🗂️ Rol de provas` (quando houver prova)
+
+**👨‍⚖️ Hub Juiz** (`cargo: Juiz`): `Julgar`, `Emitir intimação` / `Receber e citar réu`, `Intimar réu`, `Gerenciar defesa`, `Adicionar parte tardia`, `Emitir mandado`, `Decretar revelia`, `Requerer provas`, `Concluir instrução`, `📦 Arquivar`, `↩️ Voltar fase`, decidir petição/requerimento do MP.
+
+**🏛️ Hub Ministério Público** (`cargo: Promotor`): `Oferecer denúncia`, `Arquivar (denúncia)`, `🏛️ Manifestação do MP`, `📋 Solicitar medida`.
+
+**🛡️ Hub Advogado** (`cargo: Advogado`): `📄 Peticionar`, `🧾 Anexar prova`, `📎 Anexar petição inicial`, `📎 Anexar contestação`, `Solicitar habilitação`, `Recorrer`.
+
+**👮 Hub Delegado / Polícia** (`cargo: Delegado`): `Identificar réu`, `📎 Anexar relatório de inquérito`, `⚙️ Gerenciar (RG/nome/crime)` na fase de inquérito, `Pedir revisão de arquivamento`.
+
+**🧑‍⚖️ Supervisão** (Desembargador/Procurador — pode ficar fora de hub, contextual): `⚖️ Designar Juiz`, `↩️ Voltar fase`, trocar Juiz/Promotor/Delegado, forçar/manter denúncia.
+
+**Ações compartilhadas entre cargos** (reusam a MESMA função, aparecem em mais de um hub sem duplicar código):
+- `🗣️ Registrar depoimento` → Hub Juiz + Hub MP + Hub Delegado (`cargo: ['Juiz','Promotor','Delegado']`).
+- `🧾 Anexar prova` → qualquer parte (poderia ficar nas universais ou em Advogado + Juiz).
+- `⚙️ Gerenciar` → Delegado (inquérito) + Juiz/Promotor (com juiz).
+
+> Implementação sugerida: um `montarPainelHubs(processo)` que, em vez de `porGrupo`, faz `porCargo` a partir de `a.cargo`; cada hub é um botão `painel:hub:<cargo>:<numero>` que abre (efêmero) os botões daquele cargo já filtrados por `quando()`. Ações `cargo:['qualquer']` viram a linha fixa. Como o gate real continua no clique de cada ação, esconder por hub é só UX (não enfraquece segurança).
+
+### 8.4 Botões redundantes/sobrepostos a eliminar ou fundir no HUD
+
+| Botão | Sobrepõe-se a | Ação sugerida |
+|---|---|---|
+| `Emitir intimação` (genérico) | `Receber e citar réu` (civil) / intimação clássica — ambos caem em `postarIntimacaoNoCanal` | Fundir num único fluxo de intimação que decide "cita?" pelo estado |
+| `📨 Solicitar documento externo` (HUD) | Submenu **Ofício** (`painel:menu:oficio`) — mesma `criarOficio` | Manter um só ponto de entrada (o do processo) e remover a duplicação de payload (`painel.js:983,1206,1328`) |
+| `botoesDenuncia`/`botoesJuiz` (abertura) | `montarPainelAcoes` (painel reposto) | Aposentar as views legadas; abrir já com o painel do catálogo |
+| `📦 Arquivar` (manual) vs `Arquivar` (denúncia MP) vs `Arquivar` (civil/inicial) | 3 "Arquivar" com significados distintos | Rotular claramente ("Arquivar inquérito" / "Indeferir inicial" / "📦 Arquivar canal") para não confundir |
+| Ramo `Condenado` do `modalSentenca` | `modalSentencaPorCrime` (sempre usado no penal) | Remover o ramo morto (`processo.js:125-130,3431`) |
+
+*(Só proposta — nada implementado.)*
+
+---
+
+## 9. IMPACTO DAS MUDANÇAS JÁ PLANEJADAS (onde afetam)
+
+> Você listou 7 mudanças "para depois". Aqui está o estado real de cada uma e onde tocam.
+
+| Mudança pretendida | Estado no código hoje | Onde afeta |
+|---|---|---|
+| **Mover Petições → Processos** | ✅ **Já feito no menu**: botão de petição dentro do submenu de Processos (`painel.js:158`). Falta (se quiser): mover a **ação** para dentro do HUD/fluxo do processo, não só do menu. Acoplamentos: `painel.js` (rotas `peticao:*`), `prazos.js:213,220`, `distribuicaoJuiz.js` (sorteio de Juiz **compartilhado**), `utils/ficha`, tabela própria `peticoes` (distinta de `processos`) | `peticao.js`, `painel.js:761-773`, `prazos.js`, `distribuicaoJuiz.js` |
+| **Mover Ofício e Mandado → Medidas** | ✅ **Já feito no menu**: Ofício e Mandado dentro do submenu de Medidas (`painel.js:174-175`). **Mandado já é fortemente acoplado à medida** (nasce do referendo; cumprimento mora em `medida.js`). **Ofício é independente** — mover é só organizacional | `painel.js:181-198`, `medida.js`, `mandado.js`, `oficio.js` |
+| **Mover Ficha Judiciária → Supervisão** | ⚠️ **Ambíguo — são DUAS "fichas":** (a) **SISBAJUS** (`ficha.js`, consulta criminal do cidadão) e (b) **Ficha Funcional** (`rh.js:267`, estatísticas dos membros). A **Ficha Funcional já está** dentro de Supervisão (`painel.js:231`). **Decidir qual das duas** você quer mover — têm rotas e gates distintos | `painel.js:231,251-261,637`, `ficha.js`, `rh.js:233,267` |
+| **Remover botão "Revisão de texto" (vira toggle inline)** | ✅ **Botão já removido**; hoje é o toggle "Revisão automática (IA)" (`painel.js:87,107` confirma a saída). O que resta é o **passo intermediário** (tela "revisar/publicar/usar-revisado") nos 5 fluxos de fundamentação — se "toggle inline" significa eliminar essa tela, mexe em ~13 pontos de `processo.js` + `medida.js` | `revisaoIA.js`, `cartorio.js:111` (comentário), `processo.js:247,2838,3097,3450`, `medida.js:846` |
+| **Trocar "medida provisória" por "medida"** | ⚠️ **"medida provisória" NÃO existe no código.** O termo real é **"Medida Cautelar"**. Se o alvo é uniformizar para "medida", os textos de usuário estão em: `medida.js:45,344` (título/descrição), `processo.js:2635` ("Requerer medida cautelar"), `processo.js:3237` (descrição do parâmetro), `documentos.js:201-207` | `medida.js`, `processo.js`, `documentos.js`, `ficha.js:101` |
+| **Renomear canal "Diário Oficial" → "Habilitação de Advogado"** | ⚠️ **Texto de usuário já migrado** para "Advogar - Pegar Casos". Sobra **identificador interno**: `config.canalDiarioOficialId` + env `CANAL_DIARIO_OFICIAL_ID` (fallback), função `postarOuAtualizarDiario`, campo `processo.diarioMessageId`. Renomear = tocar `config.js:16-18`, `processo.js:1129` (+ chamadas `prazos.js:132`, `supervisao.js:367`, `distribuicaoJuiz.js:57`), `fase2.js:32`, `limpar-historico.js:17`. **Confirme o nome-alvo** ("Habilitação de Advogado" vs "Advogar - Pegar Casos" já em uso) | `config.js`, `processo.js`, `prazos.js`, `supervisao.js`, `distribuicaoJuiz.js`, `fase2.js` |
+| **Reorganizar botões de ação por cargo (hubs)** | ❌ **Não feito** — é a proposta da seção 8. Metadado de cargo já existe em `CATALOGO_ACOES` (baixo custo) | `processo.js:389-572` |
+
+---
+
+## APÊNDICE — Arquivos de operação (não-runtime)
+
+- `fase2.js` — script REST (dry-run / `--apply`) que configura **visibilidade de canais por cargo**; hardcoda IDs de canal. Referencia o canal "Diário Oficial".
+- `limpar-servidor.js` / `.bat` / `limpar-historico.js` — scripts de faxina/reset (uso manual/ops).
+- `scripts/simulador.js` / `simuladorDemo.js` — simuladores de fluxo (ligados por `SIMULAR=1` / `SIMULAR_DEMO=1`).
+- `scripts/changelog.js` — histórico de mudanças.
+- `deploy-commands.js` — registro dos slash commands por guild.
+
+---
+
+*Fim da auditoria. Nenhum código foi alterado. Aguardando sua revisão antes de qualquer mudança.*
