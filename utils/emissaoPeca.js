@@ -381,6 +381,7 @@ async function renderizar(guild, peca, cfg) {
     porDestinatario.push({
       dest,
       paginas: await gerarPecaPNG({
+        gated: peca.gated,
         token: dest.token,
         digitos: peca.digitos,
         codigoArquivo: peca.codigoArquivo,

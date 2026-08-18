@@ -233,12 +233,28 @@ async function gerarPecaPNG(dados) {
 
 // Montagem separada da renderização: o HTML é a parte com regra de layout (paginação, selo em todas
 // as páginas) e precisa ser inspecionável sem subir Chromium.
+//
+// SELO É CONDICIONAL AO MODO — achado em 18/08/2026, primeiro teste real em produção (0006CV-P1).
+// SPEC §11.2 é explícita: modo `aberto` tem "formulário e PNG iguais ao ingame, mas SEM selo, sem
+// janela e sem gate". Esta função sempre montou o selo incondicionalmente, chamando
+// QRCode.toDataURL(dados.token) mesmo quando não havia token — utils/pecas.js grava
+// `token: gated ? novoToken() : null` para destinatário não-gated (é assim que o modo aberto se
+// desenha: sem token, não há o que destravar). O resultado: QRCode.toDataURL(null) lança
+// "Invalid data", 100% das vezes, para toda peça de processo em modo aberto — o que hoje é o modo
+// PADRÃO de processo novo (interruptor nasce desligado, SPEC §11.2 "ausência de registro =
+// desligado"). Não era falha transitória; retry não teria ajudado nem uma vez.
 async function montarHtml(dados) {
-  const qr = await qrDataUri(dados.token);
   const digitos = String(dados.digitos || '').padEnd(6, '0').slice(0, 6).split('');
   const rotulos = ['A', 'B', 'C', 'D', 'E', 'F'];
 
-  const seloHtml = `
+  let seloHtml = '';
+  if (dados.gated) {
+    // Peça gated SEM token é bug em outro lugar (utils/pecas.js deveria ter gerado um) — falha alto
+    // e cedo, com mensagem que aponta a causa, em vez de deixar QRCode.toDataURL(undefined) explicar
+    // sozinho com "Invalid data".
+    if (!dados.token) throw new Error(`peça gated sem token de selo (${dados.numeroPeca || '?'}) — utils/pecas.js deveria ter gerado um`);
+    const qr = await qrDataUri(dados.token);
+    seloHtml = `
     <div class="selo">
       <div class="qr"><img src="${qr}"></div>
       <div class="info">
@@ -253,6 +269,7 @@ async function montarHtml(dados) {
         <div class="caixa">${escapeHtml(String(dados.codigoArquivo || '').slice(0, 12))}</div>
       </div>
     </div>`;
+  }
 
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>${CSS}</style></head><body>
     <div id="documento"></div>
@@ -277,7 +294,7 @@ async function montarHtml(dados) {
         <div>${escapeHtml(dados.cargoAssinante)}</div>
       </div>
       ${seloHtml}
-      <div class="rodape"><span class="n-folha"></span><span>Autenticidade conferível pelo selo acima</span></div>
+      <div class="rodape"><span class="n-folha"></span><span>${dados.gated ? 'Autenticidade conferível pelo selo acima' : 'Documento emitido pelo sistema — modo aberto, sem selo de autenticação'}</span></div>
     </div>
     <script>${scriptPaginacao(dados.numeroProcesso)}</script>
   </body></html>`;

@@ -476,6 +476,11 @@ function paraRenderizacao(pecaNumero, usuarioId, { ehStaff = false } = {}) {
     ok: true,
     peca: {
       numero: peca.numero, processoNumero: peca.processoNumero, tipo: peca.tipo,
+      // `gated` é o que decide se a renderização monta o selo — achado em 18/08/2026 junto do bug
+      // do modo aberto: faltava aqui, e sem ele todo chamador desta porta receberia `undefined`
+      // (falsy), fazendo peça GATED perder o selo em silêncio. É booleano, não teor — não amplia o
+      // que esta porta expõe de sensível.
+      gated: peca.gated,
       texto: peca.texto, digitos: peca.digitos, autorId: peca.autorId, autorPapel: peca.autorPapel,
       destinatarios: peca.destinatarios.map(d => ({ papel: d.papel, habilitacaoId: d.habilitacaoId, token: d.token })),
     },

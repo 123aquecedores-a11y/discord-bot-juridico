@@ -57,7 +57,7 @@ async function gerar() {
   fs.mkdirSync(SAIDA, { recursive: true });
   console.log('Gerando documento de teste...');
   const paginas = await gerarPecaPNG({
-    token, digitos,
+    gated: true, token, digitos,
     numeroPeca: '0001PN-P1', numeroProcesso: '0001PN',
     titulo: 'PETIÇÃO INICIAL', orgao: 'PODER JUDICIÁRIO',
     unidade: 'Comarca de São Paulo — Vara Criminal',

@@ -27,8 +27,11 @@ function ok(cond, nome, detalhe = '') {
 
 const TOKEN = 'tk_a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6';
 const PARAGRAFO = 'Considerando os elementos coligidos aos autos e a farta documentação acostada pelas partes, verifica-se que a pretensão deduzida encontra amparo na prova produzida sob o crivo do contraditório, razão pela qual se impõe o acolhimento do pedido nos termos a seguir delineados. ';
+// gated: true — este arquivo testa especificamente o selo (QR, dígitos, paginação com selo em
+// todas as páginas). O selo passou a ser condicional ao modo (achado em 18/08/2026, 0006CV-P1: modo
+// aberto não tem selo e `gerarPecaPNG` agora exige `gated` explícito para montá-lo).
 const dadosPeca = (texto) => ({
-  token: TOKEN, digitos: '729416', numeroPeca: '0001PN-P1', numeroProcesso: '0001PN',
+  gated: true, token: TOKEN, digitos: '729416', numeroPeca: '0001PN-P1', numeroProcesso: '0001PN',
   titulo: 'PETIÇÃO INICIAL', orgao: 'PODER JUDICIÁRIO', unidade: 'Comarca — Vara Criminal',
   data: '18/08/2026', texto, assinante: 'Dr. Fulano de Tal', cargoAssinante: 'Advogado',
 });

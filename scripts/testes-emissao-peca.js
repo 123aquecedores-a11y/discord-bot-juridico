@@ -135,6 +135,56 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     ok(db.todos('pecas', x => x.processoNumero === p.numero).length === 0, '5b: ...e NÃO cria peça órfã');
   }
 
+  console.log('\n16) Render passa pelo pipeline REAL — modo aberto sem selo, ingame com selo');
+  // ACHADO EM PRODUÇÃO (18/08/2026, primeiro teste real — 0006CV-P1): toda emissão em processo
+  // `aberto` falhava ao renderizar, com "Invalid data". Causa: services/gerarPecaPNG.js montava o
+  // selo incondicionalmente, chamando QRCode.toDataURL(token) mesmo quando o destinatário não é
+  // gated — e utils/pecas.js grava `token: null` nesse caso, de propósito (SPEC §11.2: modo aberto
+  // não tem selo). Os testes anteriores só checavam pecas.gerar() a nível de DADOS (token===null),
+  // nunca passavam esse dado pelo renderizador de verdade — por isso o bug não apareceu antes de
+  // bater em produção. Este teste fecha essa lacuna, exercitando o caminho INTEIRO (criarPeca, que é
+  // exatamente o que o botão "Enviar peça" chama), com Chromium real.
+  {
+    const gerarPecaPNG = require('../services/gerarPecaPNG');
+
+    console.log('  (parte rápida — monta HTML sem subir Chromium)');
+    const htmlAberto = await gerarPecaPNG.montarHtml({
+      gated: false, token: null, digitos: null, numeroPeca: '0001CV-P1', numeroProcesso: '0001CV',
+      titulo: 'PETIÇÃO', orgao: 'PODER JUDICIÁRIO', data: '18/08/2026', texto: 'teor',
+      assinante: 'Dr. Fulano', cargoAssinante: 'Advogado',
+    });
+    ok(!/class="selo"/.test(htmlAberto), '16a: modo aberto NÃO monta o bloco de selo (SPEC §11.2)');
+    ok(/sem selo de autenti/i.test(htmlAberto), '16b: ...e o rodapé diz que é modo aberto, não finge ter selo');
+
+    const htmlGated = await gerarPecaPNG.montarHtml({
+      gated: true, token: 'tk_teste_selo_real_123456789012', digitos: '111111', numeroPeca: '0001PN-P1',
+      numeroProcesso: '0001PN', titulo: 'INTIMAÇÃO', orgao: 'PODER JUDICIÁRIO', data: '18/08/2026',
+      texto: 'teor', assinante: 'Dr. Fulano', cargoAssinante: 'Juiz',
+    });
+    ok(/class="selo"/.test(htmlGated), '16c: modo ingame CONTINUA montando o selo — não regredir no sentido oposto');
+
+    let gatedSemToken = null;
+    try { await gerarPecaPNG.montarHtml({ gated: true, token: null, numeroPeca: 'X', texto: 't', assinante: 'a', cargoAssinante: 'b', titulo: 't', orgao: 'o', data: 'd' }); }
+    catch (e) { gatedSemToken = e.message; }
+    ok(gatedSemToken && /sem token de selo/.test(gatedSemToken), '16d: gated sem token falha ALTO E CEDO, com mensagem clara — não "Invalid data" da lib de QR');
+
+    console.log('  (parte lenta — Chromium real, é o mesmo caminho que quebrou em produção)');
+    const abertoProc = novoProcesso('aberto');
+    await emissao.receberTrecho(fakeInteraction(ADV, 'modal', { tese: 'Tese de teste em modo aberto.' }), 'peticao_incidental', abertoProc.numero);
+    const iAberto = fakeInteraction(ADV, 'peca:enviar');
+    await emissao.criarPeca(iAberto, 'peticao_incidental', abertoProc.numero);
+    const respostaAberto = textoDe(iAberto.rec.edits[0] || iAberto.rec.replies[0]);
+    ok(!/não pôde ser renderizado/i.test(respostaAberto), '16e: emissão REAL em modo aberto NÃO cai no fallback de falha de render (era o bug de 0006CV-P1)');
+    ok(/criada/i.test(respostaAberto), '16f: ...e confirma a peça criada normalmente');
+
+    const ingameProc = novoProcesso('ingame');
+    await emissao.receberTrecho(fakeInteraction(JUIZ, 'modal', { tese: 'Tese de teste em modo ingame.' }), 'intimacao_juiz', ingameProc.numero);
+    const iIngame = fakeInteraction(JUIZ, 'peca:enviar');
+    await emissao.criarPeca(iIngame, 'intimacao_juiz', ingameProc.numero);
+    const respostaIngame = textoDe(iIngame.rec.edits[0] || iIngame.rec.replies[0]);
+    ok(!/não pôde ser renderizado/i.test(respostaIngame), '16g: emissão REAL em modo ingame continua renderizando (com selo) sem regressão');
+  }
+
   console.log('\n6) Janela de entrega (SPEC §6.2)');
   {
     const p = novoProcesso();
