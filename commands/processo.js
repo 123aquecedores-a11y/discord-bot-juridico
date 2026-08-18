@@ -3320,9 +3320,23 @@ async function executarSentenca(interaction, numero, modo) {
   if (processo.tipo === 'Penal') {
     await devolutivaPoliciaCivil.enviarSentencaPoliciaCivil({ processo, texto: documentos.textoSentenca(processo), pngBuffer: pngSentenca });
   }
+  // VAZAMENTO FECHADO EM 18/08/2026. `detalhe` do andamento guardava a fundamentação INTEIRA, e
+  // andamento não passa por podeVerTeor — a camada de visibilidade cobre a tabela `pecas`, não
+  // `andamentos`. Resultado: em processo `ingame`, qualquer parte lia a sentença completa pelo
+  // botão "Histórico" (embedHistorico → temAcessoTotal, que libera para todas as partes), sem
+  // nenhuma entrega pessoal ter acontecido. E o andamento é PERMANENTE: continua consultável
+  // depois do canal ser arquivado.
+  //
+  // Aqui o teor simplesmente não é persistido quando o processo é gated — não é "esconder na
+  // exibição", é não gravar. A fonte da sentença continua sendo `processos.sentenca`, que é onde
+  // a migração para o módulo gated (pendente) vai pendurar o selo e a entrega.
+  const sentencaGated = require('../utils/pecas').modoDoProcesso(processo) === 'ingame';
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'sentenca', titulo: `⚖️ Sentença — ${resultado}`,
-    detalhe: texto, executorId: interaction.user.id, anexoUrl: anexoUrlSentenca, metadata: { resultado, pena, regime },
+    detalhe: sentencaGated
+      ? 'Sentença proferida. O teor fica restrito até a entrega pessoal ao advogado de cada parte.'
+      : texto,
+    executorId: interaction.user.id, anexoUrl: anexoUrlSentenca, metadata: { resultado, pena, regime },
   });
   await repostarPainel(interaction.guild, numero);
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
