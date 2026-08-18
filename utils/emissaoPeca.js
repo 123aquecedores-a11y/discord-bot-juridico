@@ -125,8 +125,15 @@ async function abrirEmissao(interaction, tipoChave, numeroProcesso) {
 
   const modo = pecas.modoDoProcesso(processo);
   if (modo === pecas.MODOS.LEGADO) {
+    // Esta mensagem quase nunca aparece: o botão "Peticionar" já bifurca por modo, e num processo
+    // legado ele vai direto para o anexo de PDF sem passar por aqui. Ela existe como rede para o
+    // caso de alguém clicar num botão de mensagem antiga — e por isso precisa dizer o que fazer,
+    // não só o que não dá. Recusa sem saída é o que vira reclamação de "bug".
     return interaction.reply({
-      content: '⚠️ Este processo nasceu no fluxo antigo (petição em PDF anexado) e continua nele até o fim — o rito não muda no meio dos autos. Use o anexo de sempre.',
+      content: '⚠️ **Este processo é anterior ao formulário de peças** e continua no rito em que nasceu — o procedimento não muda no meio dos autos.\n\n'
+        + '**O que fazer:** peticione normalmente pelo botão **📄 Peticionar** do painel (hub *Advogado / Defesa*). '
+        + 'Ele abre a janela para você anexar a petição em PDF, como sempre funcionou neste processo.\n\n'
+        + 'O formulário novo vale para processos abertos a partir de agora.',
       ephemeral: true,
     });
   }

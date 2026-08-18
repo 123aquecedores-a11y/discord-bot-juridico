@@ -104,8 +104,11 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     const p = novoProcesso(null); // sem o campo = legado, sem migração (SPEC §11.2.2)
     const i = fakeInteraction(JUIZ, 'peca:emitir');
     await emissao.abrirEmissao(i, 'intimacao_juiz', p.numero);
-    ok(!i.rec.modais.length && /fluxo antigo/i.test(textoDe(i.rec.replies[0])), '3a: processo legado recusa e explica por quê');
-    ok(/não muda no meio dos autos/i.test(textoDe(i.rec.replies[0])), '3b: ...deixando claro que o rito não muda no meio');
+    const msg = textoDe(i.rec.replies[0]);
+    ok(!i.rec.modais.length && /anterior ao formul/i.test(msg), '3a: processo legado recusa e explica por quê');
+    ok(/não muda no meio dos autos/i.test(msg), '3b: ...deixando claro que o rito não muda no meio');
+    // Recusa sem saída é o que vira reclamação de "bug": a mensagem tem que dizer o que fazer.
+    ok(/Peticionar/.test(msg) && /PDF/i.test(msg), '3c: ...e diz exatamente qual botão usar no lugar');
   }
 
   console.log('\n4) Modal tem UM campo, de 4.000 (SPEC §12)');
@@ -285,6 +288,29 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     r.set('k', r.get('k')); // é o que lerRascunho faz
     await new Promise(res => setTimeout(res, 80));
     ok(r.get('k') !== undefined, '12b: reescrever no get renova o prazo (2h de inatividade, não de vida)');
+  }
+
+  console.log('\n13) O caminho antigo NÃO foi quebrado');
+  // Processos legado são gente travada no servidor se o botão antigo sumir. O fluxo novo entra
+  // BIFURCANDO o "Peticionar" que já existe, e não substituindo — em processo legado ele continua
+  // caindo no anexo de PDF.
+  {
+    const fonte = fs.readFileSync(path.join(__dirname, '..', 'commands', 'processo.js'), 'utf-8');
+
+    ok(/function botaoAnexarPeticaoInicial/.test(fonte), '13a: o botão "Anexar petição inicial" continua existindo');
+    ok(/function anexarPeticaoInicial/.test(fonte), '13b: ...com o handler dele');
+    ok(/function botaoAnexarContestacao/.test(fonte), '13c: "Anexar contestação" também');
+    ok(/aguardarAnexoPDF\(interaction\)/.test(fonte), '13d: e o fluxo de anexar PDF segue no peticionar');
+
+    // A bifurcação: legado segue no PDF, processo novo vai para o formulário.
+    ok(/modoDoProcesso\(processo\) !== 'legado'/.test(fonte), '13e: "Peticionar" bifurca por modo');
+    const i = fonte.indexOf("modoDoProcesso(processo) !== 'legado'");
+    const j = fonte.indexOf('aguardarAnexoPDF(interaction)', i);
+    ok(i !== -1 && j !== -1 && j > i, '13f: ...e o caminho do PDF vem DEPOIS da bifurcação (legado cai nele)');
+
+    const painel = fs.readFileSync(path.join(__dirname, '..', 'commands', 'painel.js'), 'utf-8');
+    ok(/acao === 'anexarpeticaoinicial'/.test(painel), '13g: o roteamento do botão antigo está intacto');
+    ok(/acao === 'peticionar'/.test(painel), '13h: e o do Peticionar também');
   }
 
   console.log('\n8) Carimbo do modo na abertura (SPEC §11.2)');

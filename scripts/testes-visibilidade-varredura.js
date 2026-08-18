@@ -52,6 +52,17 @@ const PERMITIDOS = new Set([
 const PORTAS = ['podeVerTeor', 'projetarParaUsuario', 'paraRenderizacao'];
 const REGEX_PORTAS = new RegExp(`(?:${PORTAS.join('|')})\\s*\\(`, 'g');
 
+// Funções de utils/pecas.js que devolvem um OBJETO DE PEÇA — as únicas por onde `.texto` pode
+// chegar a um arquivo. É o gatilho da regra B.
+//
+// Sem esta lista, a regra dispararia em qualquer arquivo que importasse `pecas` por qualquer motivo
+// e tivesse um `.texto` em outro contexto — commands/processo.js usa só `modoDoProcesso` (que devolve
+// uma string) e tem `preset.texto` do rascunho de sentença, que não tem relação nenhuma com peça.
+// Achado falso é como se ensina uma equipe a ignorar a varredura, então a precisão aqui é o que
+// mantém os achados verdadeiros levados a sério.
+const DEVOLVEM_PECA = ['gerar', 'paraRenderizacao', 'projetarParaUsuario', 'receber', 'resolverTokenPublico', 'pendentesDoPapel'];
+const REGEX_DEVOLVEM_PECA = new RegExp(`(?:pecas|pecasModulo)\\.(?:${DEVOLVEM_PECA.join('|')})\\s*\\(`);
+
 let passes = 0; const falhas = [];
 function ok(cond, nome, detalhe = '') {
   if (cond) { passes++; console.log(`  ✅ ${nome}`); }
@@ -152,8 +163,9 @@ console.log('\nB) Ninguém devolve teor sem passar pela camada');
   const infratores = [];
   for (const [arquivo, src] of FONTES) {
     if (PERMITIDOS.has(arquivo)) continue;
-    const usaPecas = /require\(['"][^'"]*pecas['"]\)/.test(src);
-    if (!usaPecas) continue;
+    // Só interessa quem pode TER uma peça em mãos. Importar `pecas` para chamar `modoDoProcesso`
+    // não põe teor nenhum no arquivo.
+    if (!REGEX_DEVOLVEM_PECA.test(src)) continue;
     const leTeor = /\.texto\b/.test(src);
     REGEX_PORTAS.lastIndex = 0;
     const passaPelaCamada = REGEX_PORTAS.test(src);
@@ -211,8 +223,8 @@ console.log('\nD) A varredura pega o vazamento quando ele aparece (auto-teste)')
     },
     {
       nome: 'handler que devolve `.texto` sem a camada',
-      src: `const pecas = require('./pecas');\nconst lista = pecas.listar(n);\nreturn lista.map(p => p.texto).join('\\n');`,
-      regra: (s) => !(/require\(['"][^'"]*pecas['"]\)/.test(s) && /\.texto\b/.test(s) && !/podeVerTeor\s*\(|projetarParaUsuario\s*\(/.test(s)),
+      src: `const pecas = require('./pecas');\nconst r = pecas.gerar(dados);\nreturn r.peca.texto;`,
+      regra: (s) => !(REGEX_DEVOLVEM_PECA.test(s) && /\.texto\b/.test(s) && !/podeVerTeor\s*\(|projetarParaUsuario\s*\(|paraRenderizacao\s*\(/.test(s)),
     },
     {
       nome: 'handler que chama a camada sem ehStaff',
@@ -225,6 +237,12 @@ console.log('\nD) A varredura pega o vazamento quando ele aparece (auto-teste)')
   // E o contrário: código correto não pode ser reprovado, senão a equipe aprende a ignorar.
   const bom = `const pecas = require('./pecas');\nconst v = pecas.projetarParaUsuario(uid, p, processo, { ehStaff });\nreturn v.texto || '(sem acesso)';`;
   ok(/ehStaff/.test(bom) && !/db\.\w+\(\s*['"]pecas['"]/.test(bom), 'D: aprova o handler escrito do jeito certo');
+
+  // E não reprova quem importa `pecas` só para saber o MODO do processo: modoDoProcesso devolve uma
+  // string, não uma peça. É o caso real de commands/processo.js, que tem `.texto` do rascunho de
+  // sentença e nenhuma relação com teor. Achado falso ensina a equipe a ignorar a varredura.
+  const soModo = "const pecas = require('./pecas');\nif (pecas.modoDoProcesso(processo) !== 'legado') abrir();\nif (preset.texto) campo.setValue(preset.texto);";
+  ok(!REGEX_DEVOLVEM_PECA.test(soModo), 'D: aprova quem usa pecas só para ler o modo do processo');
 }
 
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);

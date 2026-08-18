@@ -2132,6 +2132,18 @@ async function peticionar(interaction, numero) {
     return interaction.reply({ content: 'Você não é advogado habilitado neste processo. Para peticionar aqui, seja o advogado do autor (cível) ou solicite e obtenha a **habilitação da defesa** antes.', ephemeral: true });
   }
 
+  // BIFURCAÇÃO POR MODO — mesmo botão, dois ritos. O advogado continua clicando em "Peticionar",
+  // que é onde ele já procura; o que muda é o que acontece depois.
+  //
+  // Processo LEGADO segue no anexo de PDF, daqui até o fim: quem abriu o caso de um jeito não pode
+  // ser surpreendido no meio (SPEC §11.2). Processo novo vai para o formulário, que gera a peça.
+  //
+  // Ligar aqui, e não criar um botão novo, também é o que impede o pior caso: um processo legado
+  // exibindo um botão que só recusa. Botão que não deveria estar ali é pior que botão ausente.
+  if (require('../utils/pecas').modoDoProcesso(processo) !== 'legado') {
+    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'peticao_incidental', numero);
+  }
+
   const anexo = await aguardarAnexoPDF(interaction);
   if (!anexo) return;
 
@@ -2148,7 +2160,8 @@ async function peticionar(interaction, numero) {
   db.atualizar('processos', numero, patchPeticao);
 
   anexos.criarDocumento({
-    tipo: 'peticao_avulsa', url: anexo.url, nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
+    tipo: 'peticao_avulsa', url: anexo.url, canalId: anexo.canalId, mensagemId: anexo.mensagemId,
+    nomeArquivo: anexo.nomeArquivo, autorId: anexo.autorId,
     atoOrigemId: `${numero}#${novoId}`, protocoloVinculado: numero,
   });
 
