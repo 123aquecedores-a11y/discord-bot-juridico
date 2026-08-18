@@ -4,6 +4,7 @@
 // policial — conceito diferente, chave é protocoloInquerito, não processo).
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { truncar } = require('./texto');
+const anexos = require('./anexos');
 
 // Processo civil tem autorNome/reuNome (texto livre — nome do personagem, não o apelido do
 // jogador no Discord). Penal não tem "autor" no sentido processual — quem acusa é o MP.
@@ -38,7 +39,9 @@ async function postarDossie(canal, processo, documentos, acordao = null) {
     });
   }
 
-  const listaDocumentos = documentos.map(d => `[${d.tipo}](${d.url})`).join('\n') || 'Nenhum documento anexado.';
+  // Link para a MENSAGEM, não para o anexo: a URL do CDN expira em 24h e o dossiê é justamente o
+  // que o Juiz abre para julgar — prova inacessível na hora do julgamento era o pior sintoma disso.
+  const listaDocumentos = documentos.map(d => anexos.rotuloComLink(d, d.tipo)).join('\n') || 'Nenhum documento anexado.';
   embed.addFields(
     { name: 'Autor', value: truncar(nomeAutor(processo), 200), inline: true },
     { name: 'Réu(s)', value: truncar(nomesReus(processo), 200), inline: true },

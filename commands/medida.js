@@ -955,7 +955,8 @@ module.exports = {
     if (mandado.processoVinculado) {
       await andamentos.registrar(interaction.guild, mandado.processoVinculado, {
         tipo: 'mandado_cumprido', titulo: `✅ Mandado cumprido`,
-        detalhe: `Mandado ${numero} cumprido por <@${interaction.user.id}> — [${anexo.nomeArquivo}](${anexo.url}) juntado aos autos.`,
+        // Link da mensagem, não do anexo: a URL do CDN expira em 24h (ver utils/anexos.js).
+        detalhe: `Mandado ${numero} cumprido por <@${interaction.user.id}> — ${anexos.rotuloComLink(anexo)} juntado aos autos.`,
         executorId: interaction.user.id, anexoUrl: anexo.url, metadata: { mandadoNumero: numero },
       });
       // Aqui sim o followUp acima foi postado no canal do processo (mandado novo sempre nasce

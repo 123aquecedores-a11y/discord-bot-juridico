@@ -6,6 +6,7 @@ const ministerioPublico = require('../utils/ministerioPublico');
 const { truncar } = require('../utils/texto');
 const auditoria = require('../utils/auditoria');
 const documentos = require('../utils/documentos');
+const anexos = require('../utils/anexos');
 const canais = require('../utils/canais');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
@@ -83,7 +84,8 @@ async function cumprirOficio(interaction, numero) {
         .addFields(
           { name: 'Destinatário', value: truncar(oficio.destinatario), inline: true },
           { name: 'Cumprido por', value: `<@${interaction.user.id}>`, inline: true },
-          { name: 'Documento', value: `[${anexo.nomeArquivo}](${anexo.url})` },
+          // Link da mensagem, não do anexo: a URL do CDN expira em 24h (ver utils/anexos.js).
+          { name: 'Documento', value: anexos.rotuloComLink(anexo) },
         );
       await canalProcesso.send({ embeds: [embedCumprimento, ...(embedAnalise ? [embedAnalise] : [])] });
       if (embedAnalise && processo.juiz) await canalProcesso.send({ content: `<@${processo.juiz}> — resposta de ofício juntada aos autos, com análise do cartório acima.` });

@@ -396,6 +396,33 @@ async function renderHtmlToPng(html, viewport, { fullPage = false, seletor = nul
   }
 }
 
+// Mesma coisa para documento PAGINADO: renderiza UM html que contém N folhas e captura cada uma,
+// numa única página do Chromium. Capturar N vezes abrindo N páginas custaria N vezes mais memória
+// e daria N chances de o layout sair diferente entre as folhas.
+// Devolve um array de buffers, na ordem do documento.
+async function renderHtmlToPngs(html, viewport, { seletorPagina }) {
+  activeJobs++;
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  try {
+    const browser = await getBrowser();
+    const page = await browser.newPage();
+    try {
+      await page.setViewport(viewport);
+      await page.setContent(html, { waitUntil: 'networkidle0' });
+      const folhas = await page.$$(seletorPagina);
+      if (!folhas.length) throw new Error(`nenhuma página encontrada com "${seletorPagina}"`);
+      const buffers = [];
+      for (const folha of folhas) buffers.push(await folha.screenshot({ type: 'png' }));
+      return buffers;
+    } finally {
+      await page.close().catch(() => {});
+    }
+  } finally {
+    activeJobs--;
+    agendarDesligamentoOcioso();
+  }
+}
+
 // Carrega os logos uma única vez e mantém em memória como base64, pra não ler o arquivo do
 // disco a cada documento gerado.
 const LOGO_FILES = {
@@ -577,4 +604,4 @@ async function gerarEditalPNG({ numero, vagasJuiz, vagasPromotor, requisitos, in
   return renderHtmlToPng(html, { width: 794, height: 1123 }, { fullPage: true });
 }
 
-module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarCarteiraCargoPNG, gerarEditalPNG, nomeExibicao, getBrowser, renderHtmlToPng };
+module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarCarteiraCargoPNG, gerarEditalPNG, nomeExibicao, getBrowser, renderHtmlToPng, renderHtmlToPngs };

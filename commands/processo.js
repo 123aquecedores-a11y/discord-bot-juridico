@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, UserSelectMenuBuilder } = require('discord.js');
 const db = require('../database/db');
 const { proximoNumero } = require('../utils/numeracao');
+const modoEntrega = require('../utils/modoEntrega');
 const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
 const rh = require('../utils/rh');
 const canais = require('../utils/canais');
@@ -806,6 +807,9 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
 
   db.inserir('processos', {
     numero, tipo: 'Penal', status: 'Aguardando decisão do MP',
+    // Modo CARIMBADO na abertura e nunca mais alterado (SPEC §11.2): quem nasce num rito termina
+    // nele. O interruptor da staff só decide o que carimbar aqui — nunca afeta processo em curso.
+    modoEntrega: modoEntrega.modoParaNovoProcesso(guild.id),
     crimes: crimesEscolhidos, motivo,
     reus, reuNome, reuRg, advogados: [], delegado: delegadoId || null, promotor: promotorFinal, juiz: null,
     canalId: canal.id, medidaVinculada: medidaNumero || null, atoMpVinculado: atoMpNumero || null, sentenca: null,
@@ -874,6 +878,8 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
 
   db.inserir('processos', {
     numero, tipo: 'Civil', status: juizId ? 'Aguardando defesa' : 'Aguardando sorteio de juiz',
+    // Ver o mesmo carimbo em criarProcessoPenal — SPEC §11.2.
+    modoEntrega: modoEntrega.modoParaNovoProcesso(guild.id),
     crimes: [], motivo: nomeAcao,
     autorNome, autorRg, autorDiscordId, reuNome, reuRg,
     reus, advogados: [advogadoId], delegado: null, promotor: null, juiz: juizId,

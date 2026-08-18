@@ -37,6 +37,13 @@ process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err instanceof Error ? err.stack : err);
 });
 
+// Linha de base de memória antes de a paginação de PNG existir — ver utils/memoria.js.
+require('./utils/memoria').logar('boot');
+
+// Servidor HTTP das páginas de documento. Sobe ANTES do login do Discord: a impressora do jogo
+// busca a imagem por conta própria e não deve depender de o gateway estar conectado.
+require('./services/servidorPecas').iniciar();
+
 const DEZ_MIN_MS = 10 * 60 * 1000;
 
 // GuildMembers é intent privilegiada — precisa estar habilitada em "Server Members Intent"
@@ -81,6 +88,22 @@ client.once('ready', async () => {
     console.warn(modoManutencao.AVISO);
     return;
   }
+
+  // REFUNDAÇÃO DA NUMERAÇÃO (REFUNDAR_NUMERACAO=1) — descarta os pisos históricos e zera os
+  // contadores, para que a primeira emissão de cada série seja 0001.
+  //
+  // É uma env SEPARADA de RESETAR_BANCO de propósito. Apagar o banco e refundar a numeração são
+  // duas decisões diferentes: alguém pode limpar dados por outro motivo sem querer que o tribunal
+  // volte a numerar do zero. Para o reset do tribunal, ligue as DUAS — e depois remova as duas, ou
+  // todo redeploy repete o efeito.
+  if (String(process.env.REFUNDAR_NUMERACAO || '').trim() === '1') {
+    require('./utils/numeracao').refundarNumeracao({ motivo: 'REFUNDAR_NUMERACAO=1 no ambiente' });
+    console.warn('[numeracao] REMOVA a variável REFUNDAR_NUMERACAO para não repetir no próximo deploy.');
+  }
+
+  // Em que modo este servidor está? Registro perdido tem que ser visível na primeira linha do log,
+  // não descoberto uma semana depois por um jogador reclamando — ver utils/modoEntrega.js.
+  require('./utils/modoEntrega').logarNoBoot(guild.id);
 
   // Auto-cria os canais de publicação (📜│diário-oficial e 📢│editais) se faltarem — idempotente,
   // não duplica, e não derruba o boot se faltar permissão (ver utils/garantirCanais.js).
@@ -217,6 +240,13 @@ client.on('interactionCreate', async interaction => {
     if (interaction.customId && interaction.customId.startsWith('painel:')) {
       const painel = client.commands.get('painel');
       if (painel?.router) await painel.router(interaction);
+      return;
+    }
+
+    // Peças com entrega in-game: botões/modais com prefixo "peca:" → router de utils/emissaoPeca.
+    // Só o lado da emissão está ligado; o recebimento entra depois do teste in-game do selo.
+    if (interaction.customId && interaction.customId.startsWith('peca:')) {
+      await require('./utils/emissaoPeca').router(interaction);
       return;
     }
 
