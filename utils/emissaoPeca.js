@@ -116,6 +116,32 @@ const TIPOS = {
 const tipoAtivo = (chave) => !!(TIPOS[chave] && TIPOS[chave].ativo);
 
 // ---------------------------------------------------------------------------
+// Efeito do ato nos autos — o que muda no PROCESSO quando a peça nasce
+// ---------------------------------------------------------------------------
+// Declarado por tipo, num lugar só. Tipo sem entrada aqui não mexe no processo, e isso é o padrão
+// correto: petição incidental e manifestação juntam-se aos autos sem mudar de fase.
+//
+// Por que uma tabela e não `if` no meio de criarPeca: cada ato novo do catálogo (Blocos D e E
+// trouxeram cinco) traria a tentação de mais um `if`, e o que aconteceu com a contestação —
+// alguém esquecer o efeito num dos caminhos — voltaria a acontecer.
+const EFEITOS_POS_CRIACAO = {
+  // A contestação encerra a fase de defesa: o processo fica pronto para o juiz julgar. Era isto que
+  // o caminho gated não fazia, deixando o processo travado.
+  contestacao: () => ({ status: 'Concluso para julgamento', contestacaoEm: new Date().toISOString() }),
+};
+
+async function aplicarEfeitoNoProcesso(tipoChave, processo, peca) {
+  const efeito = EFEITOS_POS_CRIACAO[tipoChave];
+  if (!efeito) return null;
+  const campos = efeito(processo, peca);
+  if (!campos) return null;
+  const cfg = TIPOS[tipoChave];
+  db.atualizar(cfg.tabela, processo.numero, campos);
+  console.log(`[pecas] ${peca.numero} (${tipoChave}): processo ${processo.numero} → ${campos.status || 'campos atualizados'}.`);
+  return campos;
+}
+
+// ---------------------------------------------------------------------------
 // Rascunho por trechos
 // ---------------------------------------------------------------------------
 // O teto de 4.000 é do CAMPO do modal, não da peça. Quem precisa de mais escreve em trechos, que se
@@ -423,6 +449,18 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   // Rascunho consumido: a peça existe, e deixar o texto em memória permitiria reenviar o mesmo
   // conteúdo como uma segunda peça por engano.
   rascunhos.delete(chaveRascunho(interaction.user.id, tipoChave, numeroProcesso));
+
+  // EFEITO DO ATO NO PROCESSO — aqui, e não no clique do botão.
+  //
+  // Achado em produção (19/08/2026): a contestação em processo gated criava a peça mas NÃO avançava
+  // o status, porque a bifurcação para o formulário dava `return` antes da linha que avançava. O
+  // processo ficava preso em "Aguardando contestação" e o juiz não conseguia julgar, mesmo com a
+  // contestação nos autos.
+  //
+  // A lição estrutural: emitir uma peça é um ATO PROCESSUAL, e o efeito dele nos autos tem que
+  // acontecer quando a peça NASCE — não quando o formulário abre (pode ser abandonado) nem
+  // espalhado por cada botão que chama o módulo (é assim que um deles fica sem o efeito).
+  await aplicarEfeitoNoProcesso(tipoChave, processo, peca);
 
   const aviso = !paginas
     ? '\n⚠️ O documento foi criado, mas o PNG não pôde ser renderizado agora. O texto está salvo — peça à staff para reemitir a imagem.'

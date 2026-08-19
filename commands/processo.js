@@ -793,6 +793,29 @@ function botaoAnexarPeticaoInicial(numero) {
   );
 }
 
+// CITAÇÃO CUMPRIDA (cível) — espelha o "intimação cumprida" que o penal já tinha.
+//
+// Achado no teste ao vivo (19/08/2026): no cível a citação era emitida e o processo seguia sozinho,
+// sem nenhum ponto em que alguém dissesse que o oficial de justiça cumpriu o ato em cena. Sem esse
+// marco, a entrega in-game do cível não existia de fato — o prazo corria e ninguém tinha encontrado
+// ninguém. É o mesmo papel do `intimacaoReuCumpridaEm` do penal.
+function botaoMarcarCitacaoCumprida(numero) {
+  return new ButtonBuilder()
+    .setCustomId(`painel:acao:processo:citacaocumprida:${numero}`)
+    .setLabel('✅ Marcar citação cumprida').setStyle(ButtonStyle.Success);
+}
+
+// A DEFESA no cível: contestação + prova, juntas, no mesmo lugar onde o advogado já olha.
+// Antes o rito novo só recebia um texto mandando usar "Peticionar" noutro menu.
+function botoesDefesaCivel(numero, habId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`painel:acao:processo:anexarcontestacao:${numero}#${habId}`)
+      .setLabel('📝 Apresentar contestação').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`painel:acao:processo:anexarprova:${numero}`)
+      .setLabel('📎 Anexar prova').setStyle(ButtonStyle.Secondary),
+  );
+}
+
 // Botão do advogado habilitado pra juntar a contestação em PDF (mesma mecânica). Postado
 // quando a habilitação é aprovada (se já houve citação) ou quando a citação acontece (se já
 // havia habilitação aprovada) — ver decidirHabilitacao/emitirIntimacao.
@@ -1053,12 +1076,6 @@ async function anexarContestacao(interaction, chave) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
 
-  // BLOCO D — a contestação agora tem tipo PRÓPRIO no catálogo (`contestacao`), em vez de mandar o
-  // advogado usar "Peticionar". O botão em que ele já clica passa a abrir o formulário certo: o
-  // documento sai com o título CONTESTAÇÃO, não PETIÇÃO. Legado segue no anexo de PDF.
-  if (!ehLegado(processo)) {
-    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'contestacao', numero);
-  }
   const habilitacao = (processo.habilitacoes || []).find(h => h.id === habId);
   if (!habilitacao || habilitacao.status !== 'Aprovado') {
     return interaction.reply({ content: 'Essa habilitação não existe mais ou não está aprovada.', ephemeral: true });
@@ -1068,6 +1085,20 @@ async function anexarContestacao(interaction, chave) {
   }
   if (processo.status !== 'Aguardando contestação') {
     return interaction.reply({ content: `Este processo não está aguardando contestação no momento (status atual: "${processo.status}").`, ephemeral: true });
+  }
+
+  // BLOCO D — a contestação tem tipo PRÓPRIO no catálogo (`contestacao`): o botão em que o advogado
+  // já clica abre o formulário certo, e o documento sai com o título CONTESTAÇÃO, não PETIÇÃO.
+  //
+  // A BIFURCAÇÃO FICA DEPOIS DAS VALIDAÇÕES, e isso é um conserto de 19/08/2026: antes ela era a
+  // PRIMEIRA linha da função e dava `return` cedo, pulando as três checagens acima E, pior, pulando
+  // o avanço de status lá embaixo. Resultado em produção: em processo gated a peça era criada, o
+  // processo ficava preso em "Aguardando contestação" para sempre e o juiz não conseguia julgar
+  // ("Falta citar o réu, aguardar a contestação ou decretar revelia" com a contestação já nos autos).
+  // O avanço de status agora acontece em emissaoPeca.criarPeca, via EFEITOS_POS_CRIACAO — no momento
+  // em que a peça REALMENTE nasce, não quando o formulário abre.
+  if (!ehLegado(processo)) {
+    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'contestacao', numero);
   }
 
   const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'contestacao', protocolo: numero });
@@ -1318,6 +1349,33 @@ async function intimarReu(interaction, numero) {
     detalhe: 'Intimação do réu emitida com código de habilitação impresso na via do réu.', executorId: interaction.user.id,
   });
   return interaction.editReply({ content: `📃 Intimação do réu emitida. **Código de habilitação (via do réu): \`${codigo}\`** — já impresso na via do réu (anexo). Repasse ao réu no jogo. Quando ele receber, clique em **Marcar intimação cumprida**.` });
+}
+
+// Espelho cível do "intimação do réu cumprida" do penal (19/08/2026). O que ele marca é o encontro
+// REAL: o oficial de justiça cumpriu a citação em cena. Sem esse marco, a citação do cível era só
+// uma mensagem no canal e o prazo corria sem ninguém ter se encontrado.
+async function marcarCitacaoCumprida(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: `Só o Juiz deste processo pode marcar a citação como cumprida — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  }
+  if (processo.citacaoCumpridaEm) {
+    return interaction.reply({ content: 'A citação já estava marcada como cumprida.', ephemeral: true });
+  }
+  db.atualizar('processos', numero, { citacaoCumpridaEm: new Date().toISOString() });
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'citacao_cumprida', titulo: '✅ Citação cumprida',
+    detalhe: 'O oficial de justiça cumpriu a citação em cena; o Juiz registrou o cumprimento. A defesa pode se habilitar e contestar.',
+    executorId: interaction.user.id,
+  });
+  await auditoria.registrar(interaction.guild, { acao: 'Citação cumprida (cível)', executorId: interaction.user.id, referencia: `Processo ${numero}` });
+  await postarOuAtualizarCapaPublica(interaction.guild, numero);
+  await repostarPainel(interaction.guild, numero);
+  return interaction.update({
+    content: '✅ **Citação cumprida.** A defesa pode se habilitar e apresentar contestação. O prazo de contestação segue correndo normalmente.',
+    components: [],
+  }).catch(async () => interaction.reply({ content: '✅ Citação cumprida.', ephemeral: true }).catch(() => {}));
 }
 
 async function marcarIntimacaoReuCumprida(interaction, numero) {
@@ -1927,14 +1985,16 @@ async function postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId,
         + `Destinatário: ${destinatarioId ? `<@${destinatarioId}>` : (destinatarioNome || 'não identificado')}\n`
         + '🔒 O teor fica restrito até a entrega pessoal.',
     });
-    return canal;
+    // Devolve o PNG junto: quem chama precisa dele para mandar a VIA DO JUIZ por DM (o juiz é quem
+    // entrega ao oficial de justiça na cena). Antes só o canal voltava, e o PNG morria aqui.
+    return { canal, png: pngIntimacao };
   }
 
   await canal.send({
     content: documentos.textoIntimacao({ numero, rotulo: 'Processo', destinatarioId, destinatarioNome, teor }),
     ...(pngIntimacao ? { files: [{ attachment: pngIntimacao, name: `Intimacao-${numero}.png` }] } : {}),
   });
-  return canal;
+  return { canal, png: pngIntimacao };
 }
 
 async function abrirSelectDestinatarioIntimacao(interaction, numero) {
@@ -2106,7 +2166,26 @@ async function emitirIntimacao(interaction, numero) {
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com a intimação/citação sendo emitida com sucesso.
   await interaction.deferReply({ ephemeral: true });
-  const canal = await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: destId, destinatarioNome, teor, assinanteId: interaction.user.id });
+  const { canal, png: pngDaIntimacao } = await postarIntimacaoNoCanal({ guild: interaction.guild, processo, numero, destinatarioId: destId, destinatarioNome, teor, assinanteId: interaction.user.id });
+
+  // VIA DO JUIZ POR DM (achado no teste ao vivo, 19/08/2026): o juiz emitia a citação/intimação e o
+  // documento não chegava a lugar nenhum — não havia como ele entregar ao oficial de justiça na
+  // cena. O PNG vai para a DM de quem emitiu, que é quem leva o papel para o jogo.
+  //
+  // Por DM e não no canal: o canal do processo é compartilhado com a outra parte, e em processo
+  // gated o teor não pode aparecer lá antes da entrega (é o mesmo motivo do resto da feita).
+  let dmEntregue = false;
+  if (pngDaIntimacao) {
+    const dm = await interaction.user.createDM().catch(() => null);
+    if (dm) {
+      dmEntregue = !!(await dm.send({
+        content: `📃 **Sua via da ${ehCitacaoCivil ? 'citação' : 'intimação'} — processo ${numero}**\n`
+          + 'Esta é a via para **imprimir no jogo e entregar ao oficial de justiça** cumprir.\n'
+          + '⚠️ Quando o ato for cumprido em cena, clique em **"Marcar cumprida"** no canal do processo.',
+        files: [{ attachment: pngDaIntimacao, name: `Intimacao-${numero}.png` }],
+      }).catch(() => null));
+    }
+  }
 
   let prazoContestacaoAte = null;
   if (ehCitacaoCivil) {
@@ -2117,17 +2196,27 @@ async function emitirIntimacao(interaction, numero) {
 
     if (canal) {
       await canal.send({
-        content: `⚖️ A partir desta citação, corre o prazo de ${config.prazoContestacaoDias} dias corridos para contestação (até <t:${Math.floor(new Date(prazoContestacaoAte).getTime() / 1000)}:D>).`,
-        components: [botaoDecretarRevelia(numero)],
+        content: `⚖️ A partir desta citação, corre o prazo de ${config.prazoContestacaoDias} dias corridos para contestação (até <t:${Math.floor(new Date(prazoContestacaoAte).getTime() / 1000)}:D>).\n`
+          + '📃 A via para o jogo foi enviada por DM ao Juiz. Quando o oficial de justiça cumprir a citação em cena, marque abaixo — é isso que abre a defesa.',
+        components: [new ActionRowBuilder().addComponents(
+          botaoMarcarCitacaoCumprida(numero),
+          botaoDecretarRevelia(numero).components[0],
+        )],
       });
 
       // Se algum advogado já estava habilitado antes desta citação (ordem incomum, mas
       // possível), o botão de contestação ainda não tinha sido postado — posta agora.
+      //
+      // O MESMO botão serve aos dois ritos desde 19/08/2026: anexarContestacao bifurca por modo
+      // (legado → PDF, novo → formulário com selo). Antes o rito novo recebia só um texto mandando
+      // usar "Peticionar", o que era pior por dois motivos: dava um caminho diferente para a mesma
+      // ação, e o documento saía com título PETIÇÃO em vez de CONTESTAÇÃO.
       const jaHabilitados = (processo.habilitacoes || []).filter(h => h.status === 'Aprovado');
       for (const h of jaHabilitados) {
-        await canal.send(ehLegado(processo)
-          ? { content: `<@${h.advogadoId}> — clique abaixo para anexar a contestação em nome de <@${h.reuId}>.`, components: [botaoAnexarContestacao(numero, h.id)] }
-          : { content: `<@${h.advogadoId}> — para contestar em nome de <@${h.reuId}>, use **"📄 Peticionar"** no painel do processo. A peça é gerada com selo e entregue em mãos ao Juiz na cena.` });
+        await canal.send({
+          content: `<@${h.advogadoId}> — apresente a **contestação** em nome de <@${h.reuId}> pelo botão abaixo. Provas se juntam por **"Anexar prova"** no painel do processo.`,
+          components: [botoesDefesaCivel(numero, h.id)],
+        });
       }
     }
   }
@@ -3835,6 +3924,7 @@ module.exports = {
   salvarSentencaPorCrime,
   intimarReu,
   marcarIntimacaoReuCumprida,
+  marcarCitacaoCumprida,
   repostarPainel,
   pedirRevisaoArquivamento,
   abrirModalRecorrer,

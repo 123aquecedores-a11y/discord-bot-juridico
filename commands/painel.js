@@ -207,7 +207,7 @@ function submenuMedida(interaction) {
   const doInvestigativo = temCargo(interaction, 'Delegado') || temCargo(interaction, 'Promotor') || temCargo(interaction, 'Juiz');
   return [
     linha(
-      botaoSe(temCargo(interaction, 'Delegado'), 'painel:acao:medida:solicitar', 'Solicitar', ButtonStyle.Success),
+      botaoSe(temCargo(interaction, 'Delegado') || temCargo(interaction, 'Promotor'), 'painel:acao:medida:solicitar', 'Solicitar', ButtonStyle.Success),
       botaoSe(true, 'painel:acao:medida:ver', 'Ver', ButtonStyle.Primary),
       botaoSe(true, 'painel:acao:medida:listar', 'Listar recentes', ButtonStyle.Primary),
     ),
@@ -314,6 +314,18 @@ function submenuMp(interaction) {
       botaoSe(pode, 'painel:acao:mp:requisicao', 'Requisição', ButtonStyle.Primary),
       botaoSe(pode, 'painel:acao:mp:recomendacao', 'Recomendação', ButtonStyle.Primary),
       botaoSe(pode, 'painel:acao:mp:inqueritocivil', 'Abrir Inquérito Civil', ButtonStyle.Success),
+    ),
+    // ATOS QUE O MP FAZ SOZINHO, sem depender de delegado (19/08/2026). Antes o promotor tinha que
+    // sair deste painel e entrar em "Medida / Mandado / Ofício" — e lá o botão "Solicitar" era
+    // exclusivo do Delegado, então ele simplesmente não conseguia.
+    //
+    // Os customId são os MESMOS do outro menu, de propósito: é atalho para a ação que já existe,
+    // não um segundo caminho com regra própria (dois caminhos para a mesma coisa foi um dos
+    // achados da auditoria de ontem).
+    linha(
+      botaoSe(pode, 'painel:acao:medida:solicitar', '🔒 Solicitar medida cautelar', ButtonStyle.Secondary),
+      botaoSe(pode && podeEmitirOficio(interaction), 'painel:menu:oficio', '✉️ Ofício', ButtonStyle.Secondary),
+      botaoSe(pode, 'painel:menu:mandado', '📜 Mandado', ButtonStyle.Secondary),
     ),
     !pode ? new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('painel:disabled').setLabel('Só Promotor/Procurador — atribuição exclusiva do MP').setStyle(ButtonStyle.Secondary).setDisabled(true)) : null,
     botaoVoltar(),
@@ -877,6 +889,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'gerenciar') return processoCmd.abrirGerenciar(interaction, extra);
     if (acao === 'intimarreu') return processoCmd.intimarReu(interaction, extra);
     if (acao === 'intimarreucumprida') return processoCmd.marcarIntimacaoReuCumprida(interaction, extra);
+    if (acao === 'citacaocumprida') return processoCmd.marcarCitacaoCumprida(interaction, extra);
     if (acao === 'voltarfase') return processoCmd.abrirModalVoltarFase(interaction, extra);
     if (acao === 'manifestacaomp') return processoCmd.abrirManifestacaoMp(interaction, extra);
     if (acao === 'deferirreqmp') return processoCmd.decidirRequerimentoMp(interaction, extra, true);
@@ -965,7 +978,14 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
 
   if (modulo === 'medida') {
     if (acao === 'solicitar') {
-      if (!temCargo(interaction, 'Delegado')) return interaction.reply({ content: 'Só Delegados podem solicitar medida cautelar.', ephemeral: true });
+      // PROMOTOR TAMBÉM SOLICITA (19/08/2026). Antes só Delegado podia, o que obrigava o MP a
+      // esperar a polícia para pedir uma cautelar — no mundo real o MP requer medida direto ao
+      // juízo, e no RP isso travava o promotor sem nenhum ganho. Com o acúmulo Delegado+Promotor
+      // (utils/acumuloDePapeis.js), quem pede sem delegado separado ocupa os dois papéis e a medida
+      // não nasce órfã. Juiz continua de fora: quem defere não pede.
+      if (!temCargo(interaction, 'Delegado') && !temCargo(interaction, 'Promotor')) {
+        return interaction.reply({ content: 'Só Delegado ou Promotor podem solicitar medida cautelar.', ephemeral: true });
+      }
       const row = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder().setCustomId('painel:select:medida:tipo').setPlaceholder('Tipo de medida')
           .addOptions(medidaCmd.TIPOS_MEDIDA.map((t, i) => ({ label: t, value: String(i) }))),

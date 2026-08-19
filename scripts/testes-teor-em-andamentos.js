@@ -132,7 +132,7 @@ console.log('\n3) Nenhum ato NOVO gravando andamento sem passar por esta revisã
   // entrega pessoal; se não puder, gate por `modoDoProcesso(processo) === 'ingame'`, como a
   // sentença faz. Depois atualize o número aqui e, se for teor, o inventário acima.
   const BASELINE = {
-    'commands/processo.js': 26,
+    'commands/processo.js': 27, // +1 em 19/08/2026: 'citação cumprida' (cível) — REVISADO: o detalhe descreve o ATO (oficial cumpriu em cena), nunca o teor da peça
     'commands/mandado.js': 1,
     'commands/medida.js': 2,
     'commands/oficio.js': 2,
