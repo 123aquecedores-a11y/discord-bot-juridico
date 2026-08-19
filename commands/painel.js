@@ -1109,7 +1109,11 @@ async function tratarSelect(interaction, modulo, campo, extra) {
     //
     // O RG é OPCIONAL de propósito: medida de busca e apreensão frequentemente tem por alvo um
     // LOCAL ("galpão da Rua 5"), que não tem identidade civil. Exigi-lo obrigaria a inventar um.
+    // "Outra" pedia o nome do mandado e não tinha onde escrevê-lo — saía o literal "Outra" no
+    // documento. Mesmo tratamento que os tipos coercitivos já tinham (tipoLivre).
+    const ehOutra = /^outr/i.test(tipo);
     modal.addComponents(
+      ...(ehOutra ? [new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('tipo_livre').setLabel('Nome da medida ("Outra")').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100))] : []),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('alvo').setLabel('Nome do alvo (pessoa ou local)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('alvo_rg').setLabel('RG do alvo (vazio se for local)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Fundamentação (motivo/indícios)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
@@ -1580,7 +1584,13 @@ async function tratarModal(interaction, modulo, acao, extra) {
 
   if (modulo === 'medida' && acao === 'solicitar') {
     await interaction.deferReply({ ephemeral: true });
-    const tipo = medidaCmd.TIPOS_MEDIDA[Number(extra)];
+    const tipoBase = medidaCmd.TIPOS_MEDIDA[Number(extra)];
+    // Quando o tipo é "Outra", quem nomeia a medida é o solicitante — senão o documento sai
+    // literalmente com a palavra "Outra" no lugar do nome do ato.
+    const tipoLivre = /^outr/i.test(tipoBase)
+      ? (interaction.fields.getTextInputValue('tipo_livre') || '').trim()
+      : '';
+    const tipo = tipoLivre || tipoBase;
     const resultado = await medidaCmd.solicitarMedida({
       guild: interaction.guild, delegadoId: interaction.user.id, promotorId: null,
       tipo,

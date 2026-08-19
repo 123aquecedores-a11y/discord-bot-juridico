@@ -8,7 +8,7 @@ const documentos = require('../utils/documentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const diario = require('../utils/diarioOficial');
 const anexos = require('../utils/anexos');
-const { selectTipoMedidaCoercitiva, rotuloTipo, modalTipoDestinatario } = require('../utils/tiposMedidaCoercitiva');
+const { selectTipoMedidaCoercitiva, rotuloTipo, modalTipoDestinatario, indicesDeValores, valoresDeIndices } = require('../utils/tiposMedidaCoercitiva');
 const partesProcesso = require('../utils/partesProcesso');
 const andamentos = require('../utils/andamentos');
 
@@ -81,8 +81,8 @@ async function abrirSelectTipo(interaction, numero) {
     return interaction.reply({ content: 'Mandado só se aplica a processo penal.', ephemeral: true });
   }
   return interaction.reply({
-    content: 'Qual o tipo de mandado?',
-    components: [selectTipoMedidaCoercitiva(`painel:select:mandado:tipo:${numero}`)],
+    content: 'Quais tipos de mandado? Pode marcar **mais de um** — sai um mandado para cada, com a mesma fundamentação e o mesmo destinatário.',
+    components: [selectTipoMedidaCoercitiva(`painel:select:mandado:tipo:${numero}`, { multi: true })],
     ephemeral: true,
   });
 }
@@ -94,25 +94,30 @@ async function abrirSelectTipo(interaction, numero) {
 async function processarSelecaoTipo(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  const valor = interaction.values[0];
+  // Índices, não valores — ver a nota sobre o teto do customId em utils/tiposMedidaCoercitiva.js.
+  const indices = indicesDeValores(interaction.values || []);
   return interaction.reply({
-    content: 'Quem é o destinatário do mandado?',
-    components: [partesProcesso.selectDestinatario(`painel:select:mandado:destinatario:${numero}#${valor}`, processo)],
+    content: 'Quem é o destinatário?',
+    components: [partesProcesso.selectDestinatario(`painel:select:mandado:destinatario:${numero}#${indices}`, processo)],
     ephemeral: true,
   });
 }
 
-// chave carrega numero#tipoValue#destinatarioRef (destinatarioRef é o id da parte, ex: "p2",
+// chave carrega numero#indicesDeTipos#destinatarioRef (destinatarioRef é o id da parte, ex: "p2",
 // ou o literal "fora") — assim o handler final sabe exatamente quais campos ler do modal sem
 // precisar adivinhar, e nunca chama getTextInputValue num campo que não foi criado.
-function modalTeorMandado(chave, tipoValue, destinatarioRef) {
-  return modalTipoDestinatario({ customId: `painel:modal:mandado:emitir:${chave}`, titulo: `Mandado — ${rotuloTipo(tipoValue)}`, tipoValue, destinatarioRef, campoTeor: 'teor', labelTeor: 'Motivo / fundamentação' });
+function modalTeorMandado(chave, tipoValues, destinatarioRef) {
+  const titulo = tipoValues.length > 1 ? `Mandados (${tipoValues.length})` : `Mandado — ${rotuloTipo(tipoValues[0])}`;
+  return modalTipoDestinatario({
+    customId: `painel:modal:mandado:emitir:${chave}`, titulo,
+    tipoValue: tipoValues, destinatarioRef, campoTeor: 'teor', labelTeor: 'Motivo / fundamentação',
+  });
 }
 
 async function processarSelecaoDestinatario(interaction, chaveTipo) {
-  const [numero, tipoValue] = chaveTipo.split('#');
+  const [numero, indices] = chaveTipo.split('#');
   const destinatarioRef = interaction.values[0];
-  return interaction.showModal(modalTeorMandado(`${numero}#${tipoValue}#${destinatarioRef}`, tipoValue, destinatarioRef));
+  return interaction.showModal(modalTeorMandado(`${numero}#${indices}#${destinatarioRef}`, valoresDeIndices(indices), destinatarioRef));
 }
 
 // Resolve nome/discordId do destinatário — se "fora do processo", cria a parte na hora (papel
@@ -130,14 +135,17 @@ function resolverDestinatario(interaction, numero, processo, destinatarioRef) {
 }
 
 async function emitirMandado(interaction, chave) {
-  const [numero, tipoValue, destinatarioRef] = chave.split('#');
+  const [numero, indices, destinatarioRef] = chave.split('#');
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
     return interaction.reply({ content: `Só um(a) Juiz(a) pode emitir mandado. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
 
-  const tipoLivre = tipoValue === 'outro' ? interaction.fields.getTextInputValue('tipoLivre') : null;
+  const tipoValues = valoresDeIndices(indices);
+  if (!tipoValues.length) return interaction.reply({ content: 'Nenhum tipo de mandado foi selecionado — refaça a ação.', ephemeral: true });
+  // "Outro" pode vir junto com tipos da lista; o nome livre vale só para ele.
+  const tipoLivre = tipoValues.includes('outro') ? interaction.fields.getTextInputValue('tipoLivre') : null;
   const teor = interaction.fields.getTextInputValue('teor');
   const destinatario = resolverDestinatario(interaction, numero, processo, destinatarioRef);
 
@@ -150,16 +158,41 @@ async function emitirMandado(interaction, chave) {
   //
   // A guarda de colisão dos atos DECISÓRIOS continua onde faz sentido (sentença, referendo,
   // deferimento): lá o segundo clique desfaz o primeiro. Aqui ele só acrescenta um mandado.
-  const tipoRotuloAtual = rotuloTipo(tipoValue, tipoLivre);
-
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
-  // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso.
+  // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso. Com vários
+  // tipos são vários PNGs, então a margem importa ainda mais.
   await interaction.deferReply({ ephemeral: true });
-  const resultado = await emitirMandadoNoProcesso({
-    guild: interaction.guild, processo: db.buscarPorNumero('processos', numero), tipoRotulo: tipoRotuloAtual,
-    teor, emitidoPorId: interaction.user.id, destinatario,
+
+  // UM MANDADO POR TIPO MARCADO. Cada um é um documento próprio, com número próprio — é assim que
+  // funciona no papel: busca e prisão são mandados distintos, cumpridos e baixados separadamente.
+  // O que eles compartilham é a fundamentação e o destinatário, que o Juiz escreveu uma vez só.
+  //
+  // Sequencial de propósito: `proximoNumero` lê e grava o contador, e em paralelo dois mandados
+  // sairiam com o mesmo número.
+  const emitidos = [];
+  const falhas = [];
+  for (const tipoValue of tipoValues) {
+    const tipoRotulo = rotuloTipo(tipoValue, tipoLivre);
+    try {
+      const r = await emitirMandadoNoProcesso({
+        guild: interaction.guild, processo: db.buscarPorNumero('processos', numero), tipoRotulo,
+        teor, emitidoPorId: interaction.user.id, destinatario,
+      });
+      emitidos.push(`**${r.numero}** — ${tipoRotulo}`);
+    } catch (err) {
+      // Um tipo que falha não pode levar os outros junto: cada mandado é um ato autônomo.
+      console.error(`Falha ao emitir mandado (${tipoRotulo}) no processo ${numero}:`, err.message);
+      falhas.push(`${tipoRotulo} (${err.message})`);
+    }
+  }
+
+  if (!emitidos.length) {
+    return interaction.editReply({ content: `❌ Nenhum mandado pôde ser emitido: ${falhas.join('; ')}` });
+  }
+  return interaction.editReply({
+    content: `${emitidos.length > 1 ? `${emitidos.length} mandados emitidos` : 'Mandado emitido'} e juntado(s) ao processo ${numero}:\n${emitidos.join('\n')}`
+      + (falhas.length ? `\n\n⚠️ Não saiu: ${falhas.join('; ')}` : ''),
   });
-  return interaction.editReply({ content: `Mandado ${resultado.numero} emitido e juntado ao processo ${numero}.` });
 }
 
 // Reaproveitada por commands/medida.js quando o Promotor solicita medida e o Juiz defere
