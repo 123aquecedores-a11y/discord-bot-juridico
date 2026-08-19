@@ -94,6 +94,24 @@ const TIPOS = {
     ativo: true,
   },
 
+  // PETIÇÃO ADMINISTRATIVA (SPEC §11, Faixa 2) — porte de arma, troca de nome, limpeza de ficha e
+  // alvará de evento. Elas eram o último rito preso no anexo de PDF direto.
+  //
+  // Mora na tabela `peticoes`, não em `processos`, e é por isso que existe `emissorCampo`: o
+  // emissor aqui não se resolve por habilitação (petição não tem defesa habilitada) nem por slot de
+  // TABELAS_TICKET — é o ADVOGADO QUE PROTOCOLOU, gravado em `requerenteId`. Sem isso, `podeEmitir`
+  // recusaria justamente quem abriu a petição.
+  peticao_administrativa: {
+    rotulo: 'Petição administrativa',
+    titulo: 'PETIÇÃO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Advogado',
+    emissorCampo: 'requerenteId',
+    destinatarios: ['Juiz'],
+    tabela: 'peticoes',
+    ativo: true, // FAIXA 2 (SPEC §11)
+  },
+
   // BLOCO E — a sentença. Destinatário é o ADVOGADO de cada parte (um token por habilitação
   // aprovada, SPEC §11.3): a sentença é entregue em mãos a cada defesa, e o ato só se cumpre por
   // inteiro quando todos receberam ou a válvula estourar.
@@ -344,6 +362,12 @@ async function desfazerTrecho(interaction, tipoChave, numeroProcesso) {
 
 function podeEmitir(interaction, cfg, processo) {
   if (permissoes.isAdmin(interaction) || pecas.isSupervisao(interaction.user.id)) return true;
+
+  // `emissorCampo` — o emissor está gravado num campo do PRÓPRIO registro, não em habilitação nem
+  // em slot de TABELAS_TICKET. É o caso da petição administrativa, onde quem emite é o advogado que
+  // protocolou (`requerenteId`). Configuração, não código novo por rito.
+  if (cfg.emissorCampo) return processo[cfg.emissorCampo] === interaction.user.id;
+
   if (cfg.emissor === 'Advogado') {
     return (processo.habilitacoes || []).some(h => h.status === 'Aprovado' && h.advogadoId === interaction.user.id);
   }
@@ -405,7 +429,7 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   const r = pecas.gerar({
     processoTabela: cfg.tabela, processoNumero: numeroProcesso, tipo: tipoChave,
     autorId: interaction.user.id, autorPapel: cfg.emissor, texto,
-    qualificacao: qualificacao(processo),
+    qualificacao: qualificacao(processo, cfg.tabela),
     assinante: await nomeExibicao(interaction.guild, interaction.user.id),
     destinatarios,
   });
@@ -484,7 +508,30 @@ const unidadeDoProcesso = require('./catalogoAtos').unidadeDoProcesso;
 // Qualificação das partes, no formato dos autos. Uma petição que não identifica as partes não é
 // peça, é bilhete — e todos estes dados já existem no registro do processo (SPEC §5.1: os campos
 // vêm preenchidos pelo sistema, não digitados).
-function qualificacao(processo) {
+// Classe do procedimento por TABELA — não por `if` empilhado sobre `processo.tipo`.
+//
+// A petição administrativa entrou na Faixa 2 e quebrou a premissa antiga de que só existiam dois
+// ritos: nela, `tipo` é 'PorteArma' / 'TrocaNome' / 'LimpezaFicha' / 'AlvaraEvento', não 'Penal' nem
+// 'Civil' — o `if` binário classificaria um porte de arma como "Ação Cível". É a conversão para
+// tabela que ficou anotada como pendência quando o terceiro rito chegasse; ele chegou.
+const CLASSE_PETICAO = {
+  PorteArma: 'Pedido de Porte de Arma',
+  TrocaNome: 'Pedido de Retificação de Nome Civil',
+  LimpezaFicha: 'Pedido de Reabilitação (limpeza de ficha)',
+  AlvaraEvento: 'Pedido de Alvará de Evento',
+};
+
+function qualificacao(processo, processoTabela = 'processos') {
+  // PETIÇÃO ADMINISTRATIVA: a parte é o CLIENTE (nome + RG), e quem assina é o advogado que
+  // protocolou. Não há "réu" nem "autor" — é procedimento de jurisdição voluntária.
+  if (processoTabela === 'peticoes') {
+    const linhas = [`**Classe:** ${CLASSE_PETICAO[processo.tipo] || 'Petição administrativa'} nº ${processo.numero}`];
+    const nome = processo.nomeCliente || processo.nomeNovo || processo.nomeAtual;
+    if (nome) linhas.push(`**Requerente:** ${nome}${processo.rgCliente ? ` — RG ${processo.rgCliente}` : ''}`);
+    if (processo.enderecoCliente) linhas.push(`**Endereço:** ${processo.enderecoCliente}`);
+    return linhas.join('\n');
+  }
+
   const linhas = [`**Classe:** ${processo.tipo === 'Penal' ? 'Ação Penal' : 'Ação Cível'} nº ${processo.numero}`];
   const autor = processo.autorNome || (processo.tipo === 'Penal' ? 'Ministério Público' : null);
   if (autor) linhas.push(`**${processo.tipo === 'Penal' ? 'Autor' : 'Requerente'}:** ${autor}${processo.autorRg ? ` — RG ${processo.autorRg}` : ''}`);
@@ -1004,4 +1051,5 @@ module.exports = {
   receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho, abrirRecebimento,
   estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA, TTL_RASCUNHO_MS,
   verificarValvulaEEncerramento, publicarRelatorioSemanal, unidadeDoProcesso,
+  qualificacao, // exportada para teste: e ela que classifica o rito no cabecalho do documento
 };

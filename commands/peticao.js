@@ -4,6 +4,7 @@ const {
 } = require('discord.js');
 const db = require('../database/db');
 const config = require('../config');
+const modoEntrega = require('../utils/modoEntrega');
 const canais = require('../utils/canais');
 const rh = require('../utils/rh');
 const { proximoNumero } = require('../utils/numeracao');
@@ -121,6 +122,22 @@ async function anexarDocumentoPeticao(interaction, numero) {
   const peticao = db.buscarPorNumero('peticoes', numero);
   if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
   if (!podeMexerNaPeticao(interaction, peticao)) return interaction.reply({ content: RECUSA_MEXER_PETICAO, ephemeral: true });
+
+  // FAIXA 2 — bifurcação por modo, mesmo padrão do "Peticionar" e da contestação. As petições
+  // administrativas eram o ÚLTIMO rito preso no anexo de PDF direto enquanto o resto do bot já
+  // gerava a peça pelo formulário, com selo.
+  //
+  // O advogado continua clicando no MESMO botão, que é onde ele já procura; o que muda é o que
+  // acontece depois. Petição aberta ANTES desta mudança não tem `modoEntrega` carimbado, logo é
+  // `legado` por definição e termina no rito em que nasceu (SPEC §11.2.1) — ninguém é surpreendido
+  // no meio do próprio pedido.
+  //
+  // O CHECKLIST não muda: ele já é postado na abertura de cada tipo (DOCUMENTOS_NECESSARIOS), e a
+  // decisão do juiz (deferir / indeferir / converter em diligência) já existia. O que faltava era
+  // só a peça deixar de ser um PDF que o advogado sobe.
+  if (require('../utils/pecas').modoDoProcesso(peticao) !== 'legado') {
+    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'peticao_administrativa', numero);
+  }
 
   const anexo = await aguardarAnexoPDF(interaction);
   if (!anexo) return;
@@ -323,7 +340,14 @@ async function abrirTicketPeticao({ guild, tipo, sigla, requerenteId, dados }) {
   });
 
   db.inserir('peticoes', {
-    numero, tipo, requerenteId, promotor: null, juiz: null, status: 'Aguardando sorteio de juiz', canalId: canal.id, ...dados,
+    numero, tipo, requerenteId, promotor: null, juiz: null, status: 'Aguardando sorteio de juiz', canalId: canal.id,
+    // MODO CARIMBADO NA ABERTURA, igual a processo e medida (SPEC §11.2). Faltava aqui: sem o
+    // campo, `modoDoProcesso` lia toda petição como `legado` por definição, e as petições
+    // administrativas ficaram presas no anexo de PDF enquanto o resto do bot migrou para o
+    // formulário com selo. Quem nasce num rito termina nele — o interruptor só decide o que
+    // carimbar agora, nunca mexe em petição em curso.
+    modoEntrega: modoEntrega.modoParaNovoProcesso(guild.id),
+    ...dados,
   });
 
   // Só troca de nome deferida grava nomeCivil (ver ficha.registrarTrocaNome) — sem isso, a
