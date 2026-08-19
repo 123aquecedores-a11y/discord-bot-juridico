@@ -21,6 +21,20 @@ const LABEL_PETICAO = {
   AlvaraEvento: 'Alvará de Evento',
 };
 
+// TIPOS DE PETIÇÃO QUE NÃO VÃO AO MURAL PÚBLICO (19/08/2026, decisão do operador).
+//
+// PORTE DE ARMA: publicar quem está armado — e também quem PEDIU e foi negado — é informação
+// tática sobre o personagem num canal que @everyone lê. Vira alvo, vira aviso para quem planeja
+// assalto, vira metagaming. O interesse público que justifica o Diário não cobre isso.
+//
+// O ATO NÃO DEIXA DE EXISTIR: continua gravado nos autos, visível à magistratura/MP pela via
+// normal e ao próprio titular pela decisão que ele recebe em mãos. O que sai é a vitrine.
+//
+// A regra mora no PREDICADO `publicavel`, e não em quem chama, porque o predicado governa as duas
+// portas: a publicação em tempo real e a varredura de backfill (NATUREZAS_VARREDURA), que
+// republicaria em silêncio, dias depois, tudo o que tivesse sido filtrado só no caller.
+const SIGILOSAS_NO_DIARIO = new Set(['PorteArma']);
+
 // ============================================================================================
 // POLÍTICA DE SIGILO — QUE TIPO DE MANDADO PODE APARECER NO DIÁRIO
 // ============================================================================================
@@ -91,7 +105,8 @@ const NATUREZAS = {
   peticaoAdministrativa: {
     tabela: 'peticoes',
     nivel: 1,
-    publicavel: (p) => !!p && (p.status === 'Deferido' || p.status === 'Indeferido'),
+    publicavel: (p) => !!p && (p.status === 'Deferido' || p.status === 'Indeferido')
+      && !SIGILOSAS_NO_DIARIO.has(p.tipo),
     montar: (p) => ({
       tipo: 'peticao_administrativa',
       dados: {
