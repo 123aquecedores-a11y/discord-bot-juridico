@@ -316,6 +316,21 @@ async function executarParecerMp(interaction, numero, modo) {
     if (!juizId) {
       // Sem Juiz agora: marca estado próprio pra o job de retry penal distribuir depois
       // (verificarProcessosPenaisSemJuiz, prazos.js) — antes o processo ficava preso pra sempre.
+      // LACUNA CONHECIDA E ACEITA (registrada em 18/08/2026, decisão do operador).
+      //
+      // NÃO EXISTE REJEIÇÃO DE DENÚNCIA neste bot. Depois deste status, a única ação disponível ao
+      // juiz é "Designar Juiz" — ele não pode recusar a acusação. Na prática o MP não tem freio na
+      // entrada do penal: oferecida a denúncia, o processo segue.
+      //
+      // Por que não foi resolvido com um botão: rejeitar denúncia é DECISÃO JUDICIAL — ato do juiz
+      // dirigido ao promotor — e pela regra do projeto todo ato assim precisa de peça, selo, janela
+      // e entrega in-game. Não é um botão, é um bloco inteiro. Fica para depois do Bloco E, junto
+      // de uma revisão dos atos do juiz no penal.
+      //
+      // CUIDADO ao implementar: "receber a denúncia" (ato judicial de aceitar a acusação) NÃO é o
+      // mesmo que "receber o papel" (o gate do QR, que só prova que o documento chegou às mãos do
+      // juiz). Acoplar os dois faria o juiz aceitar acusação sem decidir nada, bastando escanear um
+      // QR. Ver o teste 9 em scripts/testes-intimacao-gated.js, que trava essa separação.
       db.atualizar('processos', numero, { status: 'Denúncia oferecida - aguardando juiz' });
       return interaction.editReply({ content: `Parecer registrado e denúncia oferecida no processo ${numero}. Não há Juiz disponível agora, mas assim que houver um elegível o processo é **distribuído automaticamente** (o bot verifica a cada 10 min).` });
     }

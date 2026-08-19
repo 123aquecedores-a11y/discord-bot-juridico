@@ -214,6 +214,53 @@ console.log('\n8) UNIDADE do documento vem do PROCESSO, não do catálogo');
   ok(Object.values(emissao.TIPOS).every(t => !t.unidade), '8c: o catálogo NÃO carrega mais unidade — ele descreve o ATO, a vara é do processo');
 }
 
+console.log('\n9) OS DOIS "RECEBIMENTOS" SÃO COISAS DIFERENTES — e não podem virar uma só');
+{
+  // Existem dois "recebimentos" no penal, e confundi-los é inaceitável:
+  //
+  //   RECEBIMENTO DO PAPEL  — o gate. O juiz escaneia o QR e fica provado que o documento chegou
+  //                            às mãos dele. Libera LER o teor. Só isso.
+  //   RECEBIMENTO DA DENÚNCIA — ato JUDICIAL. O juiz aceita (ou rejeita) a acusação. É decisão de
+  //                            mérito, tomada depois, num ato próprio.
+  //
+  // Se acoplarem, o juiz passa a aceitar acusação sem decidir nada — basta escanear um QR. Este
+  // teste existe porque "está garantido por construção" é exatamente como o acoplamento aparece
+  // três features depois, por conveniência de alguém.
+  const p = db.inserir('processos', {
+    numero: '0399PN', tipo: 'Penal', status: 'Denúncia oferecida - aguardando juiz', modoEntrega: 'ingame',
+    juiz: JUIZ, promotor: '100000000000000009', habilitacoes: [], partes: [], canalId: 'c1',
+  });
+  const antes = { ...db.buscarPorNumero('processos', p.numero) };
+
+  const g = pecas.gerar({
+    processoTabela: 'processos', processoNumero: p.numero, tipo: 'intimacao_juiz',
+    autorId: '100000000000000009', autorPapel: 'Promotor', texto: 'Denúncia oferecida.',
+    destinatarios: [{ papel: 'Juiz' }],
+  });
+  pecas.abrirEntrega(g.peca.numero, '100000000000000009');
+  const token = db.buscarPorNumero('pecas', g.peca.numero).destinatarios[0].token;
+  const r = pecas.receber(g.peca.numero, JUIZ, { tokenLido: token });
+
+  ok(r.ok, '9a: o juiz recebe o documento pelo gate (QR válido, janela aberta, papel certo)');
+  ok(pecas.podeVerTeor(JUIZ, g.peca.numero) === true, '9b: ...e passa a poder LER o teor — é só isso que o gate libera');
+
+  const depois = db.buscarPorNumero('processos', p.numero);
+  ok(depois.status === antes.status,
+    '9c: o STATUS DO PROCESSO não mudou — escanear QR não é aceitar denúncia', `${antes.status} → ${depois.status}`);
+  ok(!depois.sentenca && !depois.resultado,
+    '9d: nenhuma decisão de mérito foi tomada pelo recebimento do papel');
+  ok(!/denunciaRecebida|acusacaoAceita/.test(JSON.stringify(depois)),
+    '9e: nenhum campo de aceitação da acusação foi criado como efeito colateral');
+
+  // O lado inverso: o gate também não pode DEPENDER de decisão judicial. Se um dia alguém exigir
+  // "só recebe o papel se a denúncia já foi aceita", trava o processo — a aceitação vem depois.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'utils', 'pecas.js'), 'utf-8');
+  const corpoReceber = src.slice(src.indexOf('function receber('), src.indexOf('function destravarSelo('));
+  ok(!/status/.test(corpoReceber),
+    '9f: pecas.receber não lê nem escreve status de processo — as duas decisões vivem separadas');
+  ok(corpoReceber.length > 500, '9z: o trecho analisado é o corpo real da função (o scan não passou vazio)');
+}
+
 try { fs.unlinkSync(DB_TESTE); } catch (_) {}
 try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
