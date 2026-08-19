@@ -799,9 +799,11 @@ async function registrarDepoimentoHandler(interaction, chave) {
 
 // Sempre aparece depois da sentença — o clique é que decide se quem apertou tem direito
 // (só quem perdeu, conforme o resultado estruturado).
-function botaoRecorrer(numero) {
+// `modulo` decide o prefixo do customId — é o que devolve o clique ao roteador certo. O botão é
+// o mesmo, e o fluxo atrás dele também.
+function botaoRecorrer(numero, modulo = 'processo') {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`painel:acao:processo:recorrer:${numero}`).setLabel('Recorrer').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`painel:acao:${modulo}:recorrer:${numero}`).setLabel('Recorrer').setStyle(ButtonStyle.Secondary),
   );
 }
 
@@ -3256,13 +3258,15 @@ function parteContrariaDoRecurso(processo, recorrenteId) {
   return (processo.reus || [])[0] || null;
 }
 
-async function abrirModalRecorrer(interaction, numero) {
-  const processo = db.buscarPorNumero('processos', numero);
-  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (processo.apelacaoNumero) return interaction.reply({ content: `Esse processo já tem recurso aberto: ${processo.apelacaoNumero}.`, ephemeral: true });
-  if (!podeRecorrer(interaction, processo)) return interaction.reply({ content: explicarNegacaoRecurso(interaction, processo), ephemeral: true });
+async function abrirModalRecorrer(interaction, numero, tabela = 'processos') {
+  const cfgOrigem = ORIGENS_RECURSO[tabela];
+  const processo = db.buscarPorNumero(tabela, numero);
+  if (!processo) return interaction.reply({ content: cfgOrigem.naoEncontrado, ephemeral: true });
+  if (processo.apelacaoNumero) return interaction.reply({ content: `Esse caso já tem recurso aberto: ${processo.apelacaoNumero}.`, ephemeral: true });
+  if (!cfgOrigem.podeRecorrer(interaction, processo)) return interaction.reply({ content: cfgOrigem.explicarNegacao(interaction, processo), ephemeral: true });
 
-  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:recorrer:${numero}`).setTitle('Recorrer da sentença');
+  const modulo = tabela === 'peticoes' ? 'peticao' : 'processo';
+  const modal = new ModalBuilder().setCustomId(`painel:modal:${modulo}:recorrer:${numero}`).setTitle(`Recorrer da ${cfgOrigem.rotulo}`);
   modal.addComponents(new ActionRowBuilder().addComponents(
     new TextInputBuilder().setCustomId('razoes').setLabel('Razões do recurso').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000),
   ));
@@ -3273,7 +3277,7 @@ async function abrirModalRecorrer(interaction, numero) {
 // oferece a revisão por IA antes de protocolar a apelação (que cria canal e sorteia relator).
 const chaveRazoes = (uid, numero) => `${uid}:razoes:${numero}`;
 
-async function confirmarRazoes(interaction, numero) {
+async function confirmarRazoes(interaction, numero, tabela = 'processos') {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (processo.apelacaoNumero) return interaction.reply({ content: `Esse processo já tem recurso aberto: ${processo.apelacaoNumero}.`, ephemeral: true });
@@ -3282,29 +3286,95 @@ async function confirmarRazoes(interaction, numero) {
   const razoes = interaction.fields.getTextInputValue('razoes');
   rascunhoDecisao.set(chaveRazoes(interaction.user.id, numero), { razoes });
   // Revisão automática ligada: pula a tela de escolha e já protocola o texto revisado pela IA.
-  if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return criarApelacao(interaction, numero, 'auto');
-  return interaction.reply(revisaoIA.telaEscolha('razoes', { extra: numero, titulo: 'Razões do recurso', texto: razoes }));
+  if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return criarApelacao(interaction, numero, 'auto', tabela);
+  // A tabela viaja no `extra` da tela de revisão: os botões dela voltam por publicarRazoes/
+  // usarRevisadoRazoes, que precisam saber de qual origem o recurso é. Sem isso o recurso da
+  // petição cairia no caminho do processo ao passar pela revisão-IA.
+  const extra = tabela === 'peticoes' ? `${numero}#peticoes` : numero;
+  return interaction.reply(revisaoIA.telaEscolha('razoes', { extra, titulo: 'Razões do recurso', texto: razoes }));
 }
 
-async function revisarRazoesTexto(interaction, numero) {
-  return revisarRascunho(interaction, { chave: chaveRazoes(interaction.user.id, numero), campo: 'razoes', telaId: 'razoes', extra: numero, msgExpirou: 'A prévia do recurso expirou. Refaça a ação.' });
+async function revisarRazoesTexto(interaction, extra) {
+  // A CHAVE do rascunho usa só o número (foi assim que confirmarRazoes gravou), mas o `extra`
+  // repassado às telas seguintes precisa manter o sufixo da origem — senão o recurso da petição
+  // perde a tabela justamente ao passar pela revisão e é protocolado como se fosse de processo.
+  const numero = String(extra).split('#')[0];
+  return revisarRascunho(interaction, { chave: chaveRazoes(interaction.user.id, numero), campo: 'razoes', telaId: 'razoes', extra, msgExpirou: 'A prévia do recurso expirou. Refaça a ação.' });
 }
 
-async function criarApelacao(interaction, numero, modo) {
+// ---------------------------------------------------------------------------
+// ORIGENS DO RECURSO — o que muda entre recorrer de um PROCESSO e de uma PETIÇÃO
+// ---------------------------------------------------------------------------
+// O recurso da petição administrativa reusa o fluxo inteiro da apelação: mesmo modal de razões,
+// mesma revisão-IA, mesmo sorteio de Desembargador, mesmo canal de ticket, mesma entrega gated das
+// razões e a mesma decisão manter/reformar/anular.
+//
+// O QUE MUDA é só isto: quem é parte, quem perdeu, e o que "reformar" e "anular" significam nos
+// autos de origem. Fica tudo aqui, num mapa por tabela, em vez de num segundo fluxo paralelo —
+// paralelo é o que garante que daqui a três features um dos dois recebe uma correção e o outro não.
+const ORIGENS_RECURSO = {
+  processos: {
+    rotulo: 'sentença',
+    naoEncontrado: 'Processo não encontrado.',
+    podeRecorrer,
+    explicarNegacao: explicarNegacaoRecurso,
+    parteContraria: parteContrariaDoRecurso,
+    tipoDoRegistro: (p) => p.tipo,
+  },
+
+  peticoes: {
+    rotulo: 'decisão',
+    naoEncontrado: 'Petição não encontrada.',
+
+    // QUEM PERDEU RECORRE. Na petição administrativa os dois lados são claros e não se confundem
+    // como no penal por crime: indeferiu, perdeu o requerente; deferiu, perdeu o MP.
+    //
+    // O MP entra como FISCAL, por cargo e não por identidade: é a mesma decisão de 19/08/2026 que
+    // abriu os atos por cargo — o Ministério Público é órgão, e qualquer Promotor cobre o colega.
+    podeRecorrer: (interaction, pet) => {
+      if (isSuperStaff(interaction)) return true;
+      const uid = interaction.user.id;
+      if (pet.status === 'Indeferido') return uid === pet.requerenteId;
+      if (pet.status === 'Deferido') return uid === pet.promotor || rh.cobreOPapel(uid, 'Promotor');
+      return false;
+    },
+
+    explicarNegacao: (interaction, pet) => {
+      const uid = interaction.user.id;
+      if (!['Deferido', 'Indeferido'].includes(pet.status)) {
+        return `Você não pode recorrer: a petição ainda não foi decidida (status atual: "${pet.status}"). O recurso só existe depois da decisão.`;
+      }
+      const ehRequerente = uid === pet.requerenteId;
+      const ehMp = uid === pet.promotor || rh.cobreOPapel(uid, 'Promotor');
+      if (!ehRequerente && !ehMp) {
+        return 'Você não pode recorrer: você não é parte desta petição (nem o advogado requerente, nem o Ministério Público).';
+      }
+      return pet.status === 'Deferido'
+        ? 'Você não pode recorrer: o pedido foi **deferido**, ou seja, você venceu. Quem pode recorrer do deferimento é o Ministério Público, como fiscal da lei.'
+        : 'Você não pode recorrer: o pedido foi **indeferido**, e quem perdeu foi o requerente. É ele quem tem o recurso liberado.';
+    },
+
+    parteContraria: (pet, recorrenteId) => (recorrenteId === pet.requerenteId ? (pet.promotor || null) : (pet.requerenteId || null)),
+    tipoDoRegistro: () => 'Administrativo',
+  },
+};
+
+async function criarApelacao(interaction, numero, modo, tabela = 'processos') {
+  const cfgOrigem = ORIGENS_RECURSO[tabela];
   const chaveR = chaveRazoes(interaction.user.id, numero);
   const d = rascunhoDecisao.get(chaveR);
   if (!d) return interaction.reply({ content: 'A prévia do recurso expirou. Refaça a ação.', ephemeral: true }).catch(() => {});
-  const processo = db.buscarPorNumero('processos', numero);
-  if (!processo) { rascunhoDecisao.delete(chaveR); return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true }).catch(() => {}); }
-  if (processo.apelacaoNumero) { rascunhoDecisao.delete(chaveR); return interaction.reply({ content: `Esse processo já tem recurso aberto: ${processo.apelacaoNumero}.`, ephemeral: true }).catch(() => {}); }
-  if (!podeRecorrer(interaction, processo)) { rascunhoDecisao.delete(chaveR); return interaction.reply({ content: explicarNegacaoRecurso(interaction, processo), ephemeral: true }).catch(() => {}); }
+  const processo = db.buscarPorNumero(tabela, numero);
+  if (!processo) { rascunhoDecisao.delete(chaveR); return interaction.reply({ content: cfgOrigem.naoEncontrado, ephemeral: true }).catch(() => {}); }
+  if (processo.apelacaoNumero) { rascunhoDecisao.delete(chaveR); return interaction.reply({ content: `Esse caso já tem recurso aberto: ${processo.apelacaoNumero}.`, ephemeral: true }).catch(() => {}); }
+  if (!cfgOrigem.podeRecorrer(interaction, processo)) { rascunhoDecisao.delete(chaveR); return interaction.reply({ content: cfgOrigem.explicarNegacao(interaction, processo), ephemeral: true }).catch(() => {}); }
 
   // Defer antes de criar canal (operação lenta) — evita o estouro da janela de 3s do Discord.
   await interaction.deferReply({ ephemeral: true });
   rascunhoDecisao.delete(chaveR);
   const razoes = await resolverTextoFinal(d, modo, 'razoes');
   const recorrenteId = interaction.user.id;
-  const parteContrariaId = parteContrariaDoRecurso(processo, recorrenteId);
+  const parteContrariaId = cfgOrigem.parteContraria(processo, recorrenteId);
 
   const desembargadorId = rh.sortearPorCargo('Desembargador');
   if (!desembargadorId) return interaction.editReply({ content: 'Não há Desembargador ativo cadastrado. As razões não foram protocoladas — tente de novo quando houver um Desembargador.' });
@@ -3317,11 +3387,14 @@ async function criarApelacao(interaction, numero, modo) {
   });
 
   db.inserir('apelacoes', {
-    numero: numeroApelacao, processoOriginalNumero: numero, tipo: processo.tipo,
+    numero: numeroApelacao, processoOriginalNumero: numero, tipo: cfgOrigem.tipoDoRegistro(processo),
+    // origemTabela é o que faz o MESMO fluxo servir processo e petição. Registro antigo não tem
+    // o campo e é 'processos' por definição — nenhuma migração no dados.json.
+    origemTabela: tabela,
     recorrenteId, parteContrariaId, desembargadorId, razoes,
     status: 'Aguardando decisão', decisao: null, canalId: canal.id,
   });
-  db.atualizar('processos', numero, { apelacaoNumero: numeroApelacao });
+  db.atualizar(tabela, numero, { apelacaoNumero: numeroApelacao });
 
   // O TEOR DAS RAZÕES NÃO VAI MAIS NO EMBED. O canal da apelação tem o relator, o recorrente E a
   // parte contrária dentro: publicar as razões ali entregava o teor a todo mundo no instante da
@@ -3331,7 +3404,7 @@ async function criarApelacao(interaction, numero, modo) {
     .setTitle(`⚖️ Apelação ${numeroApelacao}`)
     .setColor(0x8e44ad)
     .addFields(
-      { name: 'Processo original', value: numero, inline: true },
+      { name: cfgOrigem.rotulo === 'decisão' ? 'Petição de origem' : 'Processo original', value: numero, inline: true },
       { name: 'Recorrente', value: `<@${recorrenteId}>`, inline: true },
       { name: 'Parte contrária', value: parteContrariaId ? `<@${parteContrariaId}>` : '—', inline: true },
     );
@@ -3354,9 +3427,12 @@ async function criarApelacao(interaction, numero, modo) {
   // Resumo do caso pela IA "cartório" pro Desembargador relator (best-effort) — explica os autos,
   // a sentença recorrida e as razões, pra ele se situar rápido. Fallback gracioso se a IA off.
   const crimesTxt = (processo.crimes || []).map(c => crimeLabel(c)).join(', ') || (processo.motivo || '—');
+  // Em petição administrativa não há crime nem sentença estruturada: o resumo descreve o pedido
+  // e o que o Juízo decidiu, que é o que o relator precisa para se situar.
   const resumoFatos = [
-    `Processo ${processo.tipo} ${numero}.`,
-    processo.tipo === 'Penal' ? `Crime(s): ${crimesTxt}.` : `Ação: ${processo.motivo || '—'}.`,
+    tabela === 'peticoes' ? `Petição administrativa ${numero} (${processo.tipo}).` : `Processo ${processo.tipo} ${numero}.`,
+    tabela === 'peticoes' ? `Pedido: ${processo.tipo}. Decisão recorrida: ${processo.status}.`
+      : (processo.tipo === 'Penal' ? `Crime(s): ${crimesTxt}.` : `Ação: ${processo.motivo || '—'}.`),
     processo.resultado ? `Sentença recorrida: ${processo.resultado}${processo.pena ? `, pena ${processo.pena}${processo.regime ? `, regime ${processo.regime}` : ''}` : ''}.` : 'Sem resultado registrado.',
     processo.sentenca ? `Fundamentação da sentença: ${truncar(processo.sentenca, 500)}` : null,
   ].filter(Boolean).join(' ');
@@ -3509,9 +3585,50 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
   const statusFinal = { manter: 'Mantida', reformar: 'Reformada', anular: 'Anulada' }[decisao];
   db.atualizar('apelacoes', numeroApelacao, { status: statusFinal, ...atosPorCargo.carimboDeExecucao(interaction.user.id) });
 
-  const processoOriginal = db.buscarPorNumero('processos', apelacao.processoOriginalNumero);
+  // Registro antigo não tem origemTabela e é 'processos' por definição (ver criarApelacao).
+  const origemTabela = apelacao.origemTabela || 'processos';
+  const processoOriginal = db.buscarPorNumero(origemTabela, apelacao.processoOriginalNumero);
 
-  if (decisao === 'reformar' && processoOriginal) {
+  // RECURSO DE PETIÇÃO ADMINISTRATIVA — mesmas três decisões, aplicadas nos autos da petição.
+  // Reformar inverte o resultado; anular devolve à fila com outro Juiz. Sai por aqui porque
+  // daqui para baixo tudo fala de sentença, crime e dossiê, que a petição não tem.
+  if (origemTabela === 'peticoes' && processoOriginal) {
+    if (decisao === 'reformar') {
+      const novoStatus = processoOriginal.status === 'Deferido' ? 'Indeferido' : 'Deferido';
+      db.atualizar('peticoes', processoOriginal.numero, {
+        status: novoStatus,
+        motivo: `${processoOriginal.motivo || ''}
+
+[REFORMADA EM GRAU DE RECURSO — ${numeroApelacao}]
+Novo resultado: ${novoStatus}
+Fundamentação do relator: ${extras.fundamentacao}`.trim(),
+        reformadaEm: new Date().toISOString(),
+      });
+    }
+    if (decisao === 'anular') {
+      // Volta à fila de decisão com OUTRO Juiz — o que anulou a decisão anterior não pode ser
+      // o mesmo que a proferiu. Sem Juiz elegível, mantém o atual em vez de deixar sem ninguém.
+      const novoJuizId = rh.sortearJuiz({ excluirIds: [processoOriginal.juiz, processoOriginal.requerenteId].filter(Boolean) });
+      db.atualizar('peticoes', processoOriginal.numero, {
+        status: 'Pendente', juiz: novoJuizId || processoOriginal.juiz,
+        motivo: null, decisaoJuizEm: null, executadoPorId: null, apelacaoNumero: null,
+        anuladaEm: new Date().toISOString(),
+      });
+      // SPEC §11.4: decisão anulada fecha entrega pendente — entregar documento void é pior
+      // que estado órfão. É a mesma razão do processo anulado, logo abaixo.
+      try { require('../utils/pecas').fecharJanelasDoProcesso('peticoes', processoOriginal.numero); } catch (e) { console.error('[pecas] fechar janelas na anulação da petição:', e.message); }
+      const canalPet = processoOriginal.canalId ? await interaction.guild.channels.fetch(processoOriginal.canalId).catch(() => null) : null;
+      if (canalPet) {
+        await canais.reabrirCanal(canalPet, [processoOriginal.requerenteId, novoJuizId || processoOriginal.juiz, processoOriginal.promotor].filter(Boolean));
+        await canalPet.send({
+          content: `♻️ A apelação **${numeroApelacao}** anulou a decisão.${novoJuizId ? ` <@${novoJuizId}> foi sorteado para decidir de novo.` : ' Nenhum outro Juiz disponível — o mesmo Juiz decide novamente.'}`,
+          components: require('./peticao').botoesDecisao(processoOriginal.numero),
+        }).catch(() => {});
+      }
+    }
+  }
+
+  if (origemTabela === 'processos' && decisao === 'reformar' && processoOriginal) {
     const notaReforma = `\n\n[REFORMADA EM GRAU DE RECURSO — ${numeroApelacao}]\nNovo resultado: ${extras.novoResultado}\nFundamentação do relator: ${extras.fundamentacao}`;
     db.atualizar('processos', processoOriginal.numero, {
       resultado: extras.novoResultado,
@@ -3519,7 +3636,7 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
     });
   }
 
-  if (decisao === 'anular' && processoOriginal) {
+  if (origemTabela === 'processos' && decisao === 'anular' && processoOriginal) {
     const novoJuizId = rh.sortearJuiz({ excluirIds: [processoOriginal.delegado, processoOriginal.promotor, processoOriginal.juiz, processoOriginal.autor, ...(processoOriginal.reus || [])].filter(Boolean) });
     // Com Juiz sorteado, o caso já nasce "Concluso para julgamento" (dossie-conclusao-reabertura.md,
     // seção 3.2) — o novo Juiz decide na hora se julga com o que já tem ou pede mais prova
@@ -4134,8 +4251,9 @@ module.exports = {
   // Razões do recurso (Advogado) — mesmo padrão revisão-in-flow.
   confirmarRazoes,
   revisarRazoesTexto,
-  async publicarRazoes(interaction, numero) { return criarApelacao(interaction, numero, false); },
-  async usarRevisadoRazoes(interaction, numero) { return criarApelacao(interaction, numero, true); },
+  // `extra` pode vir como "NUM" (processo) ou "NUM#peticoes" — ver confirmarRazoes.
+  async publicarRazoes(interaction, extra) { const [n, t] = String(extra).split('#'); return criarApelacao(interaction, n, false, t || 'processos'); },
+  async usarRevisadoRazoes(interaction, extra) { const [n, t] = String(extra).split('#'); return criarApelacao(interaction, n, true, t || 'processos'); },
 
   criarProcessoPenal,
   criarProcessoCivil,
@@ -4180,6 +4298,7 @@ module.exports = {
   abrirModalAnexarProva,
   salvarProva, ehParteDoRegistro, botaoAnexarProva, botaoRolProvas,
   repostarBotoesApelacao, botoesApelacao, aguardandoEntregaDasRazoes, refDoReu,
+  ORIGENS_RECURSO, botaoRecorrer, // recurso: um fluxo, parametrizado por origem
   verRolProvas,
   abrirGerenciar,
   tratarGerenciar,

@@ -1021,6 +1021,14 @@ ${extras.motivo || '—'}`,
             .setDescription(extrasLinhas.join('\n'))],
         });
       }
+      // RECURSO — a decisão administrativa passou a ser recorrível ao Desembargador, com o MESMO
+      // fluxo do penal/cível. Quem perdeu recorre: indeferiu, o requerente; deferiu, o MP como
+      // fiscal. O botão fica no canal da petição, que é onde as partes já estão.
+      await canal.send({
+        content: `⚖️ Cabe **recurso ao Desembargador** desta decisão. Quem perdeu pode recorrer — as razões são entregues em mão ao relator, com selo, como qualquer peça.`,
+        components: [require('../commands/processo').botaoRecorrer(numero, 'peticao')],
+      }).catch(() => {});
+
       // ARQUIVAR SÓ QUANDO NÃO HÁ ENTREGA PENDENTE. Arquivar o canal com a peça por entregar
       // mataria o botão "Entregar agora" — a decisão existiria e ninguém conseguiria entregá-la.
       // Com entrega pendente, quem fecha é a válvula (varredura periódica) ou o próprio ato de

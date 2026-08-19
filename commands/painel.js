@@ -973,6 +973,8 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     // Provas na petição: mesma implementação do processo, só apontando para a tabela `peticoes`.
     if (acao === 'anexarprova') return peticaoCmd.abrirModalAnexarProvaPeticao(interaction, extra);
     if (acao === 'rolprovas') return peticaoCmd.verRolProvasPeticao(interaction, extra);
+    // RECURSO da decisão administrativa — mesmo fluxo do processo, só dizendo a tabela de origem.
+    if (acao === 'recorrer') return processoCmd.abrirModalRecorrer(interaction, extra, 'peticoes');
     if (acao === 'reabrir') return peticaoCmd.reabrirCaso(interaction, extra);
   }
 
@@ -1457,6 +1459,10 @@ async function tratarModal(interaction, modulo, acao, extra) {
 
   if (modulo === 'processo' && acao === 'recorrer') {
     return processoCmd.confirmarRazoes(interaction, extra);
+  }
+
+  if (modulo === 'peticao' && acao === 'recorrer') {
+    return processoCmd.confirmarRazoes(interaction, extra, 'peticoes');
   }
 
   if (modulo === 'processo' && acao === 'documentoexternodestino') {
