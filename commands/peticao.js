@@ -312,21 +312,55 @@ async function gravarManifestacao(guild, peticaoRef, { posicao, fundamentacao, a
   db.atualizar('peticoes', numero, { manifestacoesMp: [...(atual.manifestacoesMp || []), manifestacao] });
 
   const nomeAutor = await documentoPng.nomeExibicao(guild, autorId);
-  const png = await documentoPng.gerarDocumentoPNG({
-    tipoDocumento: 'parecer_mp_peticao', orgaoEmissor: 'ministerio_publico',
-    subunidade: 'Ministério Público — Petições Administrativas',
-    tituloDocumento: 'MANIFESTAÇÃO DO MINISTÉRIO PÚBLICO', numeroProcesso: numero,
-    dataEmissao: documentos.dataExtenso(), destinatario: atual.nomeCliente || 'Requerente',
-    corpoTexto: fundamentacao || '', posicao,
-    nomeAssinante: nomeAutor, cargoAssinante: 'Promotor de Justiça',
-  }).catch(err => { console.error('Falha ao gerar PNG do parecer do MP (petição):', err.message); return null; });
-
   const canal = await guild.channels.fetch(atual.canalId).catch(() => null);
-  if (canal) {
-    await canal.send({
-      content: `📣 **Manifestação do Ministério Público** — <@${autorId}>: **${posicao}**.${fundamentacao ? `\n> ${truncar(fundamentacao, 900).replace(/\n/g, '\n> ')}` : ''}`,
-      ...(png ? { files: [{ attachment: png, name: `Manifestacao-MP-${numero}.png` }] } : {}),
-    });
+
+  // TEOR DA MANIFESTAÇÃO — mesmo rito do penal (BUG recorrente, fechado em 19/08/2026).
+  //
+  // Este caminho era SEPARADO do penal, e foi por isso que escapou das rodadas anteriores: postava
+  // o texto inline E o PNG direto no canal da petição, que tem o advogado requerente dentro. O MP
+  // se manifesta AO JUÍZO; o advogado toma ciência quando o ato lhe for entregue, não antes.
+  //
+  // Usa o MESMO tipo `manifestacao_mp_gated` do penal, com override de tabela — não há um segundo
+  // tipo nem um segundo pipeline. "Nada a opor" não vira peça: não tem teor a proteger.
+  const gated = require('../utils/pecas').modoDoProcesso(atual) === 'ingame';
+  let emissao = { ok: false };
+  if (gated && fundamentacao) {
+    emissao = await require('../utils/emissaoPeca').emitirAtoComoPeca(
+      { guild, autorId },
+      {
+        tipo: 'manifestacao_mp_gated', processoNumero: numero, tabela: 'peticoes',
+        texto: `Posição: ${posicao}\n\n${fundamentacao}`,
+        destinatarios: [{ papel: 'Juiz' }], assinante: nomeAutor,
+      },
+    ).catch(err => { console.error('Falha ao emitir a peça da manifestação do MP:', err.message); return { ok: false, razao: err.message }; });
+  }
+
+  if (gated && emissao.ok) {
+    // Só METADADO no canal: quem se manifestou e em que sentido. A fundamentação sai pelo selo.
+    if (canal) {
+      await canal.send({
+        content: `📣 **Manifestação do Ministério Público** — <@${autorId}>: **${posicao}**.\n`
+          + '🔒 A fundamentação fica restrita até a entrega pessoal ao Juízo. Use **Entregar agora** acima quando estiverem em cena.',
+      }).catch(() => {});
+    }
+  } else {
+    // Modo aberto/legado, "Nada a opor" (que não tem teor) ou falha na emissão: caminho de sempre.
+    const png = fundamentacao ? await documentoPng.gerarDocumentoPNG({
+      tipoDocumento: 'parecer_mp_peticao', orgaoEmissor: 'ministerio_publico',
+      subunidade: 'Ministério Público — Petições Administrativas',
+      tituloDocumento: 'MANIFESTAÇÃO DO MINISTÉRIO PÚBLICO', numeroProcesso: numero,
+      dataEmissao: documentos.dataExtenso(), destinatario: atual.nomeCliente || 'Requerente',
+      corpoTexto: fundamentacao || '', posicao,
+      nomeAssinante: nomeAutor, cargoAssinante: 'Promotor de Justiça',
+    }).catch(err => { console.error('Falha ao gerar PNG do parecer do MP (petição):', err.message); return null; }) : null;
+
+    if (canal) {
+      await canal.send({
+        content: `📣 **Manifestação do Ministério Público** — <@${autorId}>: **${posicao}**.${fundamentacao ? `\n> ${truncar(fundamentacao, 900).replace(/\n/g, '\n> ')}` : ''}`
+          + (gated && fundamentacao ? `\n\n⚠️ A peça de entrega não pôde ser gerada (${emissao.razao || 'motivo desconhecido'}) — o teor foi publicado no caminho comum. Avise a staff.` : ''),
+        ...(png ? { files: [{ attachment: png, name: `Manifestacao-MP-${numero}.png` }] } : {}),
+      });
+    }
   }
   await auditoria.registrar(guild, { acao: `Manifestação do MP: ${posicao}`, executorId: autorId, referencia: `Petição ${numero}` });
 }

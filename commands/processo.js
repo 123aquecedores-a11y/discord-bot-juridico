@@ -3687,10 +3687,40 @@ Fundamentação do relator: ${extras.fundamentacao}`.trim(),
     tituloDocumento: 'ACÓRDÃO', numeroProcesso: apelacao.processoOriginalNumero, dataEmissao: documentos.dataExtenso(),
     destinatario: 'Autos', corpoTexto: corpoAcordao, nomeAssinante: nomeDes, cargoAssinante: 'Desembargador(a) Relator(a)',
   }).catch(err => { console.error('Falha ao gerar PNG do acórdão:', err.message); return null; });
-  const anexoAcordao = pngAcordao ? { files: [{ attachment: pngAcordao, name: `Acordao-${numeroApelacao}.png` }] } : {};
+  // ACÓRDÃO GATED — achado em 19/08/2026 pelo inventário de anexos.
+  //
+  // O teor e o PNG iam para o canal da apelação (que tem recorrente E parte contrária dentro) e
+  // para o canal do processo original (que tem advogados e partes). Era a mesma classe da sentença
+  // e do parecer do MP, e tinha escapado de todas as varreduras por não estar em inventário nenhum.
+  //
+  // Em `ingame` o acórdão vira peça entregue às partes; os canais recebem o RESULTADO (que é
+  // público — a parte precisa saber se ganhou) sem a fundamentação nem o documento.
+  const acordaoGated = origemTabela === 'processos'
+    && processoOriginal
+    && require('../utils/pecas').modoDoProcesso(processoOriginal) === 'ingame';
+  const destinatariosAcordao = (processoOriginal?.habilitacoes || [])
+    .filter(h => h.status === 'Aprovado')
+    .map(h => ({ papel: 'Advogado', habilitacaoId: h.id }));
+
+  let emissaoAcordao = { ok: false };
+  if (acordaoGated && destinatariosAcordao.length) {
+    emissaoAcordao = await require('../utils/emissaoPeca').emitirAtoComoPeca(interaction, {
+      tipo: 'acordao', processoNumero: processoOriginal.numero, texto: corpoAcordao,
+      destinatarios: destinatariosAcordao, assinante: nomeDes,
+    }).catch(err => { console.error('Falha ao emitir a peça do acórdão:', err.message); return { ok: false, razao: err.message }; });
+  }
+  // Sem peça (modo aberto/legado, sem defesa habilitada ou falha) o ato segue no caminho comum:
+  // acórdão que não sai é pior que acórdão visível, e a decisão já está gravada.
+  const anexoAcordao = (!emissaoAcordao.ok && pngAcordao)
+    ? { files: [{ attachment: pngAcordao, name: `Acordao-${numeroApelacao}.png` }] }
+    : {};
+  // O RESULTADO é público — a parte precisa saber se ganhou. A FUNDAMENTAÇÃO é que fica no gate.
+  const resumoAcordao = `⚖️ **Acórdão — ${numeroApelacao}**: sentença **${statusFinal}**.`
+    + (extras.novoResultado ? ` Novo resultado: **${extras.novoResultado}**.` : '')
+    + '\n🔒 A fundamentação do relator fica restrita até a entrega pessoal a cada advogado.';
 
   if (interaction.channel) {
-    await interaction.channel.send({ content: textoDoc, ...anexoAcordao });
+    await interaction.channel.send({ content: emissaoAcordao.ok ? resumoAcordao : textoDoc, ...anexoAcordao });
     // Apelação decidida é resolução final dela mesma — trava o canal, mesmo quando anula
     // (a continuação do caso acontece no canal do processo original, não aqui).
     await canais.arquivarCanal(interaction.channel);
@@ -3699,14 +3729,16 @@ Fundamentação do relator: ${extras.fundamentacao}`.trim(),
   if (processoOriginal) {
     const canalOriginal = await interaction.guild.channels.fetch(processoOriginal.canalId).catch(() => null);
     if (canalOriginal) {
-      const processoAtualizado = db.buscarPorNumero('processos', processoOriginal.numero);
+      const processoAtualizado = db.buscarPorNumero(origemTabela, processoOriginal.numero);
       await canalOriginal.send({
-        content: `📋 Resultado do recurso ${numeroApelacao}:\n\n${textoDoc}`,
-        embeds: [embedProcesso(processoAtualizado)],
+        content: emissaoAcordao.ok
+          ? `📋 Resultado do recurso ${numeroApelacao}:\n\n${resumoAcordao}`
+          : `📋 Resultado do recurso ${numeroApelacao}:\n\n${textoDoc}`,
+        ...(origemTabela === 'processos' ? { embeds: [embedProcesso(processoAtualizado)] } : {}),
         ...anexoAcordao,
       });
     }
-    await postarOuAtualizarCapaPublica(interaction.guild, processoOriginal.numero);
+    if (origemTabela === 'processos') await postarOuAtualizarCapaPublica(interaction.guild, processoOriginal.numero);
   }
 
   await auditoria.registrar(interaction.guild, {

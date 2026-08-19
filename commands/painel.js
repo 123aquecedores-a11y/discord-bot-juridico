@@ -1102,10 +1102,17 @@ async function tratarSelect(interaction, modulo, campo, extra) {
     const tipoIndex = interaction.values[0];
     const tipo = medidaCmd.TIPOS_MEDIDA[Number(tipoIndex)];
     const modal = new ModalBuilder().setCustomId(`painel:modal:medida:solicitar:${tipoIndex}`).setTitle(`Solicitar medida — ${tipo}`.slice(0, 45));
+    // NOME + RG + FUNDAMENTAÇÃO — mesmo trio do resto do bot (19/08/2026).
+    //
+    // O campo "Discord do alvo" saiu pela mesma razão que o @ do réu: o alvo é personagem de RP,
+    // não tem conta no servidor, e o dado não era usado para decidir nada. Quem identifica é o RG.
+    //
+    // O RG é OPCIONAL de propósito: medida de busca e apreensão frequentemente tem por alvo um
+    // LOCAL ("galpão da Rua 5"), que não tem identidade civil. Exigi-lo obrigaria a inventar um.
     modal.addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('alvo').setLabel('Pessoa/local alvo').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('alvo_discord').setLabel('Discord do alvo (@menção, se for pessoa)').setStyle(TextInputStyle.Short).setRequired(false)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Motivo/indícios').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('alvo').setLabel('Nome do alvo (pessoa ou local)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('alvo_rg').setLabel('RG do alvo (vazio se for local)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Fundamentação (motivo/indícios)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     );
     return interaction.showModal(modal);
   }
@@ -1578,7 +1585,8 @@ async function tratarModal(interaction, modulo, acao, extra) {
       guild: interaction.guild, delegadoId: interaction.user.id, promotorId: null,
       tipo,
       alvo: interaction.fields.getTextInputValue('alvo'),
-      alvoDiscordId: processoCmd.extrairMencoes(interaction.fields.getTextInputValue('alvo_discord'))[0] || null,
+      // Sem alvoDiscordId: o campo saiu do modal. O alvo é identificado por nome + RG.
+      rgAlvo: (interaction.fields.getTextInputValue('alvo_rg') || '').trim() || null,
       motivo: interaction.fields.getTextInputValue('motivo'),
     });
     if (resultado.erro) return interaction.editReply({ content: resultado.erro });
