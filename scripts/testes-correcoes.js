@@ -767,11 +767,15 @@ function seedProcesso(numero, extra) {
     // 18a: engine publica a decisão de petição administrativa (Deferido) com card + tipo + PNG + marcador
     const pDef = db.inserir('peticoes', { numero: 'DIA-PA1', tipo: 'PorteArma', status: 'Deferido', juiz: 'juizD', nomeCliente: 'Fulano da Silva', validadeAte: new Date(Date.now() + 15 * 864e5).toISOString() });
     rec.sends.length = 0;
+    // INVERTIDO EM 19/08/2026. Este teste afirmava o vazamento como comportamento correto: a
+    // decisão do porte de arma ia ao Diário com o PNG INTEIRO da sentença, para @everyone. O
+    // Diário publica o RESULTADO; o documento completo só sai pela entrega com selo.
+    // Passa o anexo de propósito, para provar que ele é DESCARTADO mesmo quando alguém insiste.
     const pub1 = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', pDef, { files: [{ attachment: Buffer.from('x'), name: 'Sentenca.png' }] });
     const emb1 = acharPub();
     ok(pub1 === true && !!emb1, '18a: publicarAto publica a decisão de petição administrativa');
     ok(emb1 && /porte de arma/i.test(JSON.stringify(emb1.embeds[0].data)), '  ...com o tipo do pedido no card');
-    ok(emb1 && Array.isArray(emb1.files) && emb1.files.length, '  ...e o PNG anexado');
+    ok(emb1 && !emb1.files, '  ...e SEM o PNG — o teor não vai ao Diário');
     ok((db.buscarPorNumero('peticoes', 'DIA-PA1') || {}).diarioPublicado?.peticaoAdministrativa, '  ...e marca diarioPublicado[peticaoAdministrativa] no registro');
 
     // 18b: idempotente — segunda chamada não republica
@@ -837,7 +841,8 @@ function seedProcesso(numero, extra) {
     const r3 = await diarioAtos.publicarAto(fakeGuild(), 'desarquivamento', db.buscarPorNumero('processos', 'DIA-DES1'), { files: [{ attachment: Buffer.from('x'), name: 'Dec.png' }] });
     const pub3 = acharPub();
     ok(r3 === true && pub3 && /reaberto/i.test(dataDe(pub3)), '19e: desarquivamento publica (processo reaberto)');
-    ok(pub3 && Array.isArray(pub3.files) && pub3.files.length, '  ...com o PNG da decisão anexado');
+    // Mesma inversão do 18a: o card do desarquivamento vai, o PNG da decisão não.
+    ok(pub3 && !pub3.files, '  ...e SEM o PNG da decisão — o teor não vai ao Diário');
     const dp = (db.buscarPorNumero('processos', 'DIA-DES1') || {}).diarioPublicado || {};
     ok(dp.arquivamentoInquerito && dp.desarquivamento, '  ...e os DOIS atos coexistem no mesmo registro');
 

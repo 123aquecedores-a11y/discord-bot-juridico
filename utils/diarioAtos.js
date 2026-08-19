@@ -177,7 +177,7 @@ const NATUREZAS = {
  * @param {import('discord.js').Guild} guild
  * @param {string} natureza  chave de NATUREZAS
  * @param {Object} record    o registro do ato (peticao/processo/medida...)
- * @param {Object} [opts]    opts.files: anexos já prontos (ex.: PNG da sentença, PDF do relatório)
+ * @param {Object} [opts]    opts.silencioso: publica sem @everyone (varredura/backfill).
  * @returns {Promise<boolean>} true se publicou agora
  */
 async function publicarAto(guild, natureza, record, opts = {}) {
@@ -190,16 +190,13 @@ async function publicarAto(guild, natureza, record, opts = {}) {
     if (record.diarioPublicado && record.diarioPublicado[natureza]) return false;
     if (!def.publicavel(record)) return false;         // o estado atual ainda não justifica publicar
     const { tipo, dados } = def.montar(record, guild);
-    // Anexo: usa o que o handler passou; senão deixa a natureza buscar (ex.: PDF do relatório do
-    // inquérito). Blindado — anexo que falhe não impede a publicação do card.
-    let files = Array.isArray(opts.files) && opts.files.length ? opts.files : null;
-    if (!files && typeof def.files === 'function') {
-      files = await Promise.resolve(def.files(record, guild)).catch(() => null);
-    }
-    files = Array.isArray(files) && files.length ? files : undefined;
+    // SEM ANEXO, e sem caminho para um. O Diário publica o CARD do resultado; o documento
+    // completo só sai pela entrega com selo (19/08/2026 — a sentença do porte de arma foi
+    // publicada inteira, em PNG, para @everyone). `publicarNoDiario` também barra por allowlist:
+    // aqui é a origem, lá é a rede. Fechar só um dos dois deixaria a porta aberta pelo outro.
     // silencioso: a varredura/backfill publica SEM @everyone (senão o backlog floodaria pings); o
     // ato em tempo real (chamado do handler) mantém o ping.
-    const enviada = await diario.publicarNoDiario(guild, tipo, { ...dados, ...(files ? { files } : {}), silencioso: !!opts.silencioso });
+    const enviada = await diario.publicarNoDiario(guild, tipo, { ...dados, silencioso: !!opts.silencioso });
     // Diário não configurado / canal sumiu / sem permissão → publicarNoDiario devolve false. NÃO
     // marca: assim a varredura (Etapa 5) tenta de novo depois, em vez de perder a publicação.
     if (!enviada) return false;
