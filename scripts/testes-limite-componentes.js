@@ -133,6 +133,38 @@ console.log('\n2) commands/processo.js — catálogo de hubs não pode crescer a
     `${HUBS_PROCESSO.length} hubs + ${ACOES_UNIVERSAIS_PAINEL.length} universais`);
 }
 
+console.log('\n3) Ferramenta de DEV não pode ser condição para o build de PRODUÇÃO');
+{
+  // ACHADO EM PRODUÇÃO, 19/08/2026. O script `prepare` (que instala o hook de pre-push) roda
+  // AUTOMATICAMENTE dentro de `npm ci` — inclusive no build do Docker, onde NÃO existe git:
+  //     sh: 1: git: not found  →  npm error code 127  →  Build Failed
+  // Todo deploy morreu por isso em 19 segundos. E o incidente do Railway mascarou o defeito por
+  // horas: com a fila parada, não dava para distinguir "a plataforma não processa" de "o meu build
+  // quebra sozinho".
+  //
+  // A regra que este teste trava: conveniência de ambiente de DEV nunca pode derrubar o build de
+  // PRODUÇÃO. Se o binário não existir, o script engole a falha e segue.
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+  const RODAM_NO_INSTALL = ['preinstall', 'install', 'postinstall', 'prepare', 'prepublish'];
+  const presentes = RODAM_NO_INSTALL.filter(k => pkg.scripts && pkg.scripts[k]);
+
+  const fragis = presentes.filter((k) => {
+    const cmd = pkg.scripts[k];
+    const usaBinarioDeDev = /\b(git|husky)\b/.test(cmd);
+    const tolerante = /\|\|/.test(cmd); // `|| true`, `|| exit 0` — engole a ausência do binário
+    return usaBinarioDeDev && !tolerante;
+  });
+
+  ok(fragis.length === 0,
+    '3a: nenhum script de instalação derruba o build quando o binário de dev não existe',
+    fragis.map(k => `${k}: ${pkg.scripts[k]}`).join(' | '));
+
+  // CANÁRIO: se os scripts sumirem ou forem renomeados, 3a aprovaria sem examinar nada.
+  ok(presentes.length >= 1,
+    '3z: há script de instalação para examinar (o teste 3a não passou vazio)',
+    `presentes: ${presentes.join(', ') || 'nenhum'}`);
+}
+
 try { fs.unlinkSync(DB_TESTE); } catch (_) {}
 try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
