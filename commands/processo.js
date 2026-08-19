@@ -352,6 +352,8 @@ async function executarParecerMp(interaction, numero, modo) {
   }
 
   db.atualizar('processos', numero, { status: 'Arquivado' });
+  // SPEC §11.4: arquivou, fecha as janelas de entrega pendentes (sem estado órfão em caso morto).
+  try { require('../utils/pecas').fecharJanelasDoProcesso('processos', numero); } catch (e) { console.error('[pecas] fechar janelas no arquivamento:', e.message); }
   if (canal) {
     await canais.arquivarCanal(canal);
     await canal.send({ content: `<@${processo.delegado}>`, components: [botaoPedirRevisao(numero)] });
@@ -2142,6 +2144,8 @@ async function arquivarCivil(interaction, numero) {
   }
 
   db.atualizar('processos', numero, { status: 'Arquivado' });
+  // SPEC §11.4: arquivou, fecha as janelas de entrega pendentes (sem estado órfão em caso morto).
+  try { require('../utils/pecas').fecharJanelasDoProcesso('processos', numero); } catch (e) { console.error('[pecas] fechar janelas no arquivamento:', e.message); }
   await interaction.update({ embeds: [embedProcesso(db.buscarPorNumero('processos', numero))], components: [] });
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
@@ -3237,6 +3241,10 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
       // o veredicto por crime antigo órfão até o re-julgamento (lido em displays e no PNG).
       juiz: novoJuizId, juizDesde: new Date().toISOString(), sentenca: null, resultado: null, sentencaPorCrime: null, apelacaoNumero: null,
     });
+    // SPEC §11.4: processo ANULADO também fecha janelas de entrega pendentes — a sentença anulada
+    // pode ter entrega aberta, e entregar documento void é pior que estado órfão. Quem tiver ato
+    // legítimo ainda pendente (uma intimação) reabre a janela com um clique em "Entregar agora".
+    try { require('../utils/pecas').fecharJanelasDoProcesso('processos', processoOriginal.numero); } catch (e) { console.error('[pecas] fechar janelas na anulação:', e.message); }
     const canalOriginalParaJuiz = await interaction.guild.channels.fetch(processoOriginal.canalId).catch(() => null);
     if (canalOriginalParaJuiz) {
       // A sentença original já tinha travado e arquivado esse canal — anular reabre o caso

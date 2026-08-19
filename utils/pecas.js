@@ -650,9 +650,16 @@ function resolverTokenPublico(token) {
     for (const dest of peca.destinatarios || []) {
       const achada = (dest.paginasPublicas || []).find(p => p.token === token);
       if (!achada) continue;
+      // `gated` e `processoTipo` são OBRIGATÓRIOS aqui, e a ausência deles era um bug crítico
+      // (achado da auditoria, 19/08/2026): sem `gated`, gerarPecaPNG monta o documento SEM o bloco
+      // do selo — e a página pública é justamente a que o jogador imprime no jogo. O destinatário
+      // fotografava um papel sem QR e não conseguia receber nunca. Sem `processoTipo`, a vara sai
+      // errada na via impressa.
+      const processo = db.buscarPorNumero(peca.processoTabela, peca.processoNumero);
       return {
         pecaNumero: peca.numero, processoNumero: peca.processoNumero, processoTabela: peca.processoTabela,
-        tipo: peca.tipo, texto: peca.texto, digitos: peca.digitos, codigoArquivo: peca.codigoArquivo,
+        tipo: peca.tipo, gated: peca.gated, processoTipo: processo ? processo.tipo : null,
+        texto: peca.texto, digitos: peca.digitos, codigoArquivo: peca.codigoArquivo,
         qualificacao: peca.qualificacao, assinante: peca.assinante, criadoEm: peca.criadoEm,
         autorId: peca.autorId, autorPapel: peca.autorPapel,
         tokenSelo: dest.token, papel: dest.papel, habilitacaoId: dest.habilitacaoId,
@@ -697,7 +704,10 @@ function varrerValvula({ agora = Date.now() } = {}) {
       return {
         ...d,
         recebidoEm: new Date(agora).toISOString(),
-        recebidoComo: 'distribuição automática pelo cartório — não houve entrega pessoal registrada',
+        // "Ciência tácita" é o termo do processo eletrônico real (PJe): decorrido o prazo para
+        // ciência sem consulta, considera-se intimado. Renomeado de "distribuição automática pelo
+        // cartório" em 19/08/2026 — o RP fica mais crível com o vocabulário jurídico verdadeiro.
+        recebidoComo: 'ciência tácita — decorrido o prazo para ciência sem entrega pessoal registrada',
         automatico: true,
       };
     });
@@ -830,11 +840,16 @@ function reiniciarValvulaPorTroca(processoTabela, processoNumero, papel, { agora
 }
 
 // "2 entregas pendentes aguardando recebimento" — o que o substituto herdou (SPEC §6.2).
+//
+// Devolve PROJEÇÃO (número + tipo), nunca o registro cru: o registro carrega token e texto, e uma
+// função de listagem que entrega a peça inteira seria um jeito silencioso de contornar a camada de
+// visibilidade — o chamador só precisa dizer "você herdou N entregas", não ler o teor delas.
 function pendentesDoPapel(processoTabela, processoNumero, papel) {
   return db.todos('pecas', p => p.gated
     && p.processoTabela === processoTabela
     && p.processoNumero === processoNumero
-    && p.destinatarios.some(d => d.papel === papel && !d.recebidoEm));
+    && p.destinatarios.some(d => d.papel === papel && !d.recebidoEm))
+    .map(p => ({ numero: p.numero, tipo: p.tipo }));
 }
 
 // SPEC §11.2.2b: DESTRAVAR EM EMERGÊNCIA — ação separada e explícita, nunca efeito colateral do

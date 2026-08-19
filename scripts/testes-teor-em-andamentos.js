@@ -136,7 +136,7 @@ console.log('\n3) Nenhum ato NOVO gravando andamento sem passar por esta revisã
     'commands/mandado.js': 1,
     'commands/medida.js': 2,
     'commands/oficio.js': 2,
-    'utils/emissaoPeca.js': 3,
+    'utils/emissaoPeca.js': 4, // +1 em 19/08/2026: 'selo destravado pela supervisão' — REVISADO: o detalhe carrega o MOTIVO escrito pela supervisão (metadado do ato), nunca o teor da peça
     'utils/supervisao.js': 2,
   };
 

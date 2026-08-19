@@ -550,7 +550,11 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     const autos = require('../utils/andamentos').doProcesso(p.numero);
     const lavrado = autos.find(a => a.tipo === 'peca_valvula_24h');
     ok(!!lavrado, '14b: e LAVRA nos autos — sem isso a válvula estourava em silêncio');
-    ok(/cart[óo]rio/i.test(lavrado.titulo) && !/teor|conteúdo/i.test(lavrado.titulo), '14c: título genérico por tipo (SPEC §10), sem entregar o que aconteceu além disso');
+    // Renomeado em 19/08/2026: "Distribuição automática pelo cartório" → "Ciência tácita", o termo
+    // do PJe real. O que o teste protege continua sendo o mesmo: título GENÉRICO por tipo, que não
+    // entrega o que aconteceu além de "o prazo venceu" (SPEC §10).
+    ok(/ci[êe]ncia t[áa]cita/i.test(lavrado.titulo) && !/teor|conteúdo/i.test(lavrado.titulo),
+      '14c: título genérico por tipo (SPEC §10), sem entregar o que aconteceu além disso');
   }
 
   console.log('\n15) Revogação de links públicos de processo encerrado (o vazamento que a Resposta 16 apontou)');

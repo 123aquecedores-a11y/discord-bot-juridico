@@ -395,14 +395,28 @@ async function trocarManual(guild, { tabela, numero, papel, novoId, motivo, exec
   // disponibilidade é PREVENÇÃO (escolhe quem entra); substituição é REMÉDIO (conserta quem saiu).
   // O substituto assume as entregas pendentes por PAPEL, sem regenerar nada — e agora com o relógio
   // reiniciado, que é o que torna a herança justa.
+  let herdadas = [];
   try {
-    const reiniciadas = require('./pecas').reiniciarValvulaPorTroca(tabela, numero, papel);
+    const pecas = require('./pecas');
+    const reiniciadas = pecas.reiniciarValvulaPorTroca(tabela, numero, papel);
     if (reiniciadas.length) {
       console.log(`[pecas] troca de ${papel} em ${numero}: válvula reiniciada em ${reiniciadas.length} entrega(s) pendente(s).`);
     }
-  } catch (e) { console.error('[pecas] falha ao reiniciar válvula na troca:', e.message); }
+    // SPEC §6.2: "ao assumir, o substituto recebe a lista do que herdou". Era o DÉCIMO código órfão
+    // desta auditoria — pendentesDoPapel existia, testado, e nenhum caminho o chamava: o substituto
+    // entrava no caso sem saber que havia entrega esperando por ele. Vai no canal do caso, junto do
+    // andamento da troca (o mesmo lugar onde ele lê que assumiu).
+    herdadas = pecas.pendentesDoPapel(tabela, numero, papel);
+    if (herdadas.length) {
+      const cfgT = TABELAS_TICKET[tabela];
+      const reg = db.buscarPorNumero(tabela, numero);
+      const canal = reg && reg[cfgT.canalCampo] ? await guild.channels.fetch(reg[cfgT.canalCampo]).catch(() => null) : null;
+      const aviso = `📥 <@${novoId}> — você herdou **${herdadas.length} entrega(s) pendente(s)** aguardando recebimento neste caso: ${herdadas.map(h => h.numero).join(', ')}. O prazo para ciência reiniciou agora.`;
+      if (canal) await canal.send({ content: aviso }).catch(() => {});
+    }
+  } catch (e) { console.error('[pecas] falha ao reiniciar válvula/herança na troca:', e.message); }
 
-  return { ...r, papel, tabela, numero };
+  return { ...r, papel, tabela, numero, herdadas };
 }
 
 // Botão de designar à mão pra pendência (só Juiz em processo/petição tem designarjulgador hoje).

@@ -435,23 +435,17 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   });
 }
 
+// UNIDADE derivada do processo, nunca hardcoded no catálogo (corrigido em 18/08/2026).
+//
+// A IMPLEMENTAÇÃO MORA EM utils/catalogoAtos.js desde 19/08/2026: o servidor HTTP das páginas
+// públicas precisa da MESMA regra e não pode importar este arquivo (discord.js). Ter duas cópias
+// foi o que produziu o bug crítico da página impressa sem selo — ver o cabeçalho de catalogoAtos.
+// Aqui fica só o reexport, para não quebrar quem já importava daqui.
+const unidadeDoProcesso = require('./catalogoAtos').unidadeDoProcesso;
+
 // Qualificação das partes, no formato dos autos. Uma petição que não identifica as partes não é
 // peça, é bilhete — e todos estes dados já existem no registro do processo (SPEC §5.1: os campos
 // vêm preenchidos pelo sistema, não digitados).
-// UNIDADE derivada do processo, nunca hardcoded no catálogo (corrigido em 18/08/2026).
-// O catálogo trazia 'Vara Criminal' fixo nos DOIS tipos — e como a petição incidental também roda em
-// processo cível, toda petição cível saía com a vara errada impressa no documento, visível ao
-// jogador. O catálogo descreve o ATO; a vara é do PROCESSO.
-//
-// NOTA PARA A FAIXA 2 (administrativo): quando entrar o terceiro rito, esta função e qualificacao()
-// devem virar TABELA (mapa por tipo), não um terceiro . Dois ramos ainda se lê; três empilhados
-// viram o lugar onde alguém esquece um caso.
-function unidadeDoProcesso(processo) {
-  return processo && processo.tipo === 'Penal'
-    ? 'Comarca de São Paulo — Vara Criminal'
-    : 'Comarca de São Paulo — Vara Cível';
-}
-
 function qualificacao(processo) {
   const linhas = [`**Classe:** ${processo.tipo === 'Penal' ? 'Ação Penal' : 'Ação Cível'} nº ${processo.numero}`];
   const autor = processo.autorNome || (processo.tipo === 'Penal' ? 'Ministério Público' : null);
@@ -543,11 +537,18 @@ async function postarNoCanal(interaction, peca, processo, cfg) {
     );
 
   if (peca.gated) {
+    // O prazo exibido DERIVA dos destinatários reais (a válvula é POR PAPEL desde o Bloco C:
+    // 6h fórum, 48h externos) — o texto fixo "24 horas" mentia para os dois lados. E o vocabulário
+    // é o do processo eletrônico real: PRAZO PARA CIÊNCIA (tempo para receber) é uma coisa;
+    // PRAZO PARA MANIFESTAÇÃO (tempo para agir depois de receber) é outra, e só corre da ciência.
+    const horas = [...new Set(peca.destinatarios.map(d => Math.round(pecas.valvulaMsPara(d) / 3600000)))].sort((a, b) => a - b);
+    const prazoTexto = horas.length === 1 ? `${horas[0]}h` : horas.map(h => `${h}h`).join(' / ');
     embed.setDescription(
       '🔒 **Teor restrito até a entrega pessoal.**\n'
       + 'O documento existe e está nos autos, mas só se abre ao destinatário quando a entrega for registrada — '
       + 'em cena, dentro do jogo, com o selo de autenticação conferido pelo sistema.\n\n'
-      + `Se não houver entrega em 24 horas, o cartório distribui automaticamente e o prazo passa a correr.`,
+      + `**Prazo para ciência: ${prazoTexto}** (conforme o papel do destinatário). Vencido sem entrega, `
+      + 'considera-se recebido por **ciência tácita** e o prazo para manifestação passa a correr.',
     ).setFooter({ text: 'Entrega in-game — o mecanismo é público e a captura fica registrada para a staff.' });
   } else {
     embed.setDescription('Documento gerado no modo aberto: visível às partes desde a criação.');
@@ -596,7 +597,7 @@ async function entregarAgora(interaction, numeroPeca) {
   }
 
   const alerta = r.semOcupante && r.semOcupante.length
-    ? `\n\n⚠️ Atenção: ninguém ocupa o papel de **${r.semOcupante.join(', ')}** neste processo agora, então não há quem clique em Receber. O ato vai cair na distribuição automática em 24h.`
+    ? `\n\n⚠️ Atenção: ninguém ocupa o papel de **${r.semOcupante.join(', ')}** neste processo agora, então não há quem clique em Receber. Vencido o prazo para ciência, o ato cai em **ciência tácita** sozinho.`
     : '';
   return interaction.reply({
     content: `✅ Janela de entrega aberta por ${r.minutos} minutos (até <t:${expira}:t>).${alerta}`,
@@ -710,12 +711,80 @@ async function abrirRecebimento(interaction, numeroPeca) {
       const sufixo = r.travou
         ? ` — depois de ${pecas.MAX_RECUSAS_TOKEN} tentativas, o selo travou. Só desembargador ou staff destrava.`
         : '';
-      await msg.reply({ content: `🔒 ${r.razao}${sufixo}` }).catch(() => {});
+      // Selo travado ganha o BOTÃO de destravamento na própria mensagem do canal (SPEC §6.4, teste
+      // 14) — era o beco sem saída da auditoria: pecas.destravarSelo existia, testado, e NENHUM
+      // clique chegava nele. O botão fica no canal (a supervisão enxerga ali); o gate de staff é no
+      // clique, não na exibição — o mecanismo é público e anunciado (SPEC §2).
+      const componentes = r.travou
+        ? [new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`peca:destravar:${numeroPeca}#${dest.papel}#${dest.habilitacaoId || ''}`)
+              .setLabel('🔓 Destravar selo (supervisão)').setStyle(ButtonStyle.Danger),
+          )]
+        : [];
+      await msg.reply({ content: `🔒 ${r.razao}${sufixo}`, ...(componentes.length ? { components: componentes } : {}) }).catch(() => {});
       return;
     }
 
     // token_invalido / token_usado / janela: recusa que CONTA para a trava, mas ainda não travou.
     await msg.reply({ content: `❌ ${r.razao} (tentativa ${r.recusasToken}/${pecas.MAX_RECUSAS_TOKEN} antes de travar).` }).catch(() => {});
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Destravamento do selo pela supervisão (SPEC §6.4, teste 14) — ligado em 19/08/2026
+// ---------------------------------------------------------------------------
+// Era o NONO código órfão: a função pura existia e era testada, mas selo travado era beco sem
+// saída — nenhum clique chegava em pecas.destravarSelo. O fluxo: botão na mensagem de trava do
+// canal → modal com motivo OBRIGATÓRIO → destrava, renova o token, limpa o cache das páginas
+// públicas (o PNG impresso carrega o QR antigo) e lavra nos autos.
+const gateSupervisao = (interaction) =>
+  permissoes.isAdmin(interaction) || pecas.isSupervisao(interaction.user.id);
+
+async function abrirDestravarSelo(interaction, chave) {
+  if (!gateSupervisao(interaction)) {
+    return interaction.reply({ content: '🔒 Só desembargador, procurador ou staff pode destravar um selo. Se você é o destinatário, chame a supervisão.', ephemeral: true });
+  }
+  const modal = new ModalBuilder().setCustomId(`peca:destravarmodal:${chave}`).setTitle('🔓 Destravar selo');
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('motivo').setLabel('Motivo (obrigatório — vai para os autos)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(400),
+  ));
+  return interaction.showModal(modal);
+}
+
+async function executarDestravarSelo(interaction, chave) {
+  if (!gateSupervisao(interaction)) {
+    return interaction.reply({ content: '🔒 Só desembargador, procurador ou staff pode destravar um selo.', ephemeral: true });
+  }
+  const [numeroPeca, papel, habIdTexto] = chave.split('#');
+  const habilitacaoId = habIdTexto ? Number(habIdTexto) : null;
+  const motivo = interaction.fields.getTextInputValue('motivo');
+
+  const r = pecas.destravarSelo(numeroPeca, papel, interaction.user.id, motivo, { habilitacaoId });
+  if (!r.ok) return interaction.reply({ content: `❌ ${r.razao}`, ephemeral: true });
+
+  // O selo ganhou TOKEN NOVO (o anterior pode ter vazado — é o que motivou as recusas). O PNG já
+  // impresso carrega o QR antigo, então o cache das páginas públicas deste destinatário é apagado:
+  // o próximo acesso ao MESMO link regenera a imagem com o selo novo. O link em si não muda — o
+  // endereço é permanente de propósito.
+  let paginasLimpas = 0;
+  for (const p of (r.destinatario.paginasPublicas || [])) {
+    if (servidorPecas.apagarCache(p.token)) paginasLimpas++;
+  }
+
+  const meta = pecas.metadados(numeroPeca);
+  if (meta) {
+    await andamentos.registrar(interaction.guild, meta.processoNumero, {
+      tipo: 'selo_destravado',
+      titulo: '🔓 Selo destravado pela supervisão',
+      detalhe: `${numeroPeca} (${papel}): selo destravado por <@${interaction.user.id}> — motivo: ${motivo}. Token renovado; o documento precisa ser reimpresso pelo link (a via antiga não autentica mais).`,
+      executorId: interaction.user.id,
+      metadata: { peca: numeroPeca, papel },
+    }).catch(err => console.error('[pecas] falha ao lavrar destravamento de selo:', err.message));
+  }
+
+  return interaction.reply({
+    content: `🔓 **Selo de ${numeroPeca} destravado** (${papel}). Recusas zeradas e token renovado — o destinatário pode tentar de novo, mas a captura tem que ser do documento **reimpresso pelo link** (o QR da via antiga não vale mais).`,
   });
 }
 
@@ -729,6 +798,9 @@ async function router(interaction) {
   if (interaction.isModalSubmit() && acao === 'trecho') {
     return receberTrecho(interaction, partes[2], partes.slice(3).join(':'));
   }
+  if (interaction.isModalSubmit() && acao === 'destravarmodal') {
+    return executarDestravarSelo(interaction, partes.slice(2).join(':'));
+  }
   if (!interaction.isButton()) return;
 
   switch (acao) {
@@ -740,6 +812,7 @@ async function router(interaction) {
     case 'entregar': return entregarAgora(interaction, partes.slice(2).join(':'));
     case 'encerrar': return encerrarEntrega(interaction, partes.slice(2).join(':'));
     case 'receber': return abrirRecebimento(interaction, partes.slice(2).join(':'));
+    case 'destravar': return abrirDestravarSelo(interaction, partes.slice(2).join(':'));
     default: return;
   }
 }
@@ -761,10 +834,13 @@ async function verificarValvulaEEncerramento(client, guild) {
   for (const d of destravadas) {
     await andamentos.registrar(guild, d.processoNumero, {
       // Título genérico por tipo, não descritivo (SPEC §10) — o índice não pode entregar o que
-      // aconteceu além de "a válvula estourou".
+      // aconteceu além de "a válvula estourou". "Ciência tácita" é o termo do PJe real (renomeado
+      // em 19/08/2026): decorrido o prazo para ciência sem consulta, considera-se intimado.
+      // O `tipo` interno fica como está — é chave de dado, não texto exibido, e mudá-lo quebraria
+      // consultas sobre andamentos antigos.
       tipo: 'peca_valvula_24h',
-      titulo: '⏰ Distribuição automática pelo cartório',
-      detalhe: `${d.peca}: passadas 24h sem entrega pessoal, o cartório distribuiu automaticamente. Não houve encontro registrado.`,
+      titulo: '⏰ Ciência tácita',
+      detalhe: `${d.peca}: decorrido o prazo para ciência sem entrega pessoal, considera-se recebido (ciência tácita). Não houve encontro registrado; o prazo para manifestação passa a correr.`,
       executorId: null,
       metadata: { peca: d.peca },
     }).catch(err => console.error(`[pecas] falha ao lavrar válvula de ${d.peca}:`, err.message));
@@ -841,17 +917,23 @@ async function publicarRelatorioSemanal(guild, { agora = Date.now() } = {}) {
   if (!rel.total) {
     linhas.push('Nenhum ato foi recebido nesta semana. **Não há número a interpretar** — não é "está tudo bem".');
   } else {
-    linhas.push(`**${rel.total}** ato(s) recebido(s): **${rel.pessoal}** em cena, **${rel.valvula}** pela válvula.`);
-    linhas.push(`Proporção que caiu na válvula: **${pct(rel.proporcaoValvula)}**.`);
+    linhas.push(`**${rel.total}** ato(s) recebido(s): **${rel.pessoal}** em cena, **${rel.valvula}** por ciência tácita.`);
+    linhas.push(`Proporção por ciência tácita: **${pct(rel.proporcaoValvula)}**.`);
     if (rel.pendentes) linhas.push(`Pendentes agora: ${rel.pendentes}.`);
     linhas.push('');
 
-    for (const [tipo, d] of Object.entries(rel.porTipo)) {
+    // TETO na lista por tipo: mensagem do Discord estoura em 2000 caracteres, e esta lista é a
+    // única parte que cresce sem limite (um tipo novo = uma linha nova, papéis dentro dela). Corta
+    // nos 12 primeiros e DIZ quantos ficaram de fora — truncamento silencioso leria como "cobri
+    // tudo" quando não cobriu (mesma regra dos scans da suíte).
+    const tipos = Object.entries(rel.porTipo);
+    for (const [tipo, d] of tipos.slice(0, 12)) {
       const t = d.valvula + d.pessoal;
       const porPapel = Object.entries(d.porPapel)
         .map(([papel, v]) => `${papel} ${v.valvula}/${v.valvula + v.pessoal}`).join(', ');
-      linhas.push(`• \`${tipo}\` — ${d.valvula}/${t} na válvula (${porPapel})`);
+      linhas.push(`• \`${tipo}\` — ${d.valvula}/${t} por ciência tácita (${porPapel})`);
     }
+    if (tipos.length > 12) linhas.push(`…e mais ${tipos.length - 12} tipo(s) — veja o botão 📊 no painel de Administração.`);
 
     // A leitura que a dimensão de horário permite, escrita por extenso: sem isso o leitor vê a
     // proporção alta e conclui "ninguém se encontra", que pode ser a conclusão errada.

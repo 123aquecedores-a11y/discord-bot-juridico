@@ -97,17 +97,19 @@ function apagarCache(token) {
   try { fs.unlinkSync(path.join(dirCache(), nomeCache(token))); return true; } catch { return false; }
 }
 
-// Rótulos do documento por tipo de ato. Espelha o catálogo de utils/emissaoPeca.js, mas sem importá-lo
-// — emissaoPeca puxa discord.js, e este servidor não precisa do bot para responder.
-const TITULOS = {
-  peticao_incidental: { titulo: 'PETIÇÃO', orgao: 'PODER JUDICIÁRIO', unidade: 'Comarca de São Paulo — Vara Criminal' },
-  intimacao_juiz: { titulo: 'INTIMAÇÃO', orgao: 'PODER JUDICIÁRIO', unidade: 'Comarca de São Paulo — Vara Criminal' },
-};
-const TITULO_PADRAO = { titulo: 'DOCUMENTO', orgao: 'PODER JUDICIÁRIO', unidade: '' };
+// Rótulos: FONTE ÚNICA em utils/catalogoAtos.js (sem discord.js, por isso este servidor pode
+// importá-lo). Antes havia aqui uma cópia com só 2 dos 7 tipos, e ela divergiu — ver o cabeçalho
+// daquele arquivo para o histórico do defeito.
+const catalogo = require('../utils/catalogoAtos');
 
 async function renderizarPagina(dados) {
-  const cfg = TITULOS[dados.tipo] || TITULO_PADRAO;
+  const cfg = catalogo.rotuloDoAto(dados.tipo);
   const paginas = await gerarPecaPNG({
+    // `gated` DECIDE SE O SELO É IMPRESSO. Sem ele (era o caso até 19/08/2026), a página pública
+    // saía sem QR — e é ESTA página que o jogador imprime no jogo. O destinatário fotografava um
+    // papel sem selo e não conseguia receber nunca, enquanto o PNG da DM (que passa gated) tinha
+    // o selo. Duas vias do "arquivo único" divergindo é exatamente o que a SPEC §3.7 proíbe.
+    gated: dados.gated,
     token: dados.tokenSelo,
     digitos: dados.digitos,
     codigoArquivo: dados.codigoArquivo,
@@ -115,7 +117,8 @@ async function renderizarPagina(dados) {
     numeroProcesso: dados.processoNumero,
     titulo: cfg.titulo,
     orgao: cfg.orgao,
-    unidade: cfg.unidade,
+    // A vara vem do PROCESSO, não do catálogo do ato — petição incidental roda em penal e em cível.
+    unidade: catalogo.unidadeDoProcesso({ tipo: dados.processoTipo }),
     data: new Date(dados.criadoEm || Date.now()).toLocaleDateString('pt-BR'),
     qualificacao: dados.qualificacao || null,
     texto: dados.texto,

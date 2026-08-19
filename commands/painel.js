@@ -99,40 +99,55 @@ function botoesMenuPrincipal(interaction) {
       botaoSe(ministerioPublico.ehMembroDoMP(interaction), 'painel:menu:mp', '🏛️ Ministério Público', ButtonStyle.Secondary),
       botaoSe(supervisao.podeSupervisionar(interaction), 'painel:menu:supervisao', '⚖️ Supervisão', ButtonStyle.Secondary),
     ),
+    // REORGANIZAÇÃO DE 19/08/2026 (auditoria, ordem do operador): os SEIS botões de staff que
+    // viviam espalhados por duas linhas (RH, Gerenciar dados, Abrir edital, Publicar comunicado,
+    // Gerar carteiras, Modo Entrega In-Game) viraram UM botão de entrada — "🛠️ Administração" —
+    // que abre o submenu próprio (submenuStaff). Motivos:
+    //   1. Para o jogador comum, o painel encolhe de 5 linhas para 3 — só o que ele pode usar.
+    //   2. Categoria lógica única: tudo ali é gestão do tribunal, não ato processual.
+    //   3. Foi exatamente o acúmulo de botões soltos de staff que estourou o limite de 5 ActionRows
+    //      do Discord em produção (DiscordAPIError 50035, 18/08). Submenu não estoura: cresce em
+    //      linhas próprias, não no menu principal. scripts/testes-limite-componentes.js vigia os dois.
     linha(
       botaoSe(true, 'painel:acao:pessoal:pendencias', '📌 Minhas pendências', ButtonStyle.Secondary),
       botaoSe(true, 'painel:acao:cargo:solicitar', '🪪 Solicitar cargo', ButtonStyle.Secondary),
-      botaoSe(staff, 'painel:menu:rh', '👥 RH', ButtonStyle.Secondary),
-      botaoSe(staff, 'painel:acao:dados:gerenciar', '🪪 Gerenciar dados', ButtonStyle.Secondary),
-      botaoSe(staff, 'painel:acao:edital:abrir', '📢 Abrir edital', ButtonStyle.Secondary),
-    ),
-    // ACHADO EM 18/08/2026 (produção, DiscordAPIError 50035 "components must be 5 or fewer"): o
-    // Discord aceita no máximo 5 ActionRow POR MENSAGEM — não é o limite de 5 botões dentro de uma
-    // linha, é o limite de 5 LINHAS no total. Este menu já vivia exatamente nas 5 linhas permitidas;
-    // o botão do interruptor tinha entrado como uma SEXTA linha nova, e qualquer staff que abrisse
-    // o painel batia nesse erro na hora. Por isso ele entra AQUI, na linha de comunicado/carteiras,
-    // que tinha só 2 de 5 vagas — não numa linha própria. scripts/testes-limite-componentes.js
-    // garante que isso não volte a acontecer com um botão futuro.
-    linha(
-      botaoSe(staff, 'painel:acao:comunicado:abrir', '📢 Publicar comunicado', ButtonStyle.Secondary),
-      botaoSe(staff, 'painel:acao:carteiras:gerar', '🪪 Gerar carteiras', ButtonStyle.Secondary),
-      // Interruptor da entrega in-game (SPEC §11.2). Rótulo sem ambiguidade, como a SPEC exige:
-      // "Modo Entrega In-Game" com o estado escrito por extenso, nunca "modo metagame" ou similar
-      // que a staff teria que decifrar. NÃO retroativo: só decide o modo do PRÓXIMO processo
-      // aberto — processo que já existe nunca muda, nem por este botão nem por nada.
-      staff
-        ? (modoEntrega.ligado(interaction.guild?.id)
-          ? botaoSe(true, 'painel:acao:modoentrega:alternar', '🔀 Modo Entrega In-Game: LIGADO', ButtonStyle.Success)
-          : botaoSe(true, 'painel:acao:modoentrega:alternar', '🔀 Modo Entrega In-Game: desligado', ButtonStyle.Danger))
-        : null,
-    ),
-    // Preferência pessoal: quando LIGADA, a IA já revisa e publica a fundamentação sozinha (sem a
-    // tela de "Revisar/Publicar"). Rótulo reflete o estado atual de quem abriu o painel.
-    linha(
+      // Preferência pessoal: quando LIGADA, a IA já revisa e publica a fundamentação sozinha.
       revAutoLigada
         ? botaoSe(true, 'painel:acao:pessoal:revisaoauto', '✨ Revisão automática (IA): LIGADA', ButtonStyle.Success)
         : botaoSe(true, 'painel:acao:pessoal:revisaoauto', '✨ Revisão automática (IA): desligada', ButtonStyle.Secondary),
     ),
+    linha(
+      botaoSe(staff, 'painel:menu:staff', '🛠️ Administração', ButtonStyle.Primary),
+    ),
+  ].filter(Boolean);
+}
+
+// Submenu de administração — TUDO que é staff mora aqui, num lugar só (reorganização de 19/08/2026).
+// A curadoria do botão de entrada já é staff-only, mas abrirSubmenu tem o gate próprio de novo:
+// customId batido direto esbarra na mesma trava (padrão do resto do painel).
+function submenuStaff(interaction) {
+  const guildId = interaction.guild?.id;
+  return [
+    linha(
+      botaoSe(true, 'painel:menu:rh', '👥 RH', ButtonStyle.Secondary),
+      botaoSe(true, 'painel:acao:dados:gerenciar', '🪪 Gerenciar dados', ButtonStyle.Secondary),
+      botaoSe(true, 'painel:acao:carteiras:gerar', '🪪 Gerar carteiras', ButtonStyle.Secondary),
+    ),
+    linha(
+      botaoSe(true, 'painel:acao:edital:abrir', '📢 Abrir edital', ButtonStyle.Secondary),
+      botaoSe(true, 'painel:acao:comunicado:abrir', '📢 Publicar comunicado', ButtonStyle.Secondary),
+    ),
+    // A linha da ENTREGA IN-GAME: o interruptor (SPEC §11.2), a ação de emergência (SPEC §11.2-2b —
+    // separada do interruptor DE PROPÓSITO: emergência nunca como efeito colateral de rotina) e o
+    // relatório de acompanhamento (métrica da §7 + aposentadoria do legado da §11.2.1).
+    linha(
+      modoEntrega.ligado(guildId)
+        ? botaoSe(true, 'painel:acao:modoentrega:alternar', '🔀 Modo Entrega In-Game: LIGADO', ButtonStyle.Success)
+        : botaoSe(true, 'painel:acao:modoentrega:alternar', '🔀 Modo Entrega In-Game: desligado', ButtonStyle.Danger),
+      botaoSe(true, 'painel:acao:modoentrega:destravartudo', '🚨 Destravar entregas pendentes', ButtonStyle.Danger),
+      botaoSe(true, 'painel:acao:modoentrega:relatorio', '📊 Relatório da entrega', ButtonStyle.Secondary),
+    ),
+    botaoVoltar(),
   ].filter(Boolean);
 }
 
@@ -153,6 +168,7 @@ const TITULOS = {
   peticao: '📄 Petição administrativa',
   ficha: '🗂️ SISBAJUS (Promotor pra cima)',
   mp: '🏛️ Ministério Público (Promotor/Procurador)',
+  staff: '🛠️ Administração (Staff)',
 };
 
 // Monta um botão só se `permitido` for true — usado pra cada pessoa ver só as ações que o
@@ -315,11 +331,15 @@ const SUBMENUS = {
   peticao: submenuPeticao,
   ficha: submenuFicha,
   mp: submenuMp,
+  staff: submenuStaff,
 };
 
 async function abrirSubmenu(interaction, modulo) {
   if (modulo === 'rh' && !isAdmin(interaction)) {
     return interaction.reply({ content: 'Só Staff/Administração pode usar comandos de RH.', ephemeral: true });
+  }
+  if (modulo === 'staff' && !isAdmin(interaction) && !isSuperStaff(interaction)) {
+    return interaction.reply({ content: 'Só Staff/Administração pode abrir o menu de administração.', ephemeral: true });
   }
   if (modulo === 'supervisao' && !supervisao.podeSupervisionar(interaction)) {
     return interaction.reply({ content: 'Só Desembargador, Procurador ou Staff/Administração podem usar isso.', ephemeral: true });
@@ -654,6 +674,15 @@ async function arquivarManual(interaction, modulo, numero) {
   // Marca o arquivamento manual (independe do status jurídico) pra a varredura de responsável
   // fantasma NÃO ressuscitar um caso que a Staff fechou de propósito (ver utils/responsaveis.js).
   db.atualizar(tabela, numero, { arquivadoManual: true });
+  // SPEC §11.4: processo arquivado fecha as janelas de entrega pendentes — sem isso sobra estado
+  // órfão (janela "aberta" num caso morto). Só faz sentido para processos; nas outras tabelas não
+  // há peça. Ligado em 19/08/2026 (era um dos exports órfãos da auditoria).
+  if (modulo === 'processo') {
+    try {
+      const fechadas = require('../utils/pecas').fecharJanelasDoProcesso(tabela, numero);
+      if (fechadas.length) console.log(`[pecas] arquivamento manual de ${numero}: ${fechadas.length} janela(s) de entrega fechada(s).`);
+    } catch (e) { console.error('[pecas] falha ao fechar janelas no arquivamento:', e.message); }
+  }
   await auditoria.registrar(interaction.guild, { acao: `Arquivado manualmente (${modulo})`, executorId: interaction.user.id, referencia: numero });
 
   return interaction.reply({ content: `📦 ${numero} arquivado — canal travado e movido pra categoria Arquivados.`, ephemeral: true });
@@ -717,14 +746,57 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
         ? '🔀 **Modo Entrega In-Game LIGADO.** A partir de agora, todo processo NOVO exige selo, janela e recebimento pessoal para o destinatário ver o teor. Processos que já existem não mudam — o modo é carimbado na abertura.'
         : '🔀 **Modo Entrega In-Game desligado.** Processo NOVO nasce em modo aberto: documento visível às partes desde a criação, sem selo. Processos que já existem (inclusive os que já eram `ingame`) não mudam.';
 
-      // Mesmo padrão do toggle de revisão automática: re-renderiza o próprio menu efêmero pra o
-      // botão já refletir o novo estado sem precisar reabrir o painel.
+      // Re-renderiza o SUBMENU DE ADMINISTRAÇÃO (é onde o interruptor mora desde a reorganização
+      // de 19/08/2026) para o botão já refletir o novo estado sem reabrir o painel.
       return interaction.update({
         content: mensagem,
-        embeds: [], components: botoesMenuPrincipal(interaction), attachments: [], files: [],
+        embeds: [], components: submenuStaff(interaction), attachments: [], files: [],
       }).catch(async () => {
         return interaction.reply({ content: mensagem, ephemeral: true }).catch(() => {});
       });
+    }
+
+    // AÇÃO DE EMERGÊNCIA (SPEC §11.2-2b, teste 19b) — o SÉTIMO código órfão ligado nesta auditoria:
+    // pecas.destravarTodasPendencias existia e era testado, mas NENHUM botão chegava nele. Separada
+    // do interruptor DE PROPÓSITO: emergência nunca pode acontecer como efeito colateral de rotina.
+    // Motivo obrigatório via modal — é ele que vai lavrado nos autos de cada processo afetado.
+    if (acao === 'destravartudo') {
+      if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
+        return interaction.reply({ content: 'Só Staff pode destravar entregas pendentes.', ephemeral: true });
+      }
+      const modal = new ModalBuilder().setCustomId('painel:modal:modoentrega:destravartudo').setTitle('🚨 Destravar entregas pendentes');
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('motivo').setLabel('Motivo (vai para os autos de cada processo)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(400),
+      ));
+      return interaction.showModal(modal);
+    }
+
+    // Relatório de acompanhamento da entrega in-game — dá caminho de produção sob demanda à métrica
+    // da SPEC §7 (relatorioValvula) e ao relatório de aposentadoria do legado da §11.2.1
+    // (relatorioLegado, o OITAVO órfão ligado). O push semanal continua existindo; isto é a
+    // consulta na hora, para a staff não depender de esperar domingo.
+    if (acao === 'relatorio') {
+      if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
+        return interaction.reply({ content: 'Só Staff pode ver o relatório da entrega.', ephemeral: true });
+      }
+      const pecas = require('../utils/pecas');
+      const rel = pecas.relatorioValvula();
+      const leg = pecas.relatorioLegado();
+      const pct = (n) => `${Math.round(n * 100)}%`;
+      const linhas = ['📊 **Entrega in-game — situação agora**', ''];
+      if (!rel.total) {
+        linhas.push('Nenhum ato recebido ainda — não há número a interpretar.');
+      } else {
+        linhas.push(`**${rel.total}** ato(s) recebido(s): **${rel.pessoal}** em cena, **${rel.valvula}** por ciência tácita.`);
+        if (rel.proporcaoValvula !== null) linhas.push(`Proporção por ciência tácita: **${pct(rel.proporcaoValvula)}**${rel.proporcaoValvula >= 0.5 ? ' ⚠️ (gatilho de recuo da SPEC §11.2.2 — confira a faixa de horário no relatório semanal antes de decidir)' : ''}.`);
+      }
+      if (rel.pendentes) linhas.push(`Pendentes aguardando recebimento: **${rel.pendentes}**.`);
+      linhas.push('');
+      linhas.push(`Processos abertos por modo: ${leg.porModo.ingame} ingame · ${leg.porModo.aberto} aberto · ${leg.porModo.legado} legado.`);
+      linhas.push(leg.podeAposentarLegado
+        ? '✅ **Nenhum processo legado aberto** — o caminho antigo de PDF já pode ser aposentado (SPEC §11.2.1).'
+        : `🕰️ ${leg.porModo.legado} processo(s) legado(s) ainda aberto(s) — o caminho antigo só se aposenta quando zerar.`);
+      return interaction.reply({ content: linhas.join('\n').slice(0, 1990), ephemeral: true });
     }
   }
 
@@ -1215,6 +1287,33 @@ async function tratarUserSelect(interaction, modulo, campo) {
 // ---- Envio dos modais ----
 
 async function tratarModal(interaction, modulo, acao, extra) {
+  // Emergência da entrega in-game (SPEC §11.2-2b): destrava TODAS as pendências, com motivo
+  // obrigatório, e lavra em cada processo afetado — "entregas destravadas pela staff em tal hora".
+  if (modulo === 'modoentrega' && acao === 'destravartudo') {
+    if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
+      return interaction.reply({ content: 'Só Staff pode destravar entregas pendentes.', ephemeral: true });
+    }
+    const motivo = interaction.fields.getTextInputValue('motivo');
+    await interaction.deferReply({ ephemeral: true });
+    const pecas = require('../utils/pecas');
+    const andamentos = require('../utils/andamentos');
+    const r = pecas.destravarTodasPendencias({ quemId: interaction.user.id, motivo });
+    if (!r.ok) return interaction.editReply({ content: `❌ ${r.razao}` });
+    for (const a of r.afetadas) {
+      await andamentos.registrar(interaction.guild, a.processoNumero, {
+        tipo: 'entregas_destravadas_staff',
+        titulo: '🚨 Entregas destravadas pela staff',
+        detalhe: `Entregas pendentes destravadas pela staff — motivo: ${motivo}`,
+        executorId: interaction.user.id,
+        metadata: { peca: a.peca },
+      }).catch(err => console.error(`[pecas] falha ao lavrar destravamento em ${a.processoNumero}:`, err.message));
+    }
+    return interaction.editReply({
+      content: r.afetadas.length
+        ? `🚨 **${r.afetadas.length} peça(s) destravada(s)** em ${new Set(r.afetadas.map(a => a.processoNumero)).size} processo(s). O motivo foi lavrado nos autos de cada um.`
+        : 'Não havia nenhuma entrega pendente para destravar.',
+    });
+  }
   if (modulo === 'rh' && acao === 'contratar') {
     // extra = `${usuarioId}#${cargo}` (o router só entrega partes[4], sem ':' interno — daí o '#').
     const [usuarioId, cargo] = String(extra || '').split('#');
@@ -1635,4 +1734,5 @@ module.exports = {
   router,
   postarPainelFixo,
   botoesMenuPrincipal, // exportado só para scripts/testes-limite-componentes.js sweep-ar todas as combinações de cargo/flags
+  submenuStaff, // idem — o submenu de administração também precisa do sweep de limites
 };

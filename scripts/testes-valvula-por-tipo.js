@@ -224,7 +224,10 @@ console.log('\n7) MECANISMO DE CONSULTA — a métrica é EMPURRADA, não fica e
   ok(enviados.length === 1, '7d: passada a semana, publica sozinho');
   const txt = (enviados[0] && enviados[0].content) || '';
   ok(/relat[óo]rio semanal/i.test(txt), '7e: a mensagem se identifica');
-  ok(/v[áa]lvula/i.test(txt), '7f: e traz o número que a SPEC §7 manda olhar');
+  // O texto EXIBIDO passou a usar o termo real do PJe em 19/08/2026 ("ciência tácita"), então a
+  // asserção casa pelo conceito, não pela palavra interna "válvula" — que continua sendo o nome do
+  // mecanismo no código, mas não é o que o jogador lê.
+  ok(/ci[êe]ncia t[áa]cita/i.test(txt), '7f: e traz o número que a SPEC §7 manda olhar, com o termo jurídico real');
   ok(/SPEC/.test(txt), '7g: ...citando a origem da exigência, para quem lê saber por que aquilo existe');
 
   // O marcador é PERSISTIDO: sem isso o relatório sairia de novo a cada boot do bot.

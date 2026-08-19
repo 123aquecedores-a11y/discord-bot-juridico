@@ -284,7 +284,12 @@ console.log('\n9) Válvula de 24h (SPEC §15.8)');
   ok(destravadas.some(d => d.peca === pc.numero), '9b: passadas as 6h do papel, destrava sozinho');
   const d = peca(pc.numero).destinatarios[0];
   ok(d.automatico === true, '9c: marcado como automático');
-  ok(/cartório/i.test(d.recebidoComo), '9d: lavrado como distribuição automática pelo cartório');
+  // Renomeado em 19/08/2026 para o termo do processo eletronico real (PJe): decorrido o prazo para
+  // ciencia sem consulta, considera-se intimado — "ciencia tacita". Era "distribuicao automatica
+  // pelo cartorio", que nao existe como instituto juridico.
+  ok(/ci[êe]ncia t[áa]cita/i.test(d.recebidoComo), '9d: lavrado como ciência tácita (termo real do PJe)');
+  ok(!/entrega pessoal registrada$/.test(d.recebidoComo) || /sem entrega pessoal/i.test(d.recebidoComo),
+    '9d2: ...deixando explícito que NÃO houve entrega pessoal — os autos não podem sugerir que houve cena');
   ok(d.recebidoPorId === null, '9e: ...sem atribuir o recebimento a ninguém');
   ok(pecas.podeVerTeor(JUIZ, pc.numero) === true, '9f: e o juiz passa a ver o teor');
 }
