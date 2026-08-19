@@ -440,11 +440,9 @@ async function executarForcarDenuncia(interaction, numero, motivo) {
     detalhe: `Procurador <@${interaction.user.id}> forçou a denúncia. Motivo: ${motivo}`,
     executorId: interaction.user.id, metadata: { resultado: 'Denuncia forcada', novoJuiz: juizId },
   });
-  // NÍVEL 1 — desarquivamento publica no Diário (o caso deixa de constar "arquivado"); anexa o PNG
-  // da decisão de revisão já gerado.
-  await diarioAtos.publicarAto(guild, 'desarquivamento', db.buscarPorNumero('processos', numero), {
-    files: pngDecisao ? [{ attachment: pngDecisao, name: `Decisao-Revisao-${numero}.png` }] : undefined,
-  });
+  // NÍVEL 1 — desarquivamento publica no Diário (o caso deixa de constar "arquivado"). SEM o PNG
+  // da decisão: o Diário carrega o resultado, não o teor.
+  await diarioAtos.publicarAto(guild, 'desarquivamento', db.buscarPorNumero('processos', numero));
   await processoCmd.postarOuAtualizarCapaPublica(guild, numero);
 
   return interaction.editReply({ content: `Denúncia forçada. Processo ${numero} agora em Instrução com <@${juizId}> como Juiz.` });

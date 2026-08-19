@@ -3601,7 +3601,8 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
       numero: apelacao.processoOriginalNumero,
       resultado: `${statusFinal}${extras.novoResultado ? ` — ${extras.novoResultado}` : ''}`,
       relator: nomeDes,
-      files: pngAcordao ? [{ attachment: pngAcordao, name: `Acordao-${numeroApelacao}.png` }] : undefined,
+      // SEM ANEXO. O Diário publica o RESULTADO do acórdão; o inteiro teor sai pela entrega
+      // com selo. Anexar aqui tornava a fundamentação pública para @everyone no ato.
     });
   } catch (e) { console.error('[processo] publicação de acórdão no Diário falhou (ignorado):', e.message); }
 
@@ -3857,7 +3858,8 @@ async function executarSentenca(interaction, numero, modo) {
     try {
       await diario.publicarNoDiario(interaction.guild, 'sentenca', {
         numero, tipoProcesso: processo.tipo, resultado, parte: nomeReu, magistrado: nomeAssinante,
-        files: pngSentenca ? [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] : undefined,
+        // SEM ANEXO — mesma razão do acórdão. Vale inclusive no processo `aberto`, que chega
+        // aqui: aberto significa "visível às PARTES", não "publicado ao servidor inteiro".
       });
     } catch (e) { console.error('[processo] publicação de sentença no Diário falhou (ignorado):', e.message); }
   }

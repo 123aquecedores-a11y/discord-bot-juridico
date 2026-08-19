@@ -963,9 +963,10 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
       // Efeito automático por natureza do ato: a engine decide nível/card/idempotência; aqui só
       // declaramos que o ato aconteceu, reaproveitando o PNG da sentença já gerado como anexo. A
       // Diligência (Nível 3) está no if-branch acima e não passa por aqui. publicarAto é blindada.
-      await diarioAtos.publicarAto(guild, 'peticaoAdministrativa', peticao, {
-        files: pngSentencaPeticao ? [{ attachment: pngSentencaPeticao, name: `Sentenca-${numero}.png` }] : undefined,
-      });
+      // SEM ANEXO — era daqui que saía o vazamento relatado: a sentença do porte de arma ia
+      // inteira, em PNG, para @everyone. O card do resultado (pedido, resultado, validade,
+      // magistrado, protocolo) continua igual; o documento sai só pela entrega com selo.
+      await diarioAtos.publicarAto(guild, 'peticaoAdministrativa', peticao);
     }
   }
 

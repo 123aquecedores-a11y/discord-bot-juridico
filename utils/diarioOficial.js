@@ -144,6 +144,27 @@ function montarEmbed(tipo, d) {
  * @param {Object} dados  campos do ato (+ opcional dados.files p/ anexar o PNG do documento)
  * @returns {Promise<boolean>} true se publicou
  */
+// ---------------------------------------------------------------------------
+// O DIÁRIO PUBLICA RESULTADO, NUNCA TEOR (19/08/2026 — vazamento encontrado em produção)
+// ---------------------------------------------------------------------------
+// O QUE ACONTECEU: a decisão de porte de arma foi publicada com o PNG INTEIRO da sentença anexado,
+// para @everyone. O acórdão do Desembargador, idem. O documento completo — fundamentação e
+// dispositivo — ficou público no instante da decisão, e a entrega em cena com selo virou enfeite:
+// ninguém precisa procurar o juiz se o documento já está no Diário.
+//
+// A REGRA: o Diário carrega o CARD do resultado (pedido, resultado, validade, magistrado,
+// protocolo). O documento completo só existe pela entrega gated. Publicar o resultado não é vazar
+// o teor — as duas coisas convivem, e é o anexo que fazia a segunda virar a primeira.
+//
+// ALLOWLIST, NÃO BLOQUEIO POR LISTA NEGRA. É a diferença entre fechar este bug e fechar a CLASSE
+// dele: com lista negra, o próximo tipo de ato nasce podendo anexar e ninguém lembra de incluí-lo.
+// Aqui o padrão é "sem anexo", e quem quiser anexo precisa declarar — o que obriga a pensar.
+//
+// Os dois tipos liberados NÃO são decisão judicial: `comunicado` é a nota que a Staff redige (o
+// anexo É o conteúdo dela) e `edital_aberto` é chamamento público, cujo inteiro teor é público por
+// natureza. Nenhum dos dois tem entrega em cena a proteger.
+const TIPOS_QUE_PODEM_ANEXAR = new Set(['comunicado', 'edital_aberto']);
+
 async function publicarNoDiario(guild, tipo, dados = {}) {
   try {
     const canalId = getCanalId();
@@ -159,11 +180,23 @@ async function publicarNoDiario(guild, tipo, dados = {}) {
     const silencioso = !!dados.silencioso;
     const botId = guild.members?.me?.id || guild.client?.user?.id;
     if (botId && !silencioso) await canal.permissionOverwrites.edit(botId, { MentionEveryone: true }).catch(() => {});
+    // O anexo é DESCARTADO aqui, no ponto de saída — não em quem chama. Filtrar na origem
+    // dependeria de todo chamador lembrar da regra, e foi assim que dois deles vazaram o teor.
+    // O log é alto de propósito: anexo barrado significa que alguém tentou publicar documento, e
+    // isso tem que aparecer, nunca sumir em silêncio.
+    const anexosPedidos = Array.isArray(dados.files) ? dados.files.filter(Boolean) : [];
+    const podeAnexar = TIPOS_QUE_PODEM_ANEXAR.has(tipo);
+    if (anexosPedidos.length && !podeAnexar) {
+      console.warn(`[diarioOficial] anexo BARRADO em "${tipo}": o Diário publica o resultado, nunca o teor. `
+        + `${anexosPedidos.length} arquivo(s) descartado(s) — o documento completo sai só pela entrega com selo.`);
+    }
+    const files = podeAnexar && anexosPedidos.length ? anexosPedidos : null;
+
     const enviada = await canal.send({
       content: silencioso ? '' : '@everyone',
       allowedMentions: silencioso ? { parse: [] } : { parse: ['everyone'] },
       embeds: [montarEmbed(tipo, dados)],
-      ...(Array.isArray(dados.files) && dados.files.length ? { files: dados.files } : {}),
+      ...(files ? { files } : {}),
     });
     // Devolve a Message (não mais um booleano) pra quem precisa do id — a engine diarioAtos guarda
     // diarioMessageId p/ o card evoluir depois. Message é truthy, então os `if (publicou)` seguem OK.
