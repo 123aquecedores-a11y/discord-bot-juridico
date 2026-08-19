@@ -19,7 +19,43 @@ const { TABELAS_TICKET } = require('./responsaveis');
 const HORA_MS = 60 * 60 * 1000;
 
 // SPEC §7: passadas 24h sem recebimento, o cartório distribui automaticamente.
+// Mantido como referência histórica e para compatibilidade de import — a válvula real agora é POR
+// PAPEL do destinatário (ver valvulaMsPara).
 const VALVULA_MS = 24 * HORA_MS;
+
+// VÁLVULA POR TIPO DE ATO (Bloco C, 18/08/2026). Número único era errado porque as duas pontas não
+// têm a mesma disponibilidade:
+//
+//   - Juiz e promotor estão SEMPRE no fórum e podem se telefonar dentro do jogo. Para atos entre
+//     eles, 24h é tempo de sobra para simplesmente esperar a válvula em vez de se encontrar — a
+//     válvula vira o caminho barato, que é o oposto do desenho.
+//   - Advogado, parte e cidadão são intermitentes: entram quando podem. Apertar aqui pune quem
+//     estava fazendo certo e não tinha como estar online.
+//
+// O objetivo é APERTAR ONDE O ENCONTRO É FÁCIL e dar folga só onde ele é genuinamente difícil.
+//
+// PADRÃO DA CURTA: 6 HORAS. O raciocínio: 6h cobre com folga uma sessão de jogo inteira. Um ato
+// emitido no começo da sessão deveria ser entregue dentro dela — se não foi, a pessoa não estava no
+// fórum, que é exatamente a exceção que a válvula existe para cobrir. Números menores (1–2h)
+// puniriam quem saiu para jantar; 12h já devolve o "espero passar" que se quer eliminar.
+//
+// Configurável, nunca hardcoded (mesmo princípio de JANELA_ENTREGA_MIN, SPEC §6.2): valor fora da
+// faixa cai no padrão em vez de valer, para uma env com "0" não desligar a válvula em silêncio.
+const PAPEIS_SEMPRE_NO_FORUM = new Set(['Juiz', 'Promotor']);
+
+function horasDeEnv(nome, padrao, min, max) {
+  const bruto = Number(process.env[nome]);
+  if (!Number.isFinite(bruto) || bruto < min || bruto > max) return padrao;
+  return bruto;
+}
+
+// Quanto tempo ESTE destinatário tem antes de a válvula destravar sozinha.
+function valvulaMsPara(destinatario) {
+  const forum = !!destinatario && PAPEIS_SEMPRE_NO_FORUM.has(destinatario.papel);
+  return forum
+    ? horasDeEnv('VALVULA_FORUM_H', 6, 1, 24) * HORA_MS
+    : horasDeEnv('VALVULA_EXTERNA_H', 48, 6, 168) * HORA_MS;
+}
 
 // SPEC §6.4: o contador separa falha técnica de tentativa indevida. Print ruim não pode punir
 // como quem está forçando entrada.
@@ -222,7 +258,11 @@ function novoDestinatario({ papel, habilitacaoId = null }, { gated, agora }) {
     destravadoMotivo: null,
     // Horário-limite PERSISTIDO, conferido na varredura periódica. Nunca setTimeout: o bot
     // reinicia a cada deploy e todo temporizador em memória morre (SPEC §12, §13).
-    valvulaEm: gated ? new Date(agora + VALVULA_MS).toISOString() : null,
+    //
+    // O prazo depende do PAPEL de quem recebe (Bloco C) — curto para quem vive no fórum, longo para
+    // quem é intermitente. Calculado por destinatário e gravado aqui: um ato com dois destinatários
+    // de disponibilidade diferente tem prazos diferentes, que é o comportamento certo.
+    valvulaEm: gated ? new Date(agora + valvulaMsPara({ papel })).toISOString() : null,
   };
 }
 
@@ -648,6 +688,108 @@ function varrerValvula({ agora = Date.now() } = {}) {
   return destravadas;
 }
 
+// MÉTRICA OBRIGATÓRIA DA SPEC §7 — "contar atos por semana que caem na válvula. Se a maioria cair,
+// a entrega in-game não está acontecendo e o problema deixa de ser de software."
+//
+// É o número que decide se o desenho está estrangulando o servidor, e é o gatilho combinado para
+// recuar (SPEC §11.2.2). Até hoje ninguém media — a informação existia espalhada nos destinatários
+// e nunca era somada.
+//
+// Quebrado POR TIPO DE ATO de propósito: "40% caem na válvula" não diz o que fazer. "90% das
+// intimações ao advogado caem, mas nenhuma manifestação MP↔juiz cai" diz exatamente onde o encontro
+// não está acontecendo — e é o que permite ajustar a válvula daquele tipo em vez de desligar tudo.
+//
+// `automatico: true` é gravado pela varredura; entrega pessoal não tem essa marca. A distinção é
+// pelo FATO registrado, não por heurística de texto.
+function relatorioValvula({ desde = null, ate = null } = {}) {
+  const dentro = (iso) => {
+    if (!iso) return false;
+    const t = new Date(iso).getTime();
+    if (desde && t < new Date(desde).getTime()) return false;
+    if (ate && t > new Date(ate).getTime()) return false;
+    return true;
+  };
+
+  // HORA LOCAL, não UTC. O container roda em UTC e os jogadores vivem em BRT (UTC-3): um histograma
+  // em UTC deslocaria tudo em 3 horas e apontaria a faixa errada — exatamente o tipo de número que
+  // faz concluir a coisa errada com confiança.
+  const fuso = Number(process.env.FUSO_HORARIO_H);
+  const offsetH = Number.isFinite(fuso) && fuso >= -12 && fuso <= 14 ? fuso : -3;
+  const horaLocal = (iso) => new Date(new Date(iso).getTime() + offsetH * HORA_MS).getUTCHours();
+
+  const porTipo = {};
+  // DIMENSÃO DE HORÁRIO (exigida em 18/08/2026). Sem ela o número engana: o relógio de 6h corre
+  // durante a madrugada, quando não há ninguém no fórum. Um ato emitido no fim da sessão da noite
+  // estoura sem que ninguém tenha falhado.
+  //
+  // Se os disparos se concentrarem numa faixa (ex.: 6h–12h), o diagnóstico é "o intervalo ENTRE
+  // sessões está comendo o prazo" — e o ajuste é outro (pausar o relógio de madrugada, ou alongar a
+  // válvula curta), não "as pessoas não se encontram".
+  //
+  // Guardamos as DUAS pontas: a hora em que a válvula disparou e a hora em que o ato foi emitido.
+  // Só a primeira não distingue "emitido de madrugada" de "emitido de tarde e ignorado".
+  const disparosPorHora = Array.from({ length: 24 }, () => 0);
+  const emissoesPorHora = Array.from({ length: 24 }, () => 0);
+  let totalValvula = 0; let totalPessoal = 0; let pendentes = 0;
+
+  for (const peca of db.todos('pecas', p => p.gated)) {
+    for (const d of (peca.destinatarios || [])) {
+      if (!d.recebidoEm) { pendentes++; continue; }
+      if (!dentro(d.recebidoEm)) continue;
+
+      const chave = peca.tipo || 'desconhecido';
+      porTipo[chave] = porTipo[chave] || { valvula: 0, pessoal: 0, porPapel: {} };
+      const alvo = d.automatico ? 'valvula' : 'pessoal';
+      porTipo[chave][alvo]++;
+      porTipo[chave].porPapel[d.papel] = porTipo[chave].porPapel[d.papel] || { valvula: 0, pessoal: 0 };
+      porTipo[chave].porPapel[d.papel][alvo]++;
+      if (d.automatico) {
+        totalValvula++;
+        disparosPorHora[horaLocal(d.recebidoEm)]++;
+        if (peca.criadoEm) emissoesPorHora[horaLocal(peca.criadoEm)]++;
+      } else totalPessoal++;
+    }
+  }
+
+  // Faixa de 6h com mais disparos — é o que responde "existe concentração?" sem obrigar ninguém a
+  // ler 24 números. Só faz sentido com amostra: abaixo de 5 disparos, qualquer pico é ruído.
+  let faixaCritica = null;
+  if (totalValvula >= 5) {
+    let melhorInicio = 0; let melhorSoma = -1;
+    for (let h = 0; h < 24; h++) {
+      let soma = 0;
+      for (let k = 0; k < 6; k++) soma += disparosPorHora[(h + k) % 24];
+      if (soma > melhorSoma) { melhorSoma = soma; melhorInicio = h; }
+    }
+    faixaCritica = {
+      inicio: melhorInicio,
+      fim: (melhorInicio + 6) % 24,
+      disparos: melhorSoma,
+      proporcao: melhorSoma / totalValvula,
+      // Uma faixa de 6h é 25% do dia. Concentração bem acima disso é sinal de intervalo entre
+      // sessões, não de gente que não se encontra.
+      concentrado: melhorSoma / totalValvula >= 0.5,
+    };
+  }
+
+  const total = totalValvula + totalPessoal;
+  return {
+    periodo: { desde, ate },
+    total,
+    valvula: totalValvula,
+    pessoal: totalPessoal,
+    pendentes,
+    // A proporção é o número que a SPEC pede olhar. Sem atos no período, `null` — e não 0, que
+    // pareceria "está tudo ótimo" quando na verdade não houve nada para medir.
+    proporcaoValvula: total ? totalValvula / total : null,
+    porTipo,
+    fusoUsado: offsetH,
+    disparosPorHora,
+    emissoesPorHora,
+    faixaCritica,
+  };
+}
+
 // SPEC §7: a contagem reinicia na troca de responsável. Sem isso o substituto herda um caso que
 // destrava sozinho em minutos e a cena nunca acontece. Chamado pelo fluxo de troca.
 function reiniciarValvulaPorTroca(processoTabela, processoNumero, papel, { agora = Date.now() } = {}) {
@@ -657,7 +799,8 @@ function reiniciarValvulaPorTroca(processoTabela, processoNumero, papel, { agora
     const destinatarios = peca.destinatarios.map(d => {
       if (d.papel !== papel || d.recebidoEm) return d; // recebimento é irreversível
       mudou = true;
-      return { ...d, valvulaEm: new Date(agora + VALVULA_MS).toISOString() };
+      // Mesmo prazo por papel da geração — o substituto herda o relógio do PAPEL, não um 24h fixo.
+      return { ...d, valvulaEm: new Date(agora + valvulaMsPara(d)).toISOString() };
     });
     if (!mudou) continue;
     db.atualizar('pecas', peca.numero, { destinatarios });
@@ -779,7 +922,7 @@ function fecharJanelasDoProcesso(processoTabela, processoNumero, { agora = Date.
 }
 
 module.exports = {
-  MODOS, VALVULA_MS, MAX_RECUSAS_TOKEN, MAX_ILEGIVEIS_AVISO,
+  MODOS, VALVULA_MS, valvulaMsPara, relatorioValvula, MAX_RECUSAS_TOKEN, MAX_ILEGIVEIS_AVISO,
   modoDoProcesso, janelaMinutos, detalheDeAndamento,
   ocupanteAtual, ocupaDestinatario, isSupervisao, classificarDestinatarioIntimacao,
   gerar, abrirEntrega, encerrarEntrega, janelaAberta, receber, destravarSelo,

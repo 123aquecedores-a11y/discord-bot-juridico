@@ -10,6 +10,7 @@
 // interação -> chamada -> resposta.
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const db = require('../database/db');
+const config = require('../config');
 const pecas = require('./pecas');
 const andamentos = require('./andamentos');
 const permissoes = require('./permissoes');
@@ -36,7 +37,6 @@ const TIPOS = {
     rotulo: 'Petição (nos autos)',
     titulo: 'PETIÇÃO',
     orgao: 'PODER JUDICIÁRIO',
-    unidade: 'Comarca de São Paulo — Vara Criminal',
     emissor: 'Advogado',
     destinatarios: ['Juiz'],
     tabela: 'processos',
@@ -46,7 +46,6 @@ const TIPOS = {
     rotulo: 'Intimação (juiz)',
     titulo: 'INTIMAÇÃO',
     orgao: 'PODER JUDICIÁRIO',
-    unidade: 'Comarca de São Paulo — Vara Criminal',
     emissor: 'Juiz',
     destinatarios: ['Advogado'],
     tabela: 'processos',
@@ -379,6 +378,20 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
 // Qualificação das partes, no formato dos autos. Uma petição que não identifica as partes não é
 // peça, é bilhete — e todos estes dados já existem no registro do processo (SPEC §5.1: os campos
 // vêm preenchidos pelo sistema, não digitados).
+// UNIDADE derivada do processo, nunca hardcoded no catálogo (corrigido em 18/08/2026).
+// O catálogo trazia 'Vara Criminal' fixo nos DOIS tipos — e como a petição incidental também roda em
+// processo cível, toda petição cível saía com a vara errada impressa no documento, visível ao
+// jogador. O catálogo descreve o ATO; a vara é do PROCESSO.
+//
+// NOTA PARA A FAIXA 2 (administrativo): quando entrar o terceiro rito, esta função e qualificacao()
+// devem virar TABELA (mapa por tipo), não um terceiro . Dois ramos ainda se lê; três empilhados
+// viram o lugar onde alguém esquece um caso.
+function unidadeDoProcesso(processo) {
+  return processo && processo.tipo === 'Penal'
+    ? 'Comarca de São Paulo — Vara Criminal'
+    : 'Comarca de São Paulo — Vara Cível';
+}
+
 function qualificacao(processo) {
   const linhas = [`**Classe:** ${processo.tipo === 'Penal' ? 'Ação Penal' : 'Ação Cível'} nº ${processo.numero}`];
   const autor = processo.autorNome || (processo.tipo === 'Penal' ? 'Ministério Público' : null);
@@ -403,7 +416,8 @@ async function renderizar(guild, peca, cfg) {
         numeroProcesso: peca.processoNumero,
         titulo: cfg.titulo,
         orgao: cfg.orgao,
-        unidade: cfg.unidade,
+        // Do PROCESSO, não do catálogo — ver unidadeDoProcesso.
+        unidade: unidadeDoProcesso(db.buscarPorNumero(peca.processoTabela || 'processos', peca.processoNumero)),
         data: new Date().toLocaleDateString('pt-BR'),
         qualificacao: peca.qualificacao,
         texto: peca.texto,
@@ -721,11 +735,93 @@ async function verificarValvulaEEncerramento(client, guild) {
   // "rodou e não achou nada" de "não está agendada". Esta linha é a prova de execução: se ela
   // aparecer no log a cada ~10 min, a varredura está de fato rodando, não só presente no código.
   console.log(`[pecas] varredura periódica (válvula + revogação) executada às ${new Date().toISOString()} — ${destravadas.length} destravada(s), ${revogadas.length} revogação(ões).`);
+
+  await publicarRelatorioSemanal(guild).catch(err => console.error('[pecas] relatório semanal:', err.message));
+}
+
+// ---------------------------------------------------------------------------
+// Relatório semanal da válvula — a métrica obrigatória da SPEC §7, EMPURRADA
+// ---------------------------------------------------------------------------
+// POR QUE AUTOMÁTICO E NÃO BOTÃO: métrica que só existe para quem sabe que ela existe é código
+// órfão de outro tipo — construída, testada e nunca acionada. Já aconteceu cinco vezes neste
+// projeto. Botão no painel depende de alguém LEMBRAR de clicar; relatório empurrado chega sozinho.
+//
+// Cadência semanal porque é a unidade que a SPEC pede ("contar atos por semana") e porque é o
+// intervalo em que o número significa alguma coisa: diário oscilaria com o fim de semana e viraria
+// ruído que a staff aprende a ignorar — que é como uma métrica morre sem ninguém desligar.
+//
+// O marcador vai para `estado` (persistido): sem isso o relatório sairia de novo a cada boot, e
+// spam é a outra forma de a staff parar de ler.
+const CHAVE_ULTIMO_RELATORIO = 'valvulaRelatorioSemanalEm';
+const SEMANA_MS = 7 * 24 * 60 * 60 * 1000;
+
+async function publicarRelatorioSemanal(guild, { agora = Date.now() } = {}) {
+  const estado = require('./estado');
+  const ultimo = estado.obter(CHAVE_ULTIMO_RELATORIO);
+  if (ultimo && agora - new Date(ultimo).getTime() < SEMANA_MS) return null;
+
+  // Primeira execução: marca sem publicar. Publicar na estreia mandaria um relatório de "desde o
+  // começo dos tempos", que não é uma semana e induziria leitura errada logo no primeiro contato.
+  if (!ultimo) { estado.definir(CHAVE_ULTIMO_RELATORIO, new Date(agora).toISOString()); return null; }
+
+  const desde = new Date(agora - SEMANA_MS).toISOString();
+  const rel = pecas.relatorioValvula({ desde, ate: new Date(agora).toISOString() });
+  estado.definir(CHAVE_ULTIMO_RELATORIO, new Date(agora).toISOString());
+
+  const canalId = config.canalAuditoriaId;
+  const canal = guild && canalId ? await guild.channels.fetch(canalId).catch(() => null) : null;
+  if (!canal || !canal.isTextBased?.()) return null;
+
+  const pct = (n) => `${Math.round(n * 100)}%`;
+  const linhas = [
+    '📊 **Entrega in-game — relatório semanal (SPEC §7)**',
+    '',
+  ];
+
+  if (!rel.total) {
+    linhas.push('Nenhum ato foi recebido nesta semana. **Não há número a interpretar** — não é "está tudo bem".');
+  } else {
+    linhas.push(`**${rel.total}** ato(s) recebido(s): **${rel.pessoal}** em cena, **${rel.valvula}** pela válvula.`);
+    linhas.push(`Proporção que caiu na válvula: **${pct(rel.proporcaoValvula)}**.`);
+    if (rel.pendentes) linhas.push(`Pendentes agora: ${rel.pendentes}.`);
+    linhas.push('');
+
+    for (const [tipo, d] of Object.entries(rel.porTipo)) {
+      const t = d.valvula + d.pessoal;
+      const porPapel = Object.entries(d.porPapel)
+        .map(([papel, v]) => `${papel} ${v.valvula}/${v.valvula + v.pessoal}`).join(', ');
+      linhas.push(`• \`${tipo}\` — ${d.valvula}/${t} na válvula (${porPapel})`);
+    }
+
+    // A leitura que a dimensão de horário permite, escrita por extenso: sem isso o leitor vê a
+    // proporção alta e conclui "ninguém se encontra", que pode ser a conclusão errada.
+    if (rel.faixaCritica && rel.faixaCritica.concentrado) {
+      linhas.push('');
+      linhas.push(`⏰ **${pct(rel.faixaCritica.proporcao)} dos disparos** se concentram entre `
+        + `**${rel.faixaCritica.inicio}h e ${rel.faixaCritica.fim}h** (horário local).`);
+      linhas.push('Isso tem cara de **intervalo entre sessões comendo o prazo**, não de gente que não se encontra — '
+        + 'o ajuste seria no relógio da válvula, não no desenho da entrega.');
+    } else if (rel.valvula >= 5) {
+      linhas.push('');
+      linhas.push('⏰ Os disparos estão **espalhados pelo dia** — não é o intervalo entre sessões. '
+        + 'Se a proporção estiver alta, o encontro é que não está acontecendo.');
+    }
+
+    if (rel.proporcaoValvula >= 0.5) {
+      linhas.push('');
+      linhas.push('⚠️ **Metade ou mais dos atos destravou sozinho.** É o gatilho de recuo da SPEC §11.2.2 — '
+        + 'olhe a faixa de horário acima antes de decidir, porque as duas causas pedem ajustes opostos.');
+    }
+  }
+
+  await canal.send({ content: linhas.join('\n') }).catch(() => {});
+  console.log(`[pecas] relatório semanal da válvula publicado — ${rel.total} ato(s), ${rel.valvula} pela válvula.`);
+  return rel;
 }
 
 module.exports = {
   router, TIPOS, tipoAtivo, abrirEmissao, criarPeca, entregarAgora, encerrarEntrega,
   receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho, abrirRecebimento,
   estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA, TTL_RASCUNHO_MS,
-  verificarValvulaEEncerramento,
+  verificarValvulaEEncerramento, publicarRelatorioSemanal, unidadeDoProcesso,
 };

@@ -203,6 +203,17 @@ console.log('\n7) O PNG não vai mais para o canal compartilhado em processo gat
   ok(/textoIntimacao/.test(bloco) && /pngIntimacao/.test(bloco), '7c: o caminho não-gated segue postando texto e PNG (sem regressão)');
 }
 
+
+console.log('\n8) UNIDADE do documento vem do PROCESSO, não do catálogo');
+{
+  // O catálogo trazia 'Vara Criminal' fixo nos dois tipos — e como a petição incidental também roda
+  // em processo CÍVEL, toda petição cível saía com a vara errada impressa, visível ao jogador.
+  const emissao = require('../utils/emissaoPeca');
+  ok(/Criminal/.test(emissao.unidadeDoProcesso({ tipo: 'Penal' })), '8a: processo Penal → Vara Criminal');
+  ok(/C[íi]vel/.test(emissao.unidadeDoProcesso({ tipo: 'Civil' })), '8b: processo Civil → Vara Cível (era o erro visível ao jogador)');
+  ok(Object.values(emissao.TIPOS).every(t => !t.unidade), '8c: o catálogo NÃO carrega mais unidade — ele descreve o ATO, a vara é do processo');
+}
+
 try { fs.unlinkSync(DB_TESTE); } catch (_) {}
 try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);

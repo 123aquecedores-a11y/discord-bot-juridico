@@ -276,10 +276,12 @@ console.log('\n9) Válvula de 24h (SPEC §15.8)');
     processoTabela: 'processos', processoNumero: p.numero, tipo: 'peticao_inicial_penal',
     autorId: PROMOTOR, autorPapel: 'Promotor', texto: 'teor', destinatarios: [{ papel: 'Juiz' }],
   });
-  ok(pecas.varrerValvula({ agora: Date.now() + 23 * 60 * MIN }).length === 0, '9a: às 23h ainda não destrava');
+  // Destinatário Juiz => prazo CURTO (6h): ele vive no fórum, esperar a válvula não pode ser mais
+  // barato que se encontrar. Antes do Bloco C este teste usava 23h/25h, quando o prazo era único.
+  ok(pecas.varrerValvula({ agora: Date.now() + 5 * 60 * MIN }).length === 0, '9a: às 5h ainda não destrava (prazo do Juiz é 6h)');
 
-  const destravadas = pecas.varrerValvula({ agora: Date.now() + 25 * 60 * MIN });
-  ok(destravadas.some(d => d.peca === pc.numero), '9b: passadas 24h, destrava sozinho');
+  const destravadas = pecas.varrerValvula({ agora: Date.now() + 7 * 60 * MIN });
+  ok(destravadas.some(d => d.peca === pc.numero), '9b: passadas as 6h do papel, destrava sozinho');
   const d = peca(pc.numero).destinatarios[0];
   ok(d.automatico === true, '9c: marcado como automático');
   ok(/cartório/i.test(d.recebidoComo), '9d: lavrado como distribuição automática pelo cartório');
