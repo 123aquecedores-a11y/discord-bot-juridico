@@ -970,18 +970,17 @@ module.exports = {
       return interaction.reply({ content: 'Este mandado não tem Delegado responsável definido — só a Staff pode registrar o cumprimento.', ephemeral: true });
     }
 
-    // aguardarAnexoPDF já consome a resposta inicial da interação (reply pedindo o PDF) — não
-    // dá pra também chamar interaction.update() na mesma interação depois; o botão se apaga
-    // editando a mensagem original diretamente.
-    const coletado = await coletarAnexoPdf(interaction, {
-      numero, tipo: 'cumprimento_mandado',
-      protocolo: medida?.codigoExterno || mandado.medidaNumero || mandado.processoVinculado,
-    });
-    if (!coletado) return; // coletarAnexoPdf já avisou o motivo (tempo esgotado ou não é PDF)
-    const { anexo, documento: documentoCumprimento } = coletado;
-    if (medida?.codigoExterno) dossie.registrarDocumento(medida.codigoExterno, documentoCumprimento.id);
-
-    db.atualizar('mandados', numero, { status: 'Cumprido', cumpridoPor: interaction.user.id });
+    // CUMPRIR É SÓ MARCAR (decisão do operador, 19/08/2026).
+    //
+    // Exigia-se um PDF de auto de cumprimento antes de marcar. Isso vinha do desenho antigo, em que
+    // o documento era a prova do ato. Com a diligência acontecendo IN-GAME, o auto em PDF é papel
+    // que ninguém tem: o Delegado cumpre em cena e volta para registrar. Exigir o anexo transformava
+    // o registro numa barreira, e mandado cumprido ficava eternamente "Emitido" porque ninguém tinha
+    // o que anexar.
+    //
+    // Quem quiser juntar documento do cumprimento usa "Anexar prova", que é o lugar certo disso.
+    await interaction.deferReply({ ephemeral: true });
+    db.atualizar('mandados', numero, { status: 'Cumprido', cumpridoPor: interaction.user.id, cumpridoEm: new Date().toISOString() });
     // NÍVEL 2 — é AQUI que o mandado publica no Diário (no cumprimento, não no deferimento). Efeito
     // automático por natureza; blindado. O alvo já foi alcançado, então publicar não vaza mais nada.
     await diarioAtos.publicarAto(interaction.guild, 'mandadoCumprido', db.buscarPorNumero('mandados', numero));
@@ -989,15 +988,14 @@ module.exports = {
     const componentesArquivar = mandado.medidaNumero
       ? [new ActionRowBuilder().addComponents(botaoArquivarManual(mandado.medidaNumero))]
       : [];
-    // IA "cartório" faz a análise estruturada do auto de cumprimento (best-effort).
-    const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'cumprimento_mandado', pdfUrl: anexo.url });
-    await interaction.followUp({ content: `📎 Mandado ${numero} cumprido por <@${interaction.user.id}> — PDF juntado aos autos.`, embeds: embedAnalise ? [embedAnalise] : [], components: componentesArquivar });
+    // Sem PDF, não há o que a IA de cartório analise — o registro do ato é o próprio ato.
+    await interaction.editReply({ content: `✅ Mandado ${numero} cumprido por <@${interaction.user.id}>.`, components: componentesArquivar });
     if (mandado.processoVinculado) {
       await andamentos.registrar(interaction.guild, mandado.processoVinculado, {
         tipo: 'mandado_cumprido', titulo: `✅ Mandado cumprido`,
         // Link da mensagem, não do anexo: a URL do CDN expira em 24h (ver utils/anexos.js).
-        detalhe: `Mandado ${numero} cumprido por <@${interaction.user.id}> — ${anexos.rotuloComLink(anexo)} juntado aos autos.`,
-        executorId: interaction.user.id, anexoUrl: anexo.url, metadata: { mandadoNumero: numero },
+        detalhe: `Mandado ${numero} cumprido em diligência por <@${interaction.user.id}>.`,
+        executorId: interaction.user.id, metadata: { mandadoNumero: numero },
       });
       // Aqui sim o followUp acima foi postado no canal do processo (mandado novo sempre nasce
       // lá) — pode repostar o painel com segurança.

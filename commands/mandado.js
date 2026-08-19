@@ -92,9 +92,9 @@ async function abrirSelectTipo(interaction, numero) {
 // encadeia modal depois de modal (só depois de botão/select), então o teor sempre fecha o fluxo.
 
 async function processarSelecaoTipo(interaction, numero) {
-  const valor = interaction.values[0];
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  const valor = interaction.values[0];
   return interaction.reply({
     content: 'Quem é o destinatário do mandado?',
     components: [partesProcesso.selectDestinatario(`painel:select:mandado:destinatario:${numero}#${valor}`, processo)],
@@ -141,24 +141,16 @@ async function emitirMandado(interaction, chave) {
   const teor = interaction.fields.getTextInputValue('teor');
   const destinatario = resolverDestinatario(interaction, numero, processo, destinatarioRef);
 
-  // GUARDA DE COLISÃO — emitir vários mandados no mesmo processo é LEGÍTIMO (tipos e alvos
-  // diferentes), então a trava não pode ser "já existe mandado aqui". O que não é legítimo é o
-  // mesmo tipo contra o mesmo alvo com um mandado ainda EM ABERTO: isso é duplo clique no
-  // Submit, ou dois Juízes despachando a mesma coisa. Se o anterior já foi cumprido, reemitir
-  // volta a ser um ato novo e válido — por isso o filtro exige status 'Emitido'.
-  const alvoTexto = destinatario?.discordId ? `<@${destinatario.discordId}>` : (destinatario?.nome || 'destinatário não identificado');
+  // SEM TRAVA DE DUPLICIDADE (decisão do operador, 19/08/2026).
+  //
+  // Havia aqui uma guarda contra "mesmo tipo + mesmo alvo com mandado ainda em aberto", que eu
+  // tinha inferido como proteção contra duplo clique. O operador determinou que emitir VÁRIOS
+  // mandados no mesmo processo é legítimo e não depende de o anterior estar cumprido — o Juiz
+  // pode expedir busca, prisão e condução do mesmo alvo, e reexpedir quando a diligência falha.
+  //
+  // A guarda de colisão dos atos DECISÓRIOS continua onde faz sentido (sentença, referendo,
+  // deferimento): lá o segundo clique desfaz o primeiro. Aqui ele só acrescenta um mandado.
   const tipoRotuloAtual = rotuloTipo(tipoValue, tipoLivre);
-  const duplicado = db.todos('mandados', m => m.processoVinculado === numero
-    && m.status === 'Emitido' && m.tipo === tipoRotuloAtual && m.alvo === alvoTexto)[0];
-  if (duplicado) {
-    return interaction.reply({
-      content: atosPorCargo.mensagemJaFeito(
-        `O Mandado ${duplicado.numero} (${duplicado.tipo}) contra ${duplicado.alvo}`,
-        { porId: duplicado.emitidoPor || null, em: null },
-      ),
-      ephemeral: true,
-    });
-  }
 
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso.

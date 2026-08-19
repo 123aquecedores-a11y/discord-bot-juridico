@@ -239,7 +239,15 @@ console.log('\n5) VARREDURA: os atos decisórios de produção têm a trava no c
     ['commands/medida.js', 'indeferirMedidaDireta', 'indeferir medida solicitada direto pelo MP'],
     ['commands/medida.js', 'processarAprovacaoMP', 'triagem do MP — aprovar medida'],
     ['commands/medida.js', 'decidirReconsideracaoGenerica', 'decidir reconsideração (Procurador/Desembargador)'],
-    ['commands/mandado.js', 'emitirMandado', 'emitir mandado avulso no processo'],
+    // MANDADO SAIU DESTA LISTA EM 19/08/2026, por decisão do operador.
+    //
+    // Eu tinha posto aqui uma trava contra "mesmo tipo + mesmo alvo com mandado ainda em aberto",
+    // inferindo que fosse duplo clique. O operador esclareceu que não é: emitir vários mandados no
+    // mesmo processo é legítimo e não depende de o anterior estar cumprido — busca, prisão e
+    // condução do mesmo alvo saem juntas, e reexpedir é normal quando a diligência falha.
+    //
+    // A distinção que a lista guarda: colisão é quando o segundo clique DESFAZ o primeiro (duas
+    // sentenças, dois deferimentos). Emitir mandado só ACRESCENTA — não há nada a proteger.
     ['commands/processo.js', 'decidirRequerimentoMp', 'decidir requerimento do MP'],
     ['commands/processo.js', 'decidirHabilitacao', 'decidir habilitação de advogado'],
     ['commands/processo.js', 'decidirPeticao', 'decidir petição incidental do processo'],
