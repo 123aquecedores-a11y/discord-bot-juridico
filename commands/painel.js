@@ -962,9 +962,16 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'confirmardeferir') return peticaoCmd.confirmarDeferimento(interaction, extra);
     if (acao === 'cancelardecisao') return peticaoCmd.cancelarDecisao(interaction);
     if (acao === 'maisdados') return peticaoCmd.abrirModalMaisDados(interaction, extra);
-    if (acao === 'vincularmanual') return peticaoCmd.abrirModalVincularManual(interaction, extra);
+    // Vínculo de Discord do cliente foi removido (19/08/2026). Botão já postado em canal antigo
+    // ainda existe no Discord — responde explicando, em vez de cair em "ação desconhecida".
+    if (acao === 'vincularmanual') {
+      return interaction.reply({ content: 'Esta etapa não existe mais: a petição é identificada por **nome + RG**, e o cliente não precisa de conta no Discord. Nada a fazer aqui.', ephemeral: true });
+    }
     if (acao === 'certidao') return peticaoCmd.solicitarCertidaoDaPeticao(interaction, extra);
     if (acao === 'anexardocumento') return peticaoCmd.anexarDocumentoPeticao(interaction, extra);
+    // Provas na petição: mesma implementação do processo, só apontando para a tabela `peticoes`.
+    if (acao === 'anexarprova') return peticaoCmd.abrirModalAnexarProvaPeticao(interaction, extra);
+    if (acao === 'rolprovas') return peticaoCmd.verRolProvasPeticao(interaction, extra);
     if (acao === 'reabrir') return peticaoCmd.reabrirCaso(interaction, extra);
   }
 
@@ -1282,8 +1289,7 @@ async function tratarUserSelect(interaction, modulo, campo) {
   }
 
   if (modulo === 'peticao' && campo.startsWith('vincularcliente#')) {
-    const numero = campo.split('#')[1];
-    return peticaoCmd.vincularClienteDiscord(interaction, numero);
+    return interaction.update({ content: 'Esta etapa não existe mais: a petição é identificada por **nome + RG**, e o cliente não precisa de conta no Discord.', components: [] });
   }
 
   if (modulo === 'processo' && campo.startsWith('addadvogado#')) {
@@ -1349,6 +1355,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'medida' && acao === 'solicitardireta') return medidaCmd.criarSolicitacaoMedidaDireta(interaction, extra);
   if (modulo === 'processo' && acao === 'depoimento') return processoCmd.registrarDepoimentoHandler(interaction, extra);
   if (modulo === 'processo' && acao === 'anexarprova') return processoCmd.salvarProva(interaction, extra);
+  if (modulo === 'peticao' && acao === 'anexarprova') return peticaoCmd.salvarProvaPeticao(interaction, extra);
   if (modulo === 'processo' && acao === 'gerenciarrg') return processoCmd.salvarGerenciarCampo(interaction, extra, 'rg');
   if (modulo === 'processo' && acao === 'gerenciarnome') return processoCmd.salvarGerenciarCampo(interaction, extra, 'nome');
   if (modulo === 'processo' && acao === 'gerenciaraddcrime') return processoCmd.salvarAddCrime(interaction, extra);
@@ -1534,7 +1541,6 @@ async function tratarModal(interaction, modulo, acao, extra) {
   if (modulo === 'peticao' && acao === 'limpeza-ficha') return peticaoCmd.processarModalLimpezaFicha(interaction);
   if (modulo === 'peticao' && acao === 'alvara-evento') return peticaoCmd.processarModalAlvaraEvento(interaction);
   if (modulo === 'peticao' && acao === 'maisdados') return peticaoCmd.processarMaisDados(interaction, extra);
-  if (modulo === 'peticao' && acao === 'vincularmanual') return peticaoCmd.processarVincularManual(interaction, extra);
   if (modulo === 'peticao' && acao === 'manifestacao') return peticaoCmd.processarModalManifestacao(interaction, extra);
 
   if (modulo === 'ficha' && acao === 'consultarrg') return fichaCmd.processarModalConsultaRG(interaction);

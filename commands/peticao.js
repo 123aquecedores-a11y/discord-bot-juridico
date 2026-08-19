@@ -1,6 +1,6 @@
 const {
   SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, UserSelectMenuBuilder,
+  ModalBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder,
 } = require('discord.js');
 const db = require('../database/db');
 const config = require('../config');
@@ -80,7 +80,6 @@ function embedPeticao(p) {
       { name: 'Cliente', value: p.nomeCliente || '—', inline: true },
       { name: 'RG', value: p.rgCliente, inline: true },
       { name: 'Endereço', value: truncar(p.enderecoCliente) || '—', inline: true },
-      { name: 'Discord do cliente', value: p.discordIdCliente ? `<@${p.discordIdCliente}>` : 'Não vinculado', inline: true },
     );
   }
   if (p.juiz) embed.addFields({ name: 'Juiz', value: `<@${p.juiz}>`, inline: true });
@@ -105,9 +104,29 @@ function embedPeticao(p) {
 // Padroniza as três petições administrativas com o mesmo padrão de anexo-PDF-via-botão que a
 // petição inicial civil já usa (spec-andamentos-processuais_4.md, seção 8.4) — antes o pedido
 // só dizia "anexe direto na conversa", sem virar `documento` de verdade nos autos.
+// NOME, não função nova: este botão SEMPRE foi o "peticionar" da petição administrativa — em
+// processo gated abre o formulário de `peticao_administrativa`, em legado recebe o PDF. Criar um
+// "Peticionar" ao lado dele seria dois botões para o mesmo ato. O customId fica intacto, então
+// botão já postado em canal antigo continua funcionando.
 function botaoAnexarDocumentoPeticao(numero) {
-  return new ButtonBuilder().setCustomId(`painel:acao:peticao:anexardocumento:${numero}`).setLabel('📎 Anexar petição/documento').setStyle(ButtonStyle.Primary);
+  return new ButtonBuilder().setCustomId(`painel:acao:peticao:anexardocumento:${numero}`).setLabel('📄 Peticionar').setStyle(ButtonStyle.Primary);
 }
+
+// AÇÕES DO ADVOGADO na petição — as mesmas do processo, pelas MESMAS funções (o requerente
+// precisa peticionar e juntar prova aqui como faria num processo). Os botões vêm de
+// commands/processo.js; só o prefixo do customId muda, para o roteador devolver o clique aqui.
+function botoesAdvogadoPeticao(numero) {
+  const processoCmd = require('./processo');
+  return new ActionRowBuilder().addComponents(
+    botaoAnexarDocumentoPeticao(numero),
+    processoCmd.botaoAnexarProva(numero, 'peticao'),
+  );
+}
+
+// Delegam para a implementação única em commands/processo.js, dizendo só em que tabela mexer.
+const abrirModalAnexarProvaPeticao = (interaction, numero) => require('./processo').abrirModalAnexarProva(interaction, numero, 'peticoes');
+const salvarProvaPeticao = (interaction, numero) => require('./processo').salvarProva(interaction, numero, 'peticoes');
+const verRolProvasPeticao = (interaction, numero) => require('./processo').verRolProvas(interaction, numero, 'peticoes');
 
 // Gate das ações de manutenção da petição (anexar documento, vincular cliente, mais dados): só
 // quem é parte da petição (advogado requerente, Juiz ou Promotor do caso) ou Staff — não basta
@@ -164,6 +183,7 @@ function botoesDecisao(numero) {
       new ButtonBuilder().setCustomId(`painel:acao:peticao:certidao:${numero}`).setLabel('📄 Requisitar certidão').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`painel:acao:peticao:arquivarmanual:${numero}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
     ),
+    botoesAdvogadoPeticao(numero),
     new ActionRowBuilder().addComponents(responsaveis.botaoSupervisaoTicket('peticoes', numero)),
   ];
 }
@@ -370,7 +390,7 @@ async function protocolarPeticao(guild, numero) {
   if (!canal) return;
 
   const promotorId = rh.sortearPorCargo('Promotor');
-  const juizId = rh.sortearJuiz({ excluirIds: [peticao.requerenteId, peticao.discordIdCliente].filter(Boolean) });
+  const juizId = rh.sortearJuiz({ excluirIds: [peticao.requerenteId].filter(Boolean) });
 
   // Manifestação do MP (Parte 1): grava o instante do sorteio do promotor — base do prazo lazy de
   // 24h — e inicializa a lista de manifestações. É lista (não objeto): cada manifestação é um ato
@@ -546,15 +566,19 @@ async function reabrirCaso(interaction, numero) {
   if (!p) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
   const canal = p.canalId ? await interaction.guild.channels.fetch(p.canalId).catch(() => null) : null;
 
+  // Petição LEGADA cancelada por falta de vínculo: nada mais cancela por isso (o vínculo deixou de
+  // existir), então reabrir aqui devolve o caso direto à fila de decisão, sem repedir o que não é
+  // mais pedido. Sem este ramo, um registro antigo nesse status ficaria sem saída nenhuma.
   if (p.status === 'Cancelada — prazo de vínculo expirado') {
-    db.atualizar('peticoes', numero, { status: 'Aguardando vínculo', criado_em: new Date().toLocaleString('pt-BR'), lembreteVinculoEnviado: false });
+    db.atualizar('peticoes', numero, { status: 'Pendente', criado_em: new Date().toLocaleString('pt-BR') });
     if (canal) {
-      await canais.reabrirCanal(canal, [p.requerenteId].filter(Boolean));
-      const rowUser = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`painel:userselect:peticao:vincularcliente#${numero}`).setPlaceholder('Selecione o cliente no Discord'));
-      const rowManual = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`painel:acao:peticao:vincularmanual:${numero}`).setLabel('Cliente ainda não está no servidor').setStyle(ButtonStyle.Secondary));
-      await canal.send({ content: `♻️ **Petição reaberta** por <@${interaction.user.id}> (Supervisão/Staff). <@${p.requerenteId}>, vincule novamente a conta do cliente — há novo prazo de 1 (uma) hora.`, components: [rowUser, rowManual] });
+      await canais.reabrirCanal(canal, [p.requerenteId, p.juiz].filter(Boolean));
+      await canal.send({
+        content: `♻️ **Petição reaberta** por <@${interaction.user.id}> (Supervisão/Staff). O vínculo de Discord do cliente não é mais exigido — a petição segue por **nome + RG** e está pronta para decisão.`,
+        components: botoesDecisao(numero),
+      });
     }
-    return interaction.reply({ content: `Petição ${numero} reaberta — aguardando novo vínculo do cliente.`, ephemeral: true });
+    return interaction.reply({ content: `Petição ${numero} reaberta — pronta para decisão.`, ephemeral: true });
   }
 
   if (p.status === 'Indeferido' && p.indeferidoPorDiligencia) {
@@ -563,7 +587,7 @@ async function reabrirCaso(interaction, numero) {
       await canais.reabrirCanal(canal, [p.requerenteId, p.juiz].filter(Boolean));
       await canal.send({
         content: `♻️ **Petição reaberta** por <@${interaction.user.id}> (Supervisão/Staff). Diligência retomada — <@${p.requerenteId}>, cumpra a diligência (anexe o documento solicitado); ${p.juiz ? `<@${p.juiz}> ` : 'o Juízo '}decide em seguida. Novo prazo de 24 (vinte e quatro) horas.`,
-        components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero)), ...botoesDecisao(numero)],
+        components: botoesDecisao(numero),
       });
     }
     return interaction.reply({ content: `Petição ${numero} reaberta — diligência retomada.`, ephemeral: true });
@@ -576,49 +600,15 @@ async function enviarFollowUpsCadastro(interaction, numero, rgCliente, canal) {
   // Frente 7: protocola JÁ (sorteia Juiz/Promotor) com base em nome+RG — não espera vínculo nenhum.
   await protocolarPeticao(interaction.guild, numero);
 
-  // Vincular o Discord do cliente continua possível, mas OPCIONAL: serve pra aplicar o apelido (se
-  // a pessoa existir/entrar no servidor) e pra notificações. Nunca bloqueia a decisão nem cancela a
-  // petição. O select nativo só lista quem já está no servidor; o botão ao lado aceita ID/@ na mão.
-  const rowUser = new ActionRowBuilder().addComponents(
-    new UserSelectMenuBuilder().setCustomId(`painel:userselect:peticao:vincularcliente#${numero}`).setPlaceholder('Vincular Discord do cliente (opcional)'),
-  );
-  const rowManual = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`painel:acao:peticao:vincularmanual:${numero}`).setLabel('Informar @/ID na mão').setStyle(ButtonStyle.Secondary),
-  );
-  await canal.send({
-    content: `<@${interaction.user.id}> 📎 *(Opcional)* Se o cliente tiver conta de Discord, dá pra vincular abaixo — só pra notificações e apelido. **Não é obrigatório**: a petição já foi protocolada por **nome + RG**.`,
-    components: [rowUser, rowManual],
-  });
+  // O VÍNCULO DE DISCORD DO CLIENTE FOI REMOVIDO (19/08/2026, decisão do operador). O cliente é um
+  // personagem de RP: não tem conta no servidor, e o dado nunca era usado para decidir nada. O que
+  // identifica a pessoa é nome + RG, que é como a petição já nasce protocolada e como o cruzamento
+  // de antecedentes sempre funcionou.
 
   await perguntarMaisDados(interaction, numero, rgCliente);
 }
 
-function abrirModalVincularManual(interaction, numero) {
-  const modal = new ModalBuilder().setCustomId(`painel:modal:peticao:vincularmanual:${numero}`).setTitle('Cliente ainda não está no servidor');
-  modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder().setCustomId('discord').setLabel('ID ou @menção do Discord do cliente').setStyle(TextInputStyle.Short).setRequired(true),
-  ));
-  return interaction.showModal(modal);
-}
 
-async function processarVincularManual(interaction, numero) {
-  const usuarioId = extrairMencaoOuId(interaction.fields.getTextInputValue('discord'));
-  if (!usuarioId) {
-    return interaction.reply({ content: 'Não reconheci isso como um ID ou @menção do Discord válido. Pra pegar o ID: Configurações > Avançado > Modo desenvolvedor ligado, aí clique com botão direito no perfil da pessoa > Copiar ID.', ephemeral: true });
-  }
-  const peticao = db.buscarPorNumero('peticoes', numero);
-  if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
-  if (!podeMexerNaPeticao(interaction, peticao)) return interaction.reply({ content: RECUSA_MEXER_PETICAO, ephemeral: true });
-  if (peticao.discordIdCliente) return interaction.reply({ content: 'Essa petição já tem cliente vinculado.', ephemeral: true });
-
-  ficha.vincularDiscordId(peticao.rgCliente, usuarioId, `Petição ${numero} — vínculo manual`);
-  db.atualizar('peticoes', numero, { discordIdCliente: usuarioId });
-  // Frente 7: opcional, não re-protocola (a petição já nasceu protocolada por nome+RG).
-  return interaction.reply({
-    content: `✅ Discord do cliente vinculado: <@${usuarioId}> — se ainda não estiver no servidor, o apelido é aplicado quando entrar. *(Opcional — a petição já estava protocolada por nome+RG.)*`,
-    ephemeral: true,
-  });
-}
 
 // Pergunta única (não mais um loop de sim/não só pra endereço) — quanto mais dado a ficha
 // acumula, mais fácil o SISBAJUS acha essa pessoa depois sem precisar de RG nem Discord.
@@ -666,18 +656,6 @@ async function processarMaisDados(interaction, extra) {
   return interaction.reply({ content: `Registrado na ficha do RG ${rg}: ${salvos}.`, ephemeral: true });
 }
 
-async function vincularClienteDiscord(interaction, numero) {
-  const usuarioId = interaction.values[0];
-  const peticao = db.buscarPorNumero('peticoes', numero);
-  if (!peticao) return interaction.update({ content: 'Petição não encontrada.', components: [] });
-  if (!podeMexerNaPeticao(interaction, peticao)) return interaction.reply({ content: RECUSA_MEXER_PETICAO, ephemeral: true });
-  if (peticao.discordIdCliente) return interaction.update({ content: 'Essa petição já tem cliente vinculado.', components: [] });
-  ficha.vincularDiscordId(peticao.rgCliente, usuarioId, `Petição ${numero}`);
-  db.atualizar('peticoes', numero, { discordIdCliente: usuarioId });
-  // Frente 7: a petição já foi protocolada por nome+RG na abertura — vincular o Discord é opcional
-  // e não re-protocola nada (só passa a permitir apelido/notificações pra essa conta).
-  return interaction.update({ content: `✅ Discord do cliente vinculado: <@${usuarioId}> *(opcional — a petição já estava protocolada por nome+RG)*.`, components: [] });
-}
 
 // ---- Modais do /painel ----
 
@@ -881,7 +859,6 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
 
   // Nome civil só passa a valer de fato quando o Juiz defere — vinculado ao RG do cliente,
   // não ao ID de quem protocolou (o Advogado), já que é o cliente quem muda de nome.
-  let apelidoAlterado = null;
   let trocaNomeSemVinculo = false;
   if (status === 'Deferido' && peticao.tipo === 'TrocaNome' && peticao.rgCliente) {
     ficha.registrarTrocaNome(peticao.rgCliente, peticao.nomeNovo);
@@ -889,14 +866,9 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
     // O vínculo do Discord do cliente é OPCIONAL (Frente 7) — `decidir` não o exige mais. Sem ele
     // o nome civil é retificado no registro, mas não há conta pra aplicar o apelido no servidor:
     // avisa explicitamente em vez de pular em silêncio.
-    if (peticao.discordIdCliente) {
-      const membro = await guild.members.fetch(peticao.discordIdCliente).catch(() => null);
-      if (membro) {
-        apelidoAlterado = await membro.setNickname(peticao.nomeNovo.slice(0, 32)).then(() => true).catch(() => false);
-      }
-    } else {
-      trocaNomeSemVinculo = true;
-    }
+    // Não há mais conta de Discord do cliente para renomear (o vínculo foi removido): o nome civil
+    // é retificado no registro e a ausência é DITA nos autos, nunca pulada em silêncio.
+    trocaNomeSemVinculo = true;
   }
 
   const canal = await guild.channels.fetch(peticao.canalId).catch(() => null);
@@ -948,7 +920,7 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
       // os antigos assim que o documento pedido for anexado.
       await canal.send({
         content: `<@${peticao.requerenteId}> — clique em **"📎 Anexar petição/documento"** abaixo pra juntar o que o Juiz pediu; depois avise <@${peticao.juiz}> pra decidir de novo.`,
-        components: [new ActionRowBuilder().addComponents(botaoAnexarDocumentoPeticao(numero)), ...botoesDecisao(numero)],
+        components: botoesDecisao(numero),
       });
     } else {
       // Deferido/Indeferido: mesma sentença formal e padrão pros três tipos de petição.
@@ -976,9 +948,7 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
       const extrasLinhas = [];
       if (extras.nivelRisco !== undefined) extrasLinhas.push(`Nível de risco reconhecido pelo Juízo: ${extras.nivelRisco}`);
       if (peticao.validadeAte) extrasLinhas.push(`Validade da autorização: até <t:${Math.floor(new Date(peticao.validadeAte).getTime() / 1000)}:D>`);
-      if (apelidoAlterado === true) extrasLinhas.push(`✅ Nome civil retificado nos registros do sistema, em cumprimento à sentença supra.`);
-      if (apelidoAlterado === false) extrasLinhas.push(`⚠️ Retificação de registro pendente — o sistema não conseguiu atualizar o nome civil automaticamente. Regularização manual necessária junto à Secretaria.`);
-      if (trocaNomeSemVinculo) extrasLinhas.push(`ℹ️ Nome civil retificado nos registros, mas o cliente **não tem conta de Discord vinculada** a esta petição — o apelido no servidor **não será alterado** automaticamente. Vincule o Discord do cliente (ou ajuste o apelido à mão) se for o caso.`);
+      if (trocaNomeSemVinculo) extrasLinhas.push(`ℹ️ Nome civil retificado nos registros do sistema. O cliente é personagem de RP e não tem conta no servidor, então **nenhum apelido de Discord é alterado** — se houver uma conta de jogador usando o nome antigo, o ajuste é manual.`);
       if (extrasLinhas.length) {
         await canal.send({
           embeds: [new EmbedBuilder()
@@ -1195,8 +1165,8 @@ module.exports = {
   processarModalDecisao,
   finalizarDecisao,
   abrirModalMaisDados, processarMaisDados,
-  vincularClienteDiscord, protocolarPeticao,
-  abrirModalVincularManual, processarVincularManual,
+  protocolarPeticao, podeMexerNaPeticao,
+  abrirModalAnexarProvaPeticao, salvarProvaPeticao, verRolProvasPeticao,
   embedPeticao, botoesDecisao, solicitarCertidaoDaPeticao,
   anexarDocumentoPeticao,
   // Manifestação do MP (Parte 1)

@@ -315,23 +315,30 @@ function seedProcesso(numero, extra) {
     ok(pc && pc.autorNome === 'Autor Sem Discord' && !pc.autorDiscordId && !pc.reuDiscordId, '  ...processo criado com autorDiscordId/reuDiscordId nulos');
   }
 
-  // ============ ITEM 6: TrocaNome deferida sem vínculo avisa (não pula em silêncio) ============
-  console.log('\nItem 6 — TrocaNome sem discordIdCliente avisa que o apelido não muda:');
+  // ============ ITEM 6: TrocaNome deferida diz que nenhum apelido muda (não pula em silêncio) ============
+  // REESCRITO EM 19/08/2026: o vínculo de Discord do cliente foi REMOVIDO — o cliente é personagem
+  // de RP e não tem conta no servidor. O que este item guardava continua valendo, e é o que importa:
+  // a retificação do nome civil acontece, e a parte que NÃO acontece é dita nos autos.
+  //
+  // O caso de controle ("com vínculo → setNickname") não existe mais porque não há como vincular.
+  // No lugar dele fica a asserção de que NENHUM setNickname é tentado — se alguém reintroduzir a
+  // renomeação de conta de jogador, isto acusa.
+  console.log('\nItem 6 — TrocaNome deferida avisa que nenhum apelido de Discord muda:');
   {
-    // Sem vínculo
-    db.inserir('peticoes', { numero: '0001TN', tipo: 'TrocaNome', requerenteId: 'advT', juiz: 'juizT', promotor: null, status: 'Pendente', canalId: 'ctn1', rgCliente: 'RG-TN', nomeAtual: 'Nome Velho', nomeNovo: 'Nome Novo', discordIdCliente: null });
-    rec.sends.length = 0;
+    db.inserir('peticoes', { numero: '0001TN', tipo: 'TrocaNome', requerenteId: 'advT', juiz: 'juizT', promotor: null, status: 'Pendente', canalId: 'ctn1', rgCliente: 'RG-TN', nomeAtual: 'Nome Velho', nomeNovo: 'Nome Novo' });
+    rec.sends.length = 0; rec.nicks.length = 0;
     await peticaoCmd.finalizarDecisao(fakeGuild(), '0001TN', 'Deferido', { motivo: 'deferido' }, 'juizT');
-    const avisouSemVinculo = rec.sends.some(s => JSON.stringify(s).includes('não tem conta de Discord vinculada'));
-    ok(avisouSemVinculo, 'sem vínculo → posta aviso "apelido não será alterado" (antes: silêncio)');
+    const avisou = rec.sends.some(s => JSON.stringify(s).includes('nenhum apelido de Discord'));
+    ok(avisou, 'deferida → posta o aviso de que nenhum apelido de Discord muda (antes: silêncio)');
     ok((ficha.buscarPorRG('RG-TN') || {}).nomeCivil === 'Nome Novo', '  ...e ainda retifica o nome civil no registro');
+    ok(rec.nicks.length === 0, '  ...e NÃO tenta renomear conta nenhuma no servidor');
 
-    // Controle: com vínculo (membro existe) → aplica apelido, mostra ✅, sem o aviso ℹ️
+    // Petição LEGADA que ainda carrega o campo antigo: nem por isso o bot volta a renomear.
     db.inserir('peticoes', { numero: '0002TN', tipo: 'TrocaNome', requerenteId: 'advT', juiz: 'juizT', promotor: null, status: 'Pendente', canalId: 'ctn2', rgCliente: 'RG-TN2', nomeAtual: 'A', nomeNovo: 'Nome Aplicado', discordIdCliente: 'cliente123' });
     rec.sends.length = 0; rec.nicks.length = 0;
     await peticaoCmd.finalizarDecisao(fakeGuild(), '0002TN', 'Deferido', { motivo: 'ok' }, 'juizT');
-    ok(rec.nicks.includes('Nome Aplicado'), 'controle: com vínculo → setNickname aplicado');
-    ok(!rec.sends.some(s => JSON.stringify(s).includes('não tem conta de Discord vinculada')), '  ...e NÃO mostra o aviso de "sem vínculo"');
+    ok(rec.nicks.length === 0, 'registro legado com discordIdCliente NÃO reativa o setNickname');
+    ok((ficha.buscarPorRG('RG-TN2') || {}).nomeCivil === 'Nome Aplicado', '  ...e a retificação do nome civil segue igual');
   }
 
   // ============ ITEM 7: removerHabilitacao não monta <@null> quando réu é só nome/RG ============

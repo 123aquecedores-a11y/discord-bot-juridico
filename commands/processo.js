@@ -2517,6 +2517,14 @@ async function decidirPeticao(interaction, chave, deferir) {
 // apagada e cada arquivo também vira documento dos autos (`anexos.criarDocumento`), aparecendo no
 // dossiê/histórico. Aberto às PARTES do processo (quem tem acesso ao canal) + Staff.
 
+// Gate de "é parte" por TABELA. As provas passaram a servir também às petições administrativas
+// (o requerente precisa juntar documento igual num processo), e cada tabela tem seus próprios
+// campos de parte. Um único ponto de decisão, em vez da regra copiada nos dois lados.
+function ehParteDoRegistro(interaction, registro, tabela = 'processos') {
+  if (tabela === 'peticoes') return require('./peticao').podeMexerNaPeticao(interaction, registro);
+  return ehParteDoProcesso(interaction, registro);
+}
+
 function ehParteDoProcesso(interaction, processo) {
   if (isSuperStaff(interaction) || isAdmin(interaction)) return true;
   const uid = interaction.user.id;
@@ -2525,15 +2533,17 @@ function ehParteDoProcesso(interaction, processo) {
   return (processo.habilitacoes || []).some(h => h.status === 'Aprovado' && h.advogadoId === uid);
 }
 
-function botaoAnexarProva(numero) {
-  return new ButtonBuilder().setCustomId(`painel:acao:processo:anexarprova:${numero}`).setLabel('🧾 Anexar prova').setStyle(ButtonStyle.Secondary);
+// `modulo` decide só o PREFIXO do customId — é o que faz o roteador de painel.js devolver o
+// clique ao módulo certo. A implementação é uma só, aqui embaixo, para os dois.
+function botaoAnexarProva(numero, modulo = 'processo') {
+  return new ButtonBuilder().setCustomId(`painel:acao:${modulo}:anexarprova:${numero}`).setLabel('🧾 Anexar prova').setStyle(ButtonStyle.Secondary);
 }
-function botaoRolProvas(numero) {
-  return new ButtonBuilder().setCustomId(`painel:acao:processo:rolprovas:${numero}`).setLabel('🗂️ Rol de provas').setStyle(ButtonStyle.Secondary);
+function botaoRolProvas(numero, modulo = 'processo') {
+  return new ButtonBuilder().setCustomId(`painel:acao:${modulo}:rolprovas:${numero}`).setLabel('🗂️ Rol de provas').setStyle(ButtonStyle.Secondary);
 }
 
-function modalAnexarProva(numero) {
-  const modal = new ModalBuilder().setCustomId(`painel:modal:processo:anexarprova:${numero}`).setTitle('Anexar prova');
+function modalAnexarProva(numero, modulo = 'processo') {
+  const modal = new ModalBuilder().setCustomId(`painel:modal:${modulo}:anexarprova:${numero}`).setTitle('Anexar prova');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('tipo').setLabel('Tipo (foto / vídeo / link / PDF / doc)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('descricao').setLabel('O que é a prova (descrição)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
@@ -2542,18 +2552,23 @@ function modalAnexarProva(numero) {
   return modal;
 }
 
-async function abrirModalAnexarProva(interaction, numero) {
-  const processo = db.buscarPorNumero('processos', numero);
-  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (!ehParteDoProcesso(interaction, processo)) {
-    return interaction.reply({ content: 'Só as partes do processo (Delegado, MP, Juiz, réu ou advogado habilitado) podem anexar provas aqui.', ephemeral: true });
+async function abrirModalAnexarProva(interaction, numero, tabela = 'processos') {
+  const registro = db.buscarPorNumero(tabela, numero);
+  if (!registro) return interaction.reply({ content: 'Registro não encontrado.', ephemeral: true });
+  if (!ehParteDoRegistro(interaction, registro, tabela)) {
+    return interaction.reply({
+      content: tabela === 'peticoes'
+        ? 'Só as partes desta petição (advogado requerente, Juiz/Promotor do caso) ou a Staff podem anexar provas aqui.'
+        : 'Só as partes do processo (Delegado, MP, Juiz, réu ou advogado habilitado) podem anexar provas aqui.',
+      ephemeral: true,
+    });
   }
-  return interaction.showModal(modalAnexarProva(numero));
+  return interaction.showModal(modalAnexarProva(numero, tabela === 'peticoes' ? 'peticao' : 'processo'));
 }
 
 // Grava a prova no rol + no dossiê, posta o card no canal e registra o andamento. Compartilhado
 // pelos dois caminhos (link resolvido no modal, ou arquivos vindos da janela de upload).
-async function registrarProvaNoProcesso(interaction, processo, { tipo, descricao, arquivos }) {
+async function registrarProvaNoProcesso(interaction, processo, { tipo, descricao, arquivos }, tabela = 'processos') {
   const numero = processo.numero;
   const provas = processo.provas || [];
   const novoId = provas.reduce((max, p) => Math.max(max, p.id || 0), 0) + 1;
@@ -2561,7 +2576,7 @@ async function registrarProvaNoProcesso(interaction, processo, { tipo, descricao
     id: novoId, autorId: interaction.user.id, tipo, descricao,
     arquivos: arquivos.map(a => a.url), criadaEm: new Date().toISOString(),
   };
-  db.atualizar('processos', numero, { provas: [...provas, provaNova] });
+  db.atualizar(tabela, numero, { provas: [...provas, provaNova] });
 
   // Cada arquivo também entra como documento dos autos (aparece no dossiê/histórico por protocolo).
   for (const a of arquivos) {
@@ -2591,16 +2606,18 @@ async function registrarProvaNoProcesso(interaction, processo, { tipo, descricao
     executorId: interaction.user.id, anexoUrl: arquivos[0]?.url || null,
     metadata: { provaId: novoId, tipo, quantidade: arquivos.length },
   });
-  await repostarPainel(interaction.guild, numero);
+  // Só o processo tem painel persistente para re-renderizar. A petição publica o card da prova
+  // no canal (acima) e mantém os botões que já estão postados — repostar ali duplicaria o painel.
+  if (tabela === 'processos') await repostarPainel(interaction.guild, numero);
   return novoId;
 }
 
 // Submit do modal de "Anexar prova".
-async function salvarProva(interaction, numero) {
-  const processo = db.buscarPorNumero('processos', numero);
-  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (!ehParteDoProcesso(interaction, processo)) {
-    return interaction.reply({ content: 'Só as partes do processo podem anexar provas.', ephemeral: true });
+async function salvarProva(interaction, numero, tabela = 'processos') {
+  const processo = db.buscarPorNumero(tabela, numero);
+  if (!processo) return interaction.reply({ content: 'Registro não encontrado.', ephemeral: true });
+  if (!ehParteDoRegistro(interaction, processo, tabela)) {
+    return interaction.reply({ content: 'Só as partes podem anexar provas.', ephemeral: true });
   }
   const tipo = (interaction.fields.getTextInputValue('tipo') || '').trim() || 'Documento';
   const descricao = (interaction.fields.getTextInputValue('descricao') || '').trim();
@@ -2612,31 +2629,31 @@ async function salvarProva(interaction, numero) {
     await interaction.deferReply({ ephemeral: true });
     const nid = await registrarProvaNoProcesso(interaction, processo, {
       tipo, descricao, arquivos: [{ url: link, nomeArquivo: link.split('/').pop()?.split('?')[0] || 'link' }],
-    });
+    }, tabela);
     return interaction.editReply({ content: `🧾 Prova #${nid} registrada (link).` });
   }
 
   // Caminho B: prova por ARQUIVO(S) — abre a janela temporária e coleta N arquivos.
   const resultado = await aguardarAnexos(interaction, { timeoutMs: 90 * 1000, idleMs: 25 * 1000 });
   if (!resultado) return; // já avisou tempo esgotado
-  const nid = await registrarProvaNoProcesso(interaction, processo, { tipo, descricao, arquivos: resultado.arquivos });
+  const nid = await registrarProvaNoProcesso(interaction, processo, { tipo, descricao, arquivos: resultado.arquivos }, tabela);
   return interaction.followUp({ content: `🧾 Prova #${nid} registrada (${resultado.arquivos.length} arquivo(s)).`, ephemeral: true });
 }
 
 // Rol de provas consolidado (lista nos autos), acessível às partes.
-async function verRolProvas(interaction, numero) {
-  const processo = db.buscarPorNumero('processos', numero);
-  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (!ehParteDoProcesso(interaction, processo)) {
-    return interaction.reply({ content: 'Só as partes do processo podem consultar o rol de provas.', ephemeral: true });
+async function verRolProvas(interaction, numero, tabela = 'processos') {
+  const processo = db.buscarPorNumero(tabela, numero);
+  if (!processo) return interaction.reply({ content: 'Registro não encontrado.', ephemeral: true });
+  if (!ehParteDoRegistro(interaction, processo, tabela)) {
+    return interaction.reply({ content: 'Só as partes podem consultar o rol de provas.', ephemeral: true });
   }
   const provas = processo.provas || [];
-  if (provas.length === 0) return interaction.reply({ content: 'Nenhuma prova juntada a este processo ainda.', ephemeral: true });
+  if (provas.length === 0) return interaction.reply({ content: 'Nenhuma prova juntada ainda.', ephemeral: true });
   const linhas = provas.map(p => {
     const arqs = (p.arquivos || []).map((u, i) => `[arquivo ${i + 1}](${u})`).join(', ') || '—';
     return `**#${p.id}** — ${p.tipo || 'prova'} — por <@${p.autorId}>\n${p.descricao}\n${arqs}`;
   }).join('\n\n');
-  const embed = new EmbedBuilder().setTitle(`🗂️ Rol de provas — Processo ${numero}`).setColor(0x8e44ad).setDescription(truncar(linhas, 4000));
+  const embed = new EmbedBuilder().setTitle(`🗂️ Rol de provas — ${tabela === 'peticoes' ? 'Petição' : 'Processo'} ${numero}`).setColor(0x8e44ad).setDescription(truncar(linhas, 4000));
   return interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
@@ -4010,7 +4027,7 @@ module.exports = {
   peticionar,
   decidirPeticao,
   abrirModalAnexarProva,
-  salvarProva,
+  salvarProva, ehParteDoRegistro, botaoAnexarProva, botaoRolProvas,
   verRolProvas,
   abrirGerenciar,
   tratarGerenciar,
