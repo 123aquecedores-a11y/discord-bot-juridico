@@ -907,15 +907,43 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
         cargoAssinante: 'Juiz de Direito',
       }).catch(err => { console.error('Falha ao gerar PNG da intimação:', err.message); return null; });
 
-      await canal.send({
-        content: documentos.textoIntimacao({
-          numero, rotulo: 'Petição', destinatarioId: peticao.requerenteId,
-          teor: extras.motivo,
-          prazo: '24 (vinte e quatro) horas, contadas desta intimação.',
-          consequencia: 'Indeferimento automático do pedido, por ausência de comprovação.',
-        }),
-        ...(pngIntimacao ? { files: [{ attachment: pngIntimacao, name: `Intimacao-${numero}.png` }] } : {}),
-      });
+      // A DILIGÊNCIA TAMBÉM É DECISÃO DO JUIZ: o que ele exige e por quê é teor, e ia cru ao
+      // canal do advogado. Mesmo tratamento do deferimento/indeferimento.
+      const diligenciaGated = require('../utils/pecas').modoDoProcesso(peticao) === 'ingame';
+      let emissaoDiligencia = { ok: false };
+      if (diligenciaGated && peticao.requerenteId) {
+        emissaoDiligencia = await require('../utils/emissaoPeca').emitirAtoComoPeca(
+          { guild, autorId: executorId || peticao.juiz },
+          {
+            tipo: 'decisao_peticao', processoNumero: numero,
+            texto: `Resultado: Diligência
+
+${extras.motivo || '—'}
+
+Prazo: 24 (vinte e quatro) horas, contadas desta intimação.
+Consequência do não atendimento: indeferimento automático do pedido, por ausência de comprovação.`,
+            destinatarios: [{ papel: 'Requerente' }], assinante: nomeAssinante,
+          },
+        ).catch(err => { console.error('Falha ao emitir a peça da diligência:', err.message); return { ok: false, razao: err.message }; });
+      }
+
+      if (diligenciaGated && emissaoDiligencia.ok) {
+        await canal.send({
+          content: `📌 **Diligência determinada** por <@${executorId || peticao.juiz}> na petição **${numero}**.
+`
+            + `🔒 O que foi exigido fica restrito até a entrega pessoal a <@${peticao.requerenteId}>. O prazo de **24 horas** corre da entrega.`,
+        });
+      } else {
+        await canal.send({
+          content: documentos.textoIntimacao({
+            numero, rotulo: 'Petição', destinatarioId: peticao.requerenteId,
+            teor: extras.motivo,
+            prazo: '24 (vinte e quatro) horas, contadas desta intimação.',
+            consequencia: 'Indeferimento automático do pedido, por ausência de comprovação.',
+          }),
+          ...(pngIntimacao ? { files: [{ attachment: pngIntimacao, name: `Intimacao-${numero}.png` }] } : {}),
+        });
+      }
       // Não é terminal — reposta os botões pra não precisar rolar o canal inteiro pra achar
       // os antigos assim que o documento pedido for anexado.
       await canal.send({
@@ -938,10 +966,46 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
         cargoAssinante: 'Juiz de Direito',
       }).catch(err => { console.error('Falha ao gerar PNG da sentença de petição:', err.message); return null; });
 
-      await canal.send({
-        content: documentos.textoSentencaPeticao({ peticao, status, motivo: extras.motivo }),
-        ...(pngSentencaPeticao ? { files: [{ attachment: pngSentencaPeticao, name: `Sentenca-${numero}.png` }] } : {}),
-      });
+      // TEOR DA DECISÃO — em modo in-game vira PEÇA, entregue em mão ao requerente.
+      //
+      // Antes o texto da sentença (resultado E fundamentação) mais o PNG iam direto ao canal, que
+      // tem o advogado requerente dentro. Era o único ato decisório do bot que não passava pela
+      // entrega em cena — e, sendo a decisão, o mais importante de todos.
+      //
+      // O canal recebe METADADO: quem decidiu e que há decisão a receber. O resultado continua no
+      // Diário (card, sem anexo). O teor sai só pelo selo.
+      const decisaoGated = require('../utils/pecas').modoDoProcesso(peticao) === 'ingame';
+      let emissaoDecisao = { ok: false };
+      if (decisaoGated && peticao.requerenteId) {
+        emissaoDecisao = await require('../utils/emissaoPeca').emitirAtoComoPeca(
+          { guild, autorId: executorId || peticao.juiz },
+          {
+            tipo: 'decisao_peticao', processoNumero: numero,
+            texto: `Resultado: ${status}
+
+${extras.motivo || '—'}`,
+            destinatarios: [{ papel: 'Requerente' }], assinante: nomeAssinante,
+          },
+        ).catch(err => { console.error('Falha ao emitir a peça da decisão:', err.message); return { ok: false, razao: err.message }; });
+      }
+
+      if (decisaoGated && emissaoDecisao.ok) {
+        await canal.send({
+          content: `⚖️ **Decisão proferida** por <@${executorId || peticao.juiz}> na petição **${numero}**.
+`
+            + `🔒 O teor fica restrito até a entrega pessoal a <@${peticao.requerenteId}>. Use **Entregar agora** acima quando estiverem em cena.`,
+        });
+      } else {
+        // Modo aberto/legado (ou falha na emissão): caminho de sempre. Peça que falha não pode
+        // fazer a decisão sumir dos autos — ela já está gravada.
+        await canal.send({
+          content: documentos.textoSentencaPeticao({ peticao, status, motivo: extras.motivo })
+            + (decisaoGated ? `
+
+⚠️ A peça de entrega não pôde ser gerada (${emissaoDecisao.razao || 'motivo desconhecido'}) — o teor foi publicado no caminho comum. Avise a staff.` : ''),
+          ...(pngSentencaPeticao ? { files: [{ attachment: pngSentencaPeticao, name: `Sentenca-${numero}.png` }] } : {}),
+        });
+      }
       // Nota de cumprimento — segue a sentença acima, mas em registro de cartório (não é
       // mais um ato decisório, é o sistema executando o que já foi decidido). Por isso o
       // texto evita jargão de Discord ("apelido", "servidor") e fala em nome civil/registro.
@@ -957,7 +1021,11 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
             .setDescription(extrasLinhas.join('\n'))],
         });
       }
-      await canais.arquivarCanal(canal);
+      // ARQUIVAR SÓ QUANDO NÃO HÁ ENTREGA PENDENTE. Arquivar o canal com a peça por entregar
+      // mataria o botão "Entregar agora" — a decisão existiria e ninguém conseguiria entregá-la.
+      // Com entrega pendente, quem fecha é a válvula (varredura periódica) ou o próprio ato de
+      // entregar; até lá o canal fica de pé.
+      if (!(decisaoGated && emissaoDecisao.ok)) await canais.arquivarCanal(canal);
 
       // NÍVEL 1 — decisão de pedido administrativo publica no Diário na hora (deferido ou indeferido).
       // Efeito automático por natureza do ato: a engine decide nível/card/idempotência; aqui só

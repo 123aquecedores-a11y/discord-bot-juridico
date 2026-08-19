@@ -152,6 +152,10 @@ function ocupanteAtual(processoTabela, registro, destinatario) {
   if (!destinatario) return null;
   if (destinatario.papel === 'Advogado') return ocupanteDaHabilitacao(registro, destinatario.habilitacaoId);
   if (destinatario.papel === 'Autor') return ocupanteAutor(registro);
+  // REQUERENTE — o advogado que protocolou a petição administrativa. Não é slot de ticket (a
+  // tabela `peticoes` só tem Juiz/Promotor/Desembargador) e não é habilitação (petição não tem
+  // habilitações). É PARTE: nenhum cargo o cobre, é sempre a pessoa que protocolou.
+  if (destinatario.papel === 'Requerente') return registro.requerenteId || null;
   return ocupanteDoSlot(processoTabela, registro, destinatario.papel);
 }
 
@@ -213,6 +217,11 @@ function classificarDestinatarioIntimacao(processo, { discordId = null, parteId 
 // vazamento: a intimação dirigida ao advogado de uma parte não pode ser recebida pelo advogado da
 // outra. Só Juiz/Promotor/Desembargador/Procurador compartilham.
 const CARGOS_QUE_COBREM = { Juiz: 'Juiz', Promotor: 'Promotor', Desembargador: 'Desembargador', Procurador: 'Procurador' };
+
+// Cargos que enxergam o teor de qualquer peça gated sem precisar de entrega em cena. Lista FECHADA
+// e igual à de PAPEIS_COMPARTILHADOS por uma razão só: são os órgãos do Estado que despacham no
+// fórum. Advogado, Autor, Réu e Delegado NÃO entram — ver o comentário em podeVerTeor.
+const CARGOS_QUE_VEEM_TEOR = ['Juiz', 'Promotor', 'Desembargador', 'Procurador'];
 
 function ocupaDestinatario(processoTabela, registro, destinatario, usuarioId) {
   if (!usuarioId || !destinatario) return false;
@@ -529,6 +538,21 @@ function podeVerTeor(usuarioId, pecaRef, processoOpcional = null, { ehStaff = fa
   if (ehStaff || isSupervisao(usuarioId)) return true;
   // O autor vê o que escreveu.
   if (peca.autorId === usuarioId) return true;
+
+  // MAGISTRATURA E MP VEEM DIRETO (decisão do operador, 19/08/2026).
+  //
+  // Antes, um Juiz só enxergava a denúncia depois de recebê-la em cena, e um Promotor só via a
+  // sentença depois que ela lhe fosse entregue. Isso tratava órgão do Estado como parte privada: o
+  // fórum é o lugar onde essas pessoas já estão, e o teor circula entre elas por dever de ofício.
+  //
+  // O GATE NÃO SE PERDE, porque não era contra eles que ele existia. Ele existe para obrigar o
+  // ENCONTRO EM CENA com quem está fora do fórum — o advogado e as partes, que continuam sem ver
+  // nada até a entrega registrada. É essa metade que sustenta a feature inteira.
+  //
+  // DELEGADO FICA DE FORA, de propósito: nos casos dele vale identidade estrita (é ele quem já
+  // aparece por `autorId` acima quando emite o relatório). Ele não é magistratura nem MP, e abrir
+  // o teor das decisões para a polícia seria alargar o acesso sem nenhuma razão de ofício.
+  if (CARGOS_QUE_VEEM_TEOR.some(cargo => rh.temCargo(usuarioId, cargo))) return true;
 
   const processo = processoOpcional || db.buscarPorNumero(peca.processoTabela, peca.processoNumero);
   if (!processo) return false;

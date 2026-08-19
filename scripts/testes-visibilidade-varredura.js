@@ -335,6 +335,99 @@ console.log('\nD) A varredura pega o vazamento quando ele aparece (auto-teste)')
   ok(!chamaFuncaoArriscada(chamaSegura), 'D: função segura (abrirEntrega) não aciona o gatilho sozinha');
 }
 
+// ---------------------------------------------------------------------------
+console.log('\nE) DECISÕES DO JUIZ — o teor não pode ir cru para o canal da parte');
+// ---------------------------------------------------------------------------
+// AS REGRAS A–D PROTEGEM A TABELA `pecas`. Elas não enxergavam nada aqui, e é por isso que este
+// bloco existe.
+//
+// A decisão do juiz não nascia como peça: era um `canal.send` com o texto formal montado por
+// utils/documentos.js, num canal onde o advogado/requerente está dentro. O gate inteiro ficava de
+// fora justamente do documento que mais importa do rito.
+//
+// A REGRA: todo ponto que publica TEOR DE DECISÃO tem que bifurcar por modo — em processo `ingame`
+// vira peça com selo; em `aberto`/`legado` segue como sempre, porque lá não há entrega em cena a
+// proteger. O que a varredura procura é a BIFURCAÇÃO: publicar teor sem ela é vazamento.
+{
+  // Cada entrada é um ponto REAL de publicação de decisão. Acrescentar decisão nova sem passar por
+  // aqui é o que o canário no fim deste bloco impede.
+  const DECISOES = [
+    { arquivo: 'commands/peticao.js', funcao: 'finalizarDecisao', texto: 'textoSentencaPeticao',
+      rotulo: 'decisão da petição administrativa (deferir/indeferir)' },
+    { arquivo: 'commands/peticao.js', funcao: 'finalizarDecisao', texto: 'textoIntimacao',
+      rotulo: 'diligência da petição administrativa' },
+    { arquivo: 'commands/processo.js', funcao: 'executarSentenca', texto: 'textoSentenca',
+      rotulo: 'sentença do processo' },
+  ];
+
+  // Recorta pela PRÓXIMA declaração, nunca por número fixo de caracteres: janela fixa já cortou
+  // trecho no meio neste projeto e produziu falha que não era do código.
+  function corpoDe(fonte, nome) {
+    const decl = new RegExp(`^(?:async function ${nome}\\s*\\(|  async ${nome}\\s*\\(|function ${nome}\\s*\\()`, 'm');
+    const i = fonte.search(decl);
+    if (i < 0) return null;
+    const resto = fonte.slice(i + 1);
+    const prox = resto.search(/\n(?:async function |function |  async [a-zA-Z]+\(|module\.exports)/);
+    return prox < 0 ? resto : resto.slice(0, prox);
+  }
+
+  // CONTAGEM, não presença. A primeira versão desta regra perguntava "há bifurcação nesta função?"
+  // — e passava verde num teste de mutação em que eu removi a bifurcação de UMA das duas decisões:
+  // a bifurcação da outra, na mesma função, respondia pelas duas.
+  //
+  // Agora cada publicação de teor precisa da SUA bifurcação. Uma função que publica dois teores e
+  // tem uma bifurcação só está vazando um deles, e isso agora aparece.
+  const CONTA = (corpo, re) => (corpo.match(re) || []).length;
+
+  const porFuncao = new Map();
+  for (const d of DECISOES) {
+    const chave = `${d.arquivo}#${d.funcao}`;
+    if (!porFuncao.has(chave)) porFuncao.set(chave, []);
+    porFuncao.get(chave).push(d);
+  }
+
+  let examinadas = 0;
+  for (const [chave, grupo] of porFuncao) {
+    const [arquivo, funcao] = chave.split('#');
+    const fonte = fs.readFileSync(path.join(RAIZ, arquivo), 'utf-8');
+    const corpo = corpoDe(fonte, funcao);
+    if (corpo === null) { ok(false, `E: ${funcao}`, `função não encontrada em ${arquivo}`); continue; }
+
+    for (const d of grupo) {
+      examinadas++;
+      ok(corpo.includes(d.texto),
+        `E${examinadas}z: o ponto de publicação de "${d.rotulo}" continua onde o inventário diz`,
+        `${d.texto} não achado em ${funcao}`);
+    }
+
+    // Uma bifurcação POR decisão publicada nesta função.
+    const bifurcacoes = CONTA(corpo, /Gated\s*=\s*require\('\.\.\/utils\/pecas'\)\.modoDoProcesso\(|Gated\s*=\s*require\('\.\/pecas'\)\.modoDoProcesso\(/g);
+    ok(bifurcacoes >= grupo.length,
+      `E-${funcao}: as ${grupo.length} decisão(ões) publicadas aqui têm bifurcação por modo — uma para cada`,
+      `${bifurcacoes} bifurcação(ões) para ${grupo.length} publicação(ões)`);
+
+    // E cada bifurcação precisa desembocar numa PEÇA, não num segundo jeito de postar o teor.
+    ok(CONTA(corpo, /emitirAtoComoPeca\(/g) >= grupo.length,
+      `E-${funcao}b: ...e cada uma emite peça com selo no caminho gated`,
+      `${CONTA(corpo, /emitirAtoComoPeca\(/g)} emissão(ões) para ${grupo.length} publicação(ões)`);
+  }
+
+  // CANÁRIO — varredura que lê zero passa verde e mente. Já aconteceu três vezes neste projeto.
+  ok(examinadas === DECISOES.length,
+    `Ez: a varredura examinou as ${DECISOES.length} decisões (não passou vazia)`, `examinou ${examinadas}`);
+
+  // A OUTRA PORTA da decisão: o Diário. Publicar o resultado é certo e continua; mandar o PNG da
+  // decisão junto foi o vazamento de 19/08/2026. testes-diario-sem-teor.js guarda isso em detalhe —
+  // aqui fica a asserção estrutural, para a varredura de visibilidade também enxergar essa saída.
+  const fontesDiario = ['commands/peticao.js', 'commands/processo.js', 'utils/supervisao.js', 'utils/diarioAtos.js']
+    .map(f => [f, fs.readFileSync(path.join(RAIZ, f), 'utf-8')]);
+  ok(fontesDiario.every(([, src]) => src.length > 500), 'Ez2: as fontes do Diário foram lidas (scan não vazio)');
+  for (const [nome, src] of fontesDiario) {
+    ok(!/(publicarNoDiario|publicarAto)\([^;]*files:\s*png/i.test(src),
+      `E-diario-${nome}: não manda PNG de decisão para o Diário`);
+  }
+}
+
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
 if (falhas.length) {
   console.log('\nComo corrigir: leia o teor pela camada, nunca da tabela.');
