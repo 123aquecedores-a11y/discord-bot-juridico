@@ -240,7 +240,7 @@ async function verificarPeticoesSemJuiz(client, guild) {
   const peticoes = db.todos('peticoes', p => p.status === 'Aguardando sorteio de juiz' && !p.juiz);
 
   for (const p of peticoes) {
-    const juizId = rh.sortearJuiz({ excluirIds: [p.requerenteId, p.discordIdCliente].filter(Boolean) });
+    const juizId = rh.sortearJuiz({ excluirIds: [p.requerenteId].filter(Boolean) });
     if (!juizId) { // sem Juiz elegível — avisa e tenta de novo no próximo ciclo
       await avisarCasoSemJuiz(client, guild, { tabela: 'peticoes', numero: p.numero, canalId: p.canalId });
       continue;
