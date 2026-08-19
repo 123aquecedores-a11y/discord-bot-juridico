@@ -156,6 +156,24 @@ const TIPOS = {
   //
   // `emissor` é 'Advogado' só para o rodapé do documento; quem PODE recorrer continua decidido
   // por podeRecorrer (advogado da parte ou Promotor), como sempre foi.
+  // DECISÃO DO JUIZ na petição administrativa (deferir / indeferir / diligência).
+  //
+  // Antes o teor da decisão — resultado E fundamentação, mais o PNG — era postado direto no
+  // canal da petição, que tem o advogado requerente dentro. A decisão do juiz é o documento que
+  // mais importa do rito inteiro, e era o único que não passava pela entrega em cena.
+  //
+  // Destinatário é o REQUERENTE (o advogado que protocolou), não um papel de ticket: petição não
+  // tem habilitações, e quem recebe a decisão é sempre quem pediu.
+  decisao_peticao: {
+    rotulo: 'Decisão',
+    titulo: 'DECISÃO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Juiz',
+    destinatarios: ['Requerente'],
+    tabela: 'peticoes',
+    ativo: true,
+  },
+
   razoes_recurso: {
     rotulo: 'Razões de recurso',
     titulo: 'RAZÕES DE RECURSO',
@@ -669,15 +687,41 @@ function qualificacao(processo, processoTabela = 'processos') {
 // nenhum. O documento existia no banco e não havia como entregá-lo.
 //
 // Quem cria peça chama ISTO, nunca `pecas.gerar` sozinho.
-async function finalizarPeca(interaction, peca, processo, cfg, tipoChave) {
+// CONTEXTO DE EMISSÃO — nem toda peça nasce de um clique.
+//
+// A decisão do Juiz sobre uma petição também é proferida AUTOMATICAMENTE, por decurso de prazo
+// (utils/prazos.js): não há interaction, não há quem clicou. Exigir uma interaction aqui obrigaria
+// a duplicar o pipeline para o caminho automático — que é exatamente como nasce a segunda cópia
+// que depois diverge da primeira.
+//
+// Aceita uma interaction do discord.js OU `{ guild, autorId }` cru. Devolve sempre a mesma forma.
+function contextoDeEmissao(ctx) {
+  const guild = ctx.guild;
+  const autorId = (ctx.user && ctx.user.id) || ctx.autorId || null;
+  return {
+    guild,
+    autorId,
+    ehStaff: ctx.member ? permissoes.isAdmin(ctx) : false,
+    // Quem recebe a via para imprimir. No caminho automático não há `ctx.user`: busca pelo id.
+    async usuario() {
+      if (ctx.user) return ctx.user;
+      if (!guild || !autorId) return null;
+      const membro = await guild.members.fetch(autorId).catch(() => null);
+      return membro ? membro.user : null;
+    },
+  };
+}
+
+async function finalizarPeca(ctx, peca, processo, cfg, tipoChave) {
+  const ctxo = contextoDeEmissao(ctx);
   // O PNG vai para o EMISSOR, não para o canal: o canal do processo é compartilhado com o
   // destinatário, e postar ali entregaria o teor antes da cena (SPEC §6.1). Arquivo único —
   // a URL fica guardada e é ela que será liberada no recebimento, sem gerar segunda cópia (§3.7).
   // O teor sai pela camada, não do registro: renderizar é um ponto de saída como qualquer outro, e
   // quem acabou de escrever a peça é o autor — a permissão é conferida do mesmo jeito.
-  const acesso = pecas.paraRenderizacao(peca.numero, interaction.user.id, { ehStaff: permissoes.isAdmin(interaction) });
+  const acesso = pecas.paraRenderizacao(peca.numero, ctxo.autorId, { ehStaff: ctxo.ehStaff });
   const renderizados = acesso.ok
-    ? await renderizar(interaction.guild, { ...acesso.peca, qualificacao: peca.qualificacao, assinante: peca.assinante, codigoArquivo: peca.codigoArquivo }, cfg).catch(err => {
+    ? await renderizar(ctxo.guild, { ...acesso.peca, qualificacao: peca.qualificacao, assinante: peca.assinante, codigoArquivo: peca.codigoArquivo }, cfg).catch(err => {
       console.error(`[peca] falha ao renderizar ${peca.numero}:`, err.message);
       return null;
     })
@@ -685,21 +729,21 @@ async function finalizarPeca(interaction, peca, processo, cfg, tipoChave) {
 
   let entregue = false;
   if (renderizados) {
-    entregue = await enviarAoEmissor(interaction, peca, renderizados).catch(() => false);
+    entregue = await enviarAoEmissor(ctxo, peca, renderizados).catch(() => false);
     // Registra METADADO da entrega, nunca a URL do anexo: URL do CDN do Discord é link assinado e
     // expira em 24h. O original é o registro no banco; o PNG se regera do texto quando precisar.
     if (entregue) pecas.registrarEnvio(peca.numero, { totalPaginas: renderizados[0].paginas.length });
   }
 
-  await postarNoCanal(interaction, peca, processo, cfg);
-  await andamentos.registrar(interaction.guild, peca.processoNumero, {
+  await postarNoCanal(ctxo, peca, processo, cfg);
+  await andamentos.registrar(ctxo.guild, peca.processoNumero, {
     tipo: 'peca_emitida',
     // Título genérico por tipo: descritivo demais entregaria o teor sem abrir o documento (SPEC §10).
     titulo: `📄 ${cfg.rotulo} — ${peca.numero}`,
     detalhe: peca.gated
       ? 'Aguardando entrega pessoal. O teor fica restrito ao emissor até o recebimento.'
       : 'Documento disponível às partes.',
-    executorId: interaction.user.id,
+    executorId: ctxo.autorId,
     metadata: { peca: peca.numero, tipo: tipoChave, modo: peca.modoEntrega },
   }).catch(() => {});
 
@@ -713,7 +757,8 @@ async function finalizarPeca(interaction, peca, processo, cfg, tipoChave) {
 // pela metade.
 //
 // Devolve { ok, peca, paginas, entregue } ou { ok:false, razao }.
-async function emitirAtoComoPeca(interaction, { tipo, processoNumero, texto, destinatarios, assinante }) {
+async function emitirAtoComoPeca(ctx, { tipo, processoNumero, texto, destinatarios, assinante }) {
+  const ctxo = contextoDeEmissao(ctx);
   const cfg = TIPOS[tipo];
   if (!cfg) return { ok: false, razao: `tipo de peça desconhecido: ${tipo}` };
   if (!destinatarios || !destinatarios.length) return { ok: false, razao: 'sem destinatário para a entrega' };
@@ -723,14 +768,14 @@ async function emitirAtoComoPeca(interaction, { tipo, processoNumero, texto, des
 
   const r = pecas.gerar({
     processoTabela: cfg.tabela, processoNumero, tipo,
-    autorId: interaction.user.id, autorPapel: cfg.emissor, texto,
+    autorId: ctxo.autorId, autorPapel: cfg.emissor, texto,
     qualificacao: qualificacao(processo, cfg.tabela),
-    assinante: assinante || await nomeExibicao(interaction.guild, interaction.user.id),
+    assinante: assinante || await nomeExibicao(ctxo.guild, ctxo.autorId),
     destinatarios,
   });
   if (!r.ok) return r;
 
-  const { paginas, entregue } = await finalizarPeca(interaction, r.peca, processo, cfg, tipo);
+  const { paginas, entregue } = await finalizarPeca(ctx, r.peca, processo, cfg, tipo);
   return { ok: true, peca: r.peca, paginas, entregue };
 }
 
@@ -767,8 +812,9 @@ async function renderizar(guild, peca, cfg) {
 // NENHUMA URL É GUARDADA. O anexo do Discord é conveniência de exibição, não o arquivo dos autos —
 // as URLs do CDN expiram em 24h e produziriam link morto. O original é o registro no banco, e o PNG
 // é regerado do texto sempre que precisar (SPEC §3.7).
-async function enviarAoEmissor(interaction, peca, renderizados) {
-  const dm = await interaction.user.createDM().catch(() => null);
+async function enviarAoEmissor(ctxo, peca, renderizados) {
+  const usuario = await ctxo.usuario();
+  const dm = usuario ? await usuario.createDM().catch(() => null) : null;
   if (!dm) return false;
 
   for (const { dest, paginas } of renderizados) {
@@ -801,8 +847,8 @@ async function enviarAoEmissor(interaction, peca, renderizados) {
 
 // O canal vê METADADOS, nunca o teor (SPEC §8). O botão `Receber` aparece inativo — é o que diz ao
 // destinatário que existe algo dirigido a ele, sem entregar o conteúdo (SPEC §6.1).
-async function postarNoCanal(interaction, peca, processo, cfg) {
-  const canal = processo.canalId ? await interaction.guild.channels.fetch(processo.canalId).catch(() => null) : null;
+async function postarNoCanal(ctxo, peca, processo, cfg) {
+  const canal = processo.canalId ? await ctxo.guild.channels.fetch(processo.canalId).catch(() => null) : null;
   if (!canal) return;
 
   const embed = new EmbedBuilder()
