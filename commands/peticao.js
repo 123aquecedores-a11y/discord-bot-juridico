@@ -8,7 +8,7 @@ const modoEntrega = require('../utils/modoEntrega');
 const canais = require('../utils/canais');
 const rh = require('../utils/rh');
 const { proximoNumero } = require('../utils/numeracao');
-const { temCargo, isSuperStaff, isAdmin, papelInstitucional } = require('../utils/permissoes');
+const { temCargo, isSuperStaff, isAdmin, papelInstitucional , podeAtuarNoCaso, recusaDoCaso } = require('../utils/permissoes');
 const { truncar, extrairMencaoOuId } = require('../utils/texto');
 const cruzamento = require('../utils/cruzamento');
 const ficha = require('../utils/ficha');
@@ -994,8 +994,8 @@ async function finalizarDecisao(guild, numero, status, extras = {}, executorId =
 async function decidir(interaction, numero, acao) {
   const peticao = db.buscarPorNumero('peticoes', numero);
   if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
-  if (interaction.user.id !== peticao.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz responsável por esta petição pode decidir — no caso, <@${peticao.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, peticao, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${peticao.juiz}>.`, ephemeral: true });
   }
   // "Diligência" não é terminal — o Juiz pode (e deve) decidir de novo depois que o documento
   // pedido for anexado na conversa. Só bloqueia se já foi Deferido/Indeferido de verdade.
@@ -1044,8 +1044,8 @@ async function decidir(interaction, numero, acao) {
 async function confirmarDeferimento(interaction, numero) {
   const peticao = db.buscarPorNumero('peticoes', numero);
   if (!peticao) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
-  if (interaction.user.id !== peticao.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz responsável por esta petição pode decidir — no caso, <@${peticao.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, peticao, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${peticao.juiz}>.`, ephemeral: true });
   }
   if (!['Pendente', 'Diligência'].includes(peticao.status)) {
     return interaction.update({ content: 'Essa petição já foi decidida (deferida ou indeferida).', components: [] });
@@ -1073,8 +1073,8 @@ async function processarDecisaoRisco(interaction, numero) {
   // de mérito reverifica o Juiz responsável, não confia só na trava dos passos anteriores.
   const peticaoAlvo = db.buscarPorNumero('peticoes', numero);
   if (!peticaoAlvo) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
-  if (interaction.user.id !== peticaoAlvo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz responsável por esta petição pode decidir — no caso, <@${peticaoAlvo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, peticaoAlvo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${peticaoAlvo.juiz}>.`, ephemeral: true });
   }
 
   const nivel = Number(interaction.values[0]);
@@ -1088,8 +1088,8 @@ async function processarDecisaoRisco(interaction, numero) {
 async function processarModalDecisao(interaction, numero, acao) {
   const peticaoAlvo = db.buscarPorNumero('peticoes', numero);
   if (!peticaoAlvo) return interaction.reply({ content: 'Petição não encontrada.', ephemeral: true });
-  if (interaction.user.id !== peticaoAlvo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz responsável por esta petição pode decidir — no caso, <@${peticaoAlvo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, peticaoAlvo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${peticaoAlvo.juiz}>.`, ephemeral: true });
   }
 
   const motivo = interaction.fields.getTextInputValue('motivo');

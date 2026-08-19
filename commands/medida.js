@@ -1,7 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const db = require('../database/db');
 const { proximoNumero } = require('../utils/numeracao');
-const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
+const { temCargo, isAdmin, isSuperStaff , podeAtuarNoCaso, recusaDoCaso } = require('../utils/permissoes');
 const rh = require('../utils/rh');
 const acumuloDePapeis = require('../utils/acumuloDePapeis');
 const canais = require('../utils/canais');
@@ -142,8 +142,8 @@ function botaoSolicitarMedidaDireta(numero) {
 async function abrirSolicitarMedidaDireta(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Promotor deste processo pode solicitar medida — no caso, <@${processo.promotor}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
+    return interaction.reply({ content: `Só um(a) Promotor(a) pode solicitar medida. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
   }
   if (processo.tipo !== 'Penal') {
     return interaction.reply({ content: 'Medida coercitiva só se aplica a processo penal.', ephemeral: true });
@@ -234,8 +234,8 @@ async function criarSolicitacaoMedidaDireta(interaction, chave) {
   const [numero, tipoValue, destinatarioRef] = chave.split('#');
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Promotor deste processo pode solicitar medida — no caso, <@${processo.promotor}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
+    return interaction.reply({ content: `Só um(a) Promotor(a) pode solicitar medida. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
   }
 
   const tipoLivre = tipoValue === 'outro' ? interaction.fields.getTextInputValue('tipoLivre') : null;
@@ -264,8 +264,8 @@ async function criarSolicitacaoMedidaDireta(interaction, chave) {
 async function deferirMedidaDireta(interaction, numero) {
   const medida = db.buscarPorNumero('medidas', numero);
   if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-  if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode decidir — no caso, <@${medida.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${medida.juiz}>.`, ephemeral: true });
   }
   if (medida.status !== 'Aprovada - aguardando juiz') {
     return interaction.reply({ content: 'Esta solicitação já foi decidida.', ephemeral: true });
@@ -290,8 +290,8 @@ async function deferirMedidaDireta(interaction, numero) {
 async function indeferirMedidaDireta(interaction, numero) {
   const medida = db.buscarPorNumero('medidas', numero);
   if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-  if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode decidir — no caso, <@${medida.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${medida.juiz}>.`, ephemeral: true });
   }
   if (medida.status !== 'Aprovada - aguardando juiz') {
     return interaction.reply({ content: 'Esta solicitação já foi decidida.', ephemeral: true });
@@ -685,7 +685,7 @@ module.exports = {
   async aprovar(interaction, numero) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.promotor && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'promotor')) {
       return interaction.reply({ content: `Só o Promotor responsável por esta medida pode decidir — no caso, <@${medida.promotor}>.`, ephemeral: true });
     }
     return interaction.showModal(modalFundamentacao(`painel:modal:medida:aprovarmp:${numero}`, 'Aprovar pedido — fundamentação', 'Fundamentação do MP'));
@@ -694,7 +694,7 @@ module.exports = {
   async processarAprovacaoMP(interaction, numero) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.promotor && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'promotor')) {
       return interaction.reply({ content: `Só o Promotor responsável por esta medida pode decidir — no caso, <@${medida.promotor}>.`, ephemeral: true });
     }
     const fundamentacao = interaction.fields.getTextInputValue('fundamentacao');
@@ -729,7 +729,7 @@ module.exports = {
   async negar(interaction, numero) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.promotor && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'promotor')) {
       return interaction.reply({ content: `Só o Promotor responsável por esta medida pode decidir — no caso, <@${medida.promotor}>.`, ephemeral: true });
     }
 
@@ -785,7 +785,7 @@ module.exports = {
   async referendar(interaction, numero) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode referendá-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
     return interaction.showModal(modalFundamentacao(`painel:modal:medida:referendar:${numero}`, 'Referendar — fundamentação', 'Fundamentação do Juízo'));
@@ -796,7 +796,7 @@ module.exports = {
   async processarReferendo(interaction, numero, fundamentacaoOverride) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode referendá-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
     const fundamentacaoJuiz = fundamentacaoOverride !== undefined ? fundamentacaoOverride : interaction.fields.getTextInputValue('fundamentacao');
@@ -821,7 +821,7 @@ module.exports = {
   async reemitirMandado(interaction, numero) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode reemitir o mandado — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
     if (medida.status !== 'Deferida') {
@@ -839,7 +839,7 @@ module.exports = {
   async abrirModalNegarJuiz(interaction, numero) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode decidi-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
     return interaction.showModal(modalFundamentacao(`painel:modal:medida:negarjuiz:${numero}`, 'Negar provimento — fundamentação', 'Fundamentação do Juízo'));
@@ -848,7 +848,7 @@ module.exports = {
   async negarJuiz(interaction, numero, fundamentacaoOverride) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode decidi-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
     const fundamentacaoJuiz = fundamentacaoOverride !== undefined ? fundamentacaoOverride : interaction.fields.getTextInputValue('fundamentacao');
@@ -885,7 +885,7 @@ module.exports = {
   async confirmarDecisaoMedida(interaction, numero, tipo) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.juiz && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
       return interaction.reply({ content: `Só o Juiz sorteado para esta medida pode decidi-la — no caso, <@${medida.juiz}>.`, ephemeral: true });
     }
     const fundamentacao = interaction.fields.getTextInputValue('fundamentacao');
@@ -1022,7 +1022,7 @@ module.exports = {
   async abrirProcesso(interaction, numero) {
     const medida = db.buscarPorNumero('medidas', numero);
     if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-    if (interaction.user.id !== medida.promotor && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, medida, 'promotor')) {
       return interaction.reply({ content: `Só o Promotor responsável por esta medida pode abrir o processo — no caso, <@${medida.promotor}>.`, ephemeral: true });
     }
     if (medida.processoVinculado) {

@@ -2,9 +2,10 @@ const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, Butt
 const db = require('../database/db');
 const { proximoNumero } = require('../utils/numeracao');
 const modoEntrega = require('../utils/modoEntrega');
-const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
+const { temCargo, isAdmin, isSuperStaff , podeAtuarNoCaso, recusaDoCaso } = require('../utils/permissoes');
 const rh = require('../utils/rh');
 const acumuloDePapeis = require('../utils/acumuloDePapeis');
+const atosPorCargo = require('../utils/atosPorCargo');
 const canais = require('../utils/canais');
 const config = require('../config');
 const { penaTexto, crimeLabel, resolverCrimesTexto, normalizarCrime } = require('../utils/crimesTexto');
@@ -219,8 +220,8 @@ async function confirmarParecerMp(interaction, chave) {
   const [numero, acao] = chave.split('#');
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Promotor responsável por este processo pode decidir — no caso, <@${processo.promotor}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
+    return interaction.reply({ content: `Só um(a) Promotor(a) pode decidir. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
   }
 
   const parecer = interaction.fields.getTextInputValue('parecer');
@@ -267,8 +268,8 @@ async function executarParecerMp(interaction, numero, modo) {
   if (!d) return interaction.reply({ content: 'A prévia do parecer expirou. Refaça a ação.', ephemeral: true }).catch(() => {});
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true }).catch(() => {});
-  if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Promotor responsável por este processo pode decidir — no caso, <@${processo.promotor}>.`, ephemeral: true }).catch(() => {});
+  if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
+    return interaction.reply({ content: `Só um(a) Promotor(a) pode decidir. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true }).catch(() => {});
   }
 
   // Defer antes do PNG (Puppeteer) — mesma razão de salvarSentenca: sem isso a janela de 3s
@@ -1141,8 +1142,8 @@ async function anexarContestacao(interaction, chave) {
 async function decretarRevelia(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode decretar revelia — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decretar revelia. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   if (processo.status !== 'Aguardando contestação') {
     return interaction.reply({ content: `Revelia só pode ser decretada enquanto o processo aguarda contestação (status atual: "${processo.status}").`, ephemeral: true });
@@ -1181,8 +1182,8 @@ function botaoConcluirInstrucao(numero) {
 async function requererNovasProvas(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode requerer novas provas — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode requerer novas provas. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   if (processo.status !== 'Concluso para julgamento') {
     return interaction.reply({ content: `Este processo não está concluso para julgamento no momento (status atual: "${processo.status}").`, ephemeral: true });
@@ -1208,8 +1209,8 @@ async function requererNovasProvas(interaction, numero) {
 async function concluirInstrucaoNovamente(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode concluir a instrução — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode concluir a instrução. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   if (processo.status !== 'Em instrução') {
     return interaction.reply({ content: `Este processo não está em instrução no momento (status atual: "${processo.status}").`, ephemeral: true });
@@ -1237,11 +1238,29 @@ function processoPublico(p) {
   return p.status !== 'Aguardando decisão do MP' && !!p.intimacaoReuCumpridaEm;
 }
 
+// ACESSO AO PROCESSO. Ampliado em 19/08/2026 para incluir os quatro cargos de magistratura e MP —
+// sem isso, um juiz que pode JULGAR o caso de um colega não conseguia nem abrir os autos para ler.
+//
+// O QUE NÃO MUDOU, e é o que impede isto de virar vazamento:
+//   - ADVOGADO continua preso à própria habilitação aprovada naquele processo;
+//   - PÚBLICO continua sem acesso nenhum (esta função nem é consultada para ele);
+//   - o TEOR de peça gated continua governado por pecas.podeVerTeor, que é outra porta — abrir os
+//     autos não abre documento não entregue.
+// Magistratura e MP já viam tudo por supervisão quando eram Desembargador/Procurador; a mudança é
+// estender isso a Juiz e Promotor, que são justamente quem precisa agir.
 function temAcessoTotal(interaction, processo) {
   if (isAdmin(interaction) || isSuperStaff(interaction)) return true;
   const uid = interaction.user.id;
   if ([processo.delegado, processo.promotor, processo.juiz, processo.autor].includes(uid)) return true;
+  if (ehMagistraturaOuMp(interaction)) return true;
   return (processo.habilitacoes || []).some(h => h.advogadoId === uid && h.status === 'Aprovado');
+}
+
+// Os quatro cargos que compartilham atos e visão. Fonte única do escopo — quem for ampliar a
+// abertura um dia mexe AQUI, e não espalhado por cada função de acesso.
+function ehMagistraturaOuMp(interaction) {
+  return require('../utils/atosPorCargo').PAPEIS_COMPARTILHADOS
+    .some(cargo => temCargo(interaction, cargo));
 }
 
 // "Capa pública": o que aparece no canal "Advogar - Pegar Casos". No PENAL a capa é CEGA
@@ -1324,8 +1343,8 @@ async function intimarReu(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (processo.tipo !== 'Penal') return interaction.reply({ content: 'A intimação do réu com código de habilitação é do fluxo penal.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode intimar o réu — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode intimar o réu. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   await interaction.deferReply({ ephemeral: true });
 
@@ -1364,8 +1383,8 @@ async function intimarReu(interaction, numero) {
 async function marcarCitacaoCumprida(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode marcar a citação como cumprida — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode marcar a citação como cumprida. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   if (processo.citacaoCumpridaEm) {
     return interaction.reply({ content: 'A citação já estava marcada como cumprida.', ephemeral: true });
@@ -1388,8 +1407,8 @@ async function marcarCitacaoCumprida(interaction, numero) {
 async function marcarIntimacaoReuCumprida(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode marcar a intimação como cumprida — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode marcar a intimação como cumprida. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   if (processo.intimacaoReuCumpridaEm) {
     return interaction.reply({ content: 'A intimação do réu já estava marcada como cumprida.', ephemeral: true });
@@ -1509,7 +1528,7 @@ async function abrirSelectPapelParteTardia(interaction, numero) {
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (!podeAdicionarParteTardia(interaction, processo)) {
     const motivo = processo.juiz
-      ? `Só o Juiz deste processo pode adicionar parte tardia — no caso, <@${processo.juiz}>.`
+      ? `Só um(a) Juiz(a) pode adicionar parte tardia. Responsável registrado: <@${processo.juiz}>.`
       : `Só o Delegado responsável por este processo pode identificar réu nesta fase — no caso, <@${processo.delegado}>.`;
     return interaction.reply({ content: motivo, ephemeral: true });
   }
@@ -1756,8 +1775,8 @@ async function decidirHabilitacao(interaction, chave, aprovar) {
   const habId = Number(idTexto);
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode decidir habilitação — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir habilitação. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
 
   const habilitacoes = processo.habilitacoes || [];
@@ -1810,8 +1829,8 @@ async function decidirHabilitacao(interaction, chave, aprovar) {
 async function abrirGerenciarDefesa(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode gerenciar a defesa — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode gerenciar a defesa. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   const temAprovadas = (processo.habilitacoes || []).some(h => h.status === 'Aprovado');
   const row = new ActionRowBuilder().addComponents(
@@ -1827,8 +1846,8 @@ async function abrirGerenciarDefesa(interaction, numero) {
 async function abrirAdicionarAdvogado(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode habilitar advogados — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode habilitar advogados. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   const row = new ActionRowBuilder().addComponents(
     new UserSelectMenuBuilder().setCustomId(`painel:userselect:processo:addadvogado#${numero}`).setPlaceholder('Escolha o advogado a habilitar').setMaxValues(1),
@@ -1840,8 +1859,8 @@ async function abrirAdicionarAdvogado(interaction, numero) {
 async function adicionarAdvogadoSelecionado(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.update({ content: 'Processo não encontrado.', components: [] });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.update({ content: `Só o Juiz deste processo pode habilitar advogados — no caso, <@${processo.juiz}>.`, components: [] });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.update({ content: `Só um(a) Juiz(a) pode habilitar advogados. Responsável registrado: <@${processo.juiz}>.`, components: [] });
   }
   const advId = interaction.values[0];
   if (!advId) return interaction.update({ content: 'Nenhum advogado selecionado.', components: [] });
@@ -1878,8 +1897,8 @@ async function adicionarAdvogadoSelecionado(interaction, numero) {
 async function abrirRemoverAdvogado(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode remover advogados — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode remover advogados. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   const aprovadas = (processo.habilitacoes || []).filter(h => h.status === 'Aprovado');
   if (aprovadas.length === 0) return interaction.update({ content: 'Nenhum advogado habilitado neste processo ainda.', components: [] });
@@ -1902,8 +1921,8 @@ async function abrirRemoverAdvogado(interaction, numero) {
 async function removerHabilitacao(interaction, numero, habIdTexto) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode remover advogados — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode remover advogados. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
 
   const habilitacoes = processo.habilitacoes || [];
@@ -2007,8 +2026,8 @@ async function postarIntimacaoNoCanal({ guild, processo, numero, destinatarioId,
 async function abrirSelectDestinatarioIntimacao(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode emitir intimação — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode emitir intimação. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   return interaction.reply({
     content: 'Quem é o destinatário da intimação?',
@@ -2113,8 +2132,8 @@ async function confirmarIntimacaoGenerica(interaction, chave) {
   const [numero, destinatarioRef] = chave.split('#');
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode emitir intimação — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode emitir intimação. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
 
   const teor = interaction.fields.getTextInputValue('teor');
@@ -2138,8 +2157,8 @@ async function confirmarIntimacaoGenerica(interaction, chave) {
 async function abrirModalReceberEIntimar(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode receber a petição inicial — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode receber a petição inicial. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   const reuId = (processo.reus || [])[0];
   // Sem Discord, o réu ainda é conhecido por nome+RG (gravados na abertura) — vira a dica do campo
@@ -2246,8 +2265,8 @@ async function emitirIntimacao(interaction, numero) {
 async function arquivarCivil(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode arquivar a petição inicial — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode arquivar a petição inicial. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
 
   db.atualizar('processos', numero, { status: 'Arquivado' });
@@ -2430,8 +2449,8 @@ async function decidirPeticao(interaction, chave, deferir) {
   const peticaoId = Number(idTexto);
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode decidir petição — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir petição. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   const peticoesDoProcesso = processo.peticoes || [];
   const alvo = peticoesDoProcesso.find(p => p.id === peticaoId);
@@ -2962,8 +2981,8 @@ async function tratarManifestacaoMp(interaction, numero) {
   if (escolha === 'oferecer' || escolha === 'arquivar') {
     // Reusa o modal/parecer existente (modalParecerMp → confirmarParecerMp → executarParecerMp),
     // mantendo a trava de dono do caso (promotor do processo) — a decisão real segue no fluxo antigo.
-    if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
-      return interaction.reply({ content: `Só o Promotor responsável por este processo pode oferecer/arquivar — no caso, <@${processo.promotor}>.`, ephemeral: true });
+    if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
+      return interaction.reply({ content: `Só um(a) Promotor(a) pode oferecer/arquivar. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
     }
     // BLOCO D — a DENÚNCIA entra no gate; o arquivamento não. A diferença é o destinatário: a
     // denúncia é dirigida ao Juiz (que a recebe em cena), enquanto o arquivamento é ato interno do
@@ -3007,8 +3026,8 @@ async function salvarManifestacaoLivre(interaction, numero) {
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   // Só o Promotor responsável por ESTE processo (ou SuperStaff) manifesta/requer em nome do MP —
   // não qualquer membro do MP. Mesmo padrão de oferecer/arquivar em tratarManifestacaoMp.
-  if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Promotor responsável por este processo pode manifestar/requerer pelo MP — no caso, <@${processo.promotor}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
+    return interaction.reply({ content: `Só um(a) Promotor(a) pode manifestar/requerer pelo MP. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
   }
   const descricao = (interaction.fields.getTextInputValue('descricao') || '').trim();
   const ehRequerimento = (interaction.fields.getTextInputValue('tipo') || '').trim().toLowerCase().startsWith('req');
@@ -3066,8 +3085,8 @@ async function decidirRequerimentoMp(interaction, chave, deferir) {
   const reqId = Number(idTexto);
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode decidir o requerimento — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir o requerimento. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   const reqs = processo.requerimentosMp || [];
   const alvo = reqs.find(r => r.id === reqId);
@@ -3260,8 +3279,8 @@ async function validarDecisaoApelacao(interaction, numeroApelacao) {
     await interaction.reply({ content: 'Apelação não encontrada.', ephemeral: true });
     return null;
   }
-  if (interaction.user.id !== apelacao.desembargadorId && !isSuperStaff(interaction)) {
-    await interaction.reply({ content: `Só o Desembargador sorteado para esta apelação pode decidi-la — no caso, <@${apelacao.desembargadorId}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, apelacao, 'desembargadorId')) {
+    await interaction.reply({ content: `Só um(a) Desembargador(a) pode decidi-la. Responsável registrado: <@${apelacao.desembargadorId}>.`, ephemeral: true });
     return null;
   }
   if (apelacao.status !== 'Aguardando decisão') {
@@ -3467,7 +3486,7 @@ async function executarAcordao(interaction, numeroApelacao, modo) {
 async function salvarSentencaPorCrime(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
     return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processo.juiz}>.`, ephemeral: true });
   }
   const condenadosIds = rascunhoVeredicto.get(chaveDecisao(interaction.user.id, numero)) || [];
@@ -3504,8 +3523,23 @@ async function executarSentenca(interaction, numero, modo) {
   // se consuma AQUI, então revalida o Juiz antes de publicar, não só no salvarSentenca.
   const processoAlvo = db.buscarPorNumero('processos', numero);
   if (!processoAlvo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true }).catch(() => {});
-  if (interaction.user.id !== processoAlvo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processoAlvo.juiz}>.`, ephemeral: true }).catch(() => {});
+  if (!podeAtuarNoCaso(interaction, processoAlvo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode julgar. Responsável registrado: <@${processoAlvo.juiz}>.`, ephemeral: true }).catch(() => {});
+  }
+
+  // GUARDA DE COLISÃO. Enquanto só o titular julgava, dois cliques simultâneos eram improváveis;
+  // com qualquer juiz podendo julgar, dois magistrados podem clicar no mesmo instante — e sem trava
+  // sairiam DUAS sentenças, dois PNGs, dois andamentos e o canal seria arquivado duas vezes.
+  //
+  // A trava é por ESTADO JÁ GRAVADO, não por lock em memória: o bot reinicia e lock em memória
+  // morre junto. Se `sentenca` já está preenchida, o ato aconteceu — e quem chegou depois recebe o
+  // nome de quem fez, em vez de um silêncio que parece bug.
+  const jaJulgado = atosPorCargo.jaExecutado(processoAlvo, ['sentenca']);
+  if (jaJulgado) {
+    return interaction.reply({
+      content: atosPorCargo.mensagemJaFeito('O julgamento', { ...jaJulgado, porId: processoAlvo.executadoPorId || processoAlvo.juiz }),
+      ephemeral: true,
+    }).catch(() => {});
   }
   rascunhoDecisao.delete(chave);
 
@@ -3514,7 +3548,14 @@ async function executarSentenca(interaction, numero, modo) {
   await interaction.deferReply();
   const texto = await resolverTextoFinal(d, modo, 'texto');
   const { pena, regime, resultado, sentencaPorCrime } = d;
-  db.atualizar('processos', numero, { status: 'Encerrado', sentenca: texto, resultado, pena, regime, sentencaPorCrime: sentencaPorCrime || null, sentencaEm: new Date().toISOString() });
+  // O carimbo de execução grava QUEM REALMENTE julgou, que pode não ser o juiz titular do caso —
+  // sem ele o histórico diria "o juiz do processo julgou" quando quem julgou foi um colega
+  // cobrindo, e a auditoria ficaria mentindo. O titular continua registrado no campo `juiz`.
+  db.atualizar('processos', numero, {
+    status: 'Encerrado', sentenca: texto, resultado, pena, regime,
+    sentencaPorCrime: sentencaPorCrime || null, sentencaEm: new Date().toISOString(),
+    ...atosPorCargo.carimboDeExecucao(interaction.user.id),
+  });
 
   const processo = db.buscarPorNumero('processos', numero);
   // Assinatura = quem clicou (o Juiz do processo, ou superstaff no lugar dele).
@@ -3717,8 +3758,8 @@ module.exports = {
   async oferecer(interaction, numero) {
     const processo = db.buscarPorNumero('processos', numero);
     if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-    if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
-      return interaction.reply({ content: `Só o Promotor responsável por este processo pode decidir — no caso, <@${processo.promotor}>.`, ephemeral: true });
+    if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
+      return interaction.reply({ content: `Só um(a) Promotor(a) pode decidir. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
     }
     return interaction.showModal(modalParecerMp(numero, 'oferecer'));
   },
@@ -3726,8 +3767,8 @@ module.exports = {
   async arquivar(interaction, numero) {
     const processo = db.buscarPorNumero('processos', numero);
     if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-    if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
-      return interaction.reply({ content: `Só o Promotor responsável por este processo pode decidir — no caso, <@${processo.promotor}>.`, ephemeral: true });
+    if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
+      return interaction.reply({ content: `Só um(a) Promotor(a) pode decidir. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
     }
     return interaction.showModal(modalParecerMp(numero, 'arquivar'));
   },
@@ -3735,7 +3776,7 @@ module.exports = {
   async julgar(interaction, numero) {
     const processo = db.buscarPorNumero('processos', numero);
     if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-    if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
       return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processo.juiz}>.`, ephemeral: true });
     }
     if (processo.tipo === 'Civil' && processo.status !== 'Concluso para julgamento') {
@@ -3795,7 +3836,7 @@ module.exports = {
   async processarVeredictoCrimes(interaction, numero) {
     const processo = db.buscarPorNumero('processos', numero);
     if (!processo) return interaction.update({ content: 'Processo não encontrado.', embeds: [], components: [] });
-    if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
       return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processo.juiz}>.`, ephemeral: true });
     }
     const condenados = interaction.values || [];
@@ -3827,7 +3868,7 @@ module.exports = {
     // commit final da decisão de mérito ficava sem nenhuma verificação própria.
     const processoAlvo = db.buscarPorNumero('processos', numero);
     if (!processoAlvo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-    if (interaction.user.id !== processoAlvo.juiz && !isSuperStaff(interaction)) {
+    if (!podeAtuarNoCaso(interaction, processoAlvo, 'juiz')) {
       return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processoAlvo.juiz}>.`, ephemeral: true });
     }
 
