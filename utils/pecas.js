@@ -606,6 +606,22 @@ function projetarParaUsuario(usuarioId, peca, processoOpcional = null, opcoes = 
 // uma destas funções, e cada uma decide o que pode sair.
 
 // Metadados, nunca teor. É o que basta para montar embed, botão e log.
+// Existe peça GATED deste tipo, neste protocolo, que ainda não foi recebida por ninguém?
+//
+// Serve a quem precisa saber se o próximo passo do rito já pode acontecer — hoje, se o
+// Desembargador já recebeu as razões e portanto pode julgar o recurso. A consulta mora AQUI, e não
+// em quem pergunta, porque a tabela `pecas` é privada desta camada (invariante A1 do projeto): se
+// cada módulo consultasse por conta própria, a regra de "recebido" se espalharia em cópias.
+//
+// Sem peça gated (não emitida ainda, ou processo em modo aberto/legado) a resposta é `false`: onde
+// não há cena a esperar, não há entrega pendente.
+function entregaPendente(processoTabela, processoNumero, tipo) {
+  const relevantes = db.todos('pecas', p => p.processoTabela === processoTabela
+    && p.processoNumero === processoNumero && p.tipo === tipo && p.gated);
+  if (!relevantes.length) return false;
+  return !relevantes.some(p => (p.destinatarios || []).some(d => d.recebidoEm));
+}
+
 function metadados(pecaNumero) {
   const peca = db.buscarPorNumero('pecas', pecaNumero);
   if (!peca) return null;
@@ -983,7 +999,7 @@ module.exports = {
   ocupanteAtual, ocupaDestinatario, isSupervisao, classificarDestinatarioIntimacao,
   gerar, abrirEntrega, encerrarEntrega, janelaAberta, receber, destravarSelo,
   podeVerTeor, projetarParaUsuario, processoSentenciado, habilitadoNoProcesso,
-  metadados, paraRenderizacao, registrarEnvio, registrarPaginasPublicas, resolverTokenPublico,
+  metadados, entregaPendente, paraRenderizacao, registrarEnvio, registrarPaginasPublicas, resolverTokenPublico,
   varrerValvula, reiniciarValvulaPorTroca, pendentesDoPapel, fecharJanelasDoProcesso,
   destravarTodasPendencias, relatorioLegado, revogarLinksDeProcessosEncerrados,
 };

@@ -169,9 +169,12 @@ console.log('\n5) ESCOPO — só a denúncia destrava, e só o elo pedido');
   ok(db.buscarPorNumero('processos', p.numero).juiz === null,
     '5a: nenhum dos tipos acima designou Juiz');
 
-  const tiposComEfeito = Object.keys(emissao.EFEITOS_POS_RECEBIMENTO);
-  ok(tiposComEfeito.length === 1 && tiposComEfeito[0] === 'denuncia_mp',
-    '5b: exatamente UM tipo tem efeito de recebimento hoje — o elo pedido, nenhum a mais',
+  // Lista FECHADA de elos, conferida item a item. Cada elo aqui foi uma decisão explícita do
+  // operador; um tipo que apareça sem passar por essa decisão é o que este canário existe para
+  // pegar. Atualizado em 19/08/2026: +razoes_recurso (o recurso passou a exigir entrega).
+  const tiposComEfeito = Object.keys(emissao.EFEITOS_POS_RECEBIMENTO).sort();
+  ok(JSON.stringify(tiposComEfeito) === JSON.stringify(['denuncia_mp', 'razoes_recurso']),
+    '5b: só os elos decididos têm efeito de recebimento — nenhum a mais',
     tiposComEfeito.join(', '));
 }
 
@@ -216,8 +219,15 @@ console.log('\n7) CAMINHO DE PRODUÇÃO — o clique real chega no efeito');
   const corpo = src.slice(i, i + 4000);
   ok(/aplicarEfeitoDoRecebimento/.test(corpo),
     '7a: o coletor da captura chama o efeito — o clique real chega aqui');
-  ok(/repostarPainel/.test(corpo),
-    '7b: ...e re-renderiza o painel do processo (o menu do Juiz aparece)');
+  // O pós-processamento saiu do coletor e virou `aoAplicar` de cada efeito (19/08/2026): cada elo
+  // mexe numa tabela diferente e tem a própria narrativa, então deixá-lo no coletor obrigaria a
+  // reescrevê-lo a cada elo novo. A asserção segue o código: o coletor CHAMA o pós-efeito, e é o
+  // efeito da denúncia que re-renderiza o painel.
+  ok(/aoAplicar/.test(corpo), '7b: o coletor dispara o pós-efeito do elo');
+  const efeitoDenuncia = src.slice(src.indexOf('denuncia_mp: {'), src.indexOf('async function aplicarEfeitoDoRecebimento'));
+  ok(efeitoDenuncia.length > 200, '7b-z: o bloco do efeito foi encontrado (scan não vazio)');
+  ok(/repostarPainel/.test(efeitoDenuncia),
+    '7b-2: ...e o efeito da denúncia re-renderiza o painel (o menu do Juiz aparece)');
   ok(corpo.indexOf('Selo conferido') < corpo.indexOf('aplicarEfeitoDoRecebimento'),
     '7c: o efeito roda DEPOIS da lavratura — falha no efeito não desfaz a entrega');
   ok(/catch/.test(corpo.slice(corpo.indexOf('aplicarEfeitoDoRecebimento'))),
