@@ -57,13 +57,17 @@ function novoProcesso(modo = 'ingame') {
   });
 }
 
-function fakeInteraction(userId, { values = [], campos = {} } = {}) {
+// `staff: true` faz isAdmin passar — é como os gates de cargo (ehMembroDoMp, etc.) são satisfeitos
+// sem montar o RH inteiro. `channel` existe para o caminho LEGADO, que espera um upload: sem ele
+// aguardarAnexoPDF estoura em vez de simplesmente não abrir modal.
+function fakeInteraction(userId, { values = [], campos = {}, staff = false } = {}) {
   const rec = { replies: [], modais: [], sends: [] };
   return {
     rec,
     user: { id: userId },
     values,
-    member: { roles: { cache: { has: () => false } }, permissions: { has: () => false } },
+    channel: { awaitMessages: async () => { throw new Error('sem upload no teste'); } },
+    member: { roles: { cache: { has: () => false } }, permissions: { has: () => !!staff } },
     guild: { id: 'guild1', channels: { fetch: async () => ({ send: async (o) => { rec.sends.push(o); return { id: 'm1' }; } }) } },
     fields: { getTextInputValue: (k) => campos[k] },
     reply: async (o) => { rec.replies.push(o); },
@@ -285,6 +289,66 @@ console.log('\n10) DEFENSOR DATIVO enxerga sem cena (exceção da SPEC §11.1 e 
   // O escopo é estreito de propósito: a exceção é do DATIVO, não de "todo advogado habilitado".
   ok(pecas.podeVerTeor(CONST, g.peca.numero) === false,
     '10b: advogado CONSTITUÍDO continua precisando receber em cena — a exceção não vazou para o caso geral');
+}
+
+console.log('\n11) BLOCO D — CAMINHO DE ENTRADA de cada tipo novo (o que faltava nos 5 órfãos)');
+{
+  // Tipo no catálogo NÃO é feature pronta. Os cinco órfãos deste projeto estavam todos no catálogo,
+  // ativos e testados — faltava alguém CHEGAR neles. Cada caso abaixo parte do clique real.
+  const emissao = require('../utils/emissaoPeca');
+  const PROM = '400000000000000001', DELE = '400000000000000002', ADV2 = '400000000000000003';
+
+  for (const t of ['denuncia_mp', 'manifestacao_mp_gated', 'contestacao', 'relatorio_inquerito']) {
+    ok(emissao.tipoAtivo(t), `11-cat-${t}: está no catálogo e ativo`);
+  }
+
+  // 11a — RELATÓRIO DE INQUÉRITO: Delegado, botão "Anexar relatório".
+  const pPenal = db.inserir('processos', {
+    numero: '0910PN', tipo: 'Penal', status: 'Aguardando decisão do MP', modoEntrega: 'ingame',
+    delegado: DELE, promotor: PROM, habilitacoes: [], partes: [], canalId: 'c1',
+  });
+  const iDel = fakeInteraction(DELE);
+  await processoCmd.anexarRelatorioInquerito(iDel, pPenal.numero);
+  ok(iDel.rec.modais.length === 1, '11a: Delegado clica "Anexar relatório" → abre o formulário gated (não o anexo de PDF)');
+
+  // 11b — DENÚNCIA: Promotor, pelo menu de manifestação do MP.
+  const iProm = fakeInteraction(PROM, { values: ['oferecer'], staff: true });
+  await processoCmd.tratarManifestacaoMp(iProm, pPenal.numero);
+  ok(iProm.rec.modais.length === 1, '11b: Promotor escolhe "Oferecer denúncia" → formulário gated');
+
+  // 11c — ARQUIVAMENTO continua no fluxo antigo: é ato interno do MP, sem destinatário a quem
+  // entregar. Gatear criaria peça pendente até a válvula sem nunca ter tido dono.
+  const iArq = fakeInteraction(PROM, { values: ['arquivar'], staff: true });
+  await processoCmd.tratarManifestacaoMp(iArq, pPenal.numero);
+  ok(iArq.rec.modais.length === 1, '11c: arquivamento ainda abre modal (fluxo próprio, não gated)');
+
+  // 11d — MANIFESTAÇÃO LIVRE: é a que tem teor, então é a que entra no gate.
+  const pComJuiz = db.inserir('processos', {
+    numero: '0911PN', tipo: 'Penal', status: 'Instrução', modoEntrega: 'ingame',
+    juiz: JUIZ, promotor: PROM, habilitacoes: [], partes: [], canalId: 'c1',
+  });
+  const iLivre = fakeInteraction(PROM, { values: ['livre'], staff: true });
+  await processoCmd.tratarManifestacaoMp(iLivre, pComJuiz.numero);
+  ok(iLivre.rec.modais.length === 1, '11d: manifestação livre do MP → formulário gated');
+
+  // 11e — CONTESTAÇÃO: advogado habilitado, pelo botão que ele já usa.
+  const pCiv = db.inserir('processos', {
+    numero: '0912CV', tipo: 'Civil', status: 'Aguardando contestação', modoEntrega: 'ingame',
+    juiz: JUIZ, advogados: [ADV2], habilitacoes: [{ id: 1, advogadoId: ADV2, status: 'Aprovado' }],
+    partes: [], canalId: 'c1',
+  });
+  const iCont = fakeInteraction(ADV2);
+  await processoCmd.anexarContestacao(iCont, `${pCiv.numero}#1`);
+  ok(iCont.rec.modais.length === 1, '11e: advogado clica "Anexar contestação" → formulário gated com título próprio');
+
+  // 11f — LEGADO INTOCADO: o rito não muda no meio dos autos (SPEC §11.2.1).
+  const pLeg = db.inserir('processos', {
+    numero: '0913PN', tipo: 'Penal', status: 'Aguardando decisão do MP',
+    delegado: DELE, promotor: PROM, habilitacoes: [], partes: [], canalId: 'c1',
+  });
+  const iLeg = fakeInteraction(DELE);
+  await processoCmd.anexarRelatorioInquerito(iLeg, pLeg.numero).catch(() => {});
+  ok(iLeg.rec.modais.length === 0, '11f: processo LEGADO não abre o formulário — segue no anexo de PDF');
 }
 
 try { fs.unlinkSync(DB_TESTE); } catch (_) {}

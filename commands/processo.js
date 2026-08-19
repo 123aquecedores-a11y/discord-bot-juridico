@@ -1000,6 +1000,13 @@ async function anexarRelatorioInquerito(interaction, numero) {
     return interaction.reply({ content: 'O relatório de inquérito já foi anexado a este processo.', ephemeral: true });
   }
 
+  // BLOCO D — bifurcação por modo, mesmo padrão do `peticionar`. Processo legado segue no anexo de
+  // PDF até o fim; processo novo vai para o formulário que gera a peça com selo. O Delegado
+  // continua clicando no MESMO botão, que é onde ele já procura — o que muda é o que vem depois.
+  if (!ehLegado(processo)) {
+    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'relatorio_inquerito', numero);
+  }
+
   const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'relatorio_inquerito', protocolo: numero });
   if (!coletado) return;
   const { anexo } = coletado;
@@ -1033,9 +1040,11 @@ async function anexarContestacao(interaction, chave) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
 
-  // Mesma trava de handler da petição inicial — ver anexarPeticaoInicial.
+  // BLOCO D — a contestação agora tem tipo PRÓPRIO no catálogo (`contestacao`), em vez de mandar o
+  // advogado usar "Peticionar". O botão em que ele já clica passa a abrir o formulário certo: o
+  // documento sai com o título CONTESTAÇÃO, não PETIÇÃO. Legado segue no anexo de PDF.
   if (!ehLegado(processo)) {
-    return interaction.reply({ content: 'Este processo usa o rito novo: a contestação é gerada pelo sistema, com selo, e entregue em mãos. Use **"📄 Peticionar"** no painel do processo.', ephemeral: true });
+    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'contestacao', numero);
   }
   const habilitacao = (processo.habilitacoes || []).find(h => h.id === habId);
   if (!habilitacao || habilitacao.status !== 'Aprovado') {
@@ -2845,9 +2854,22 @@ async function tratarManifestacaoMp(interaction, numero) {
     if (interaction.user.id !== processo.promotor && !isSuperStaff(interaction)) {
       return interaction.reply({ content: `Só o Promotor responsável por este processo pode oferecer/arquivar — no caso, <@${processo.promotor}>.`, ephemeral: true });
     }
+    // BLOCO D — a DENÚNCIA entra no gate; o arquivamento não. A diferença é o destinatário: a
+    // denúncia é dirigida ao Juiz (que a recebe em cena), enquanto o arquivamento é ato interno do
+    // MP que encerra o caso sem que haja a quem entregar. Gatear o arquivamento criaria peça sem
+    // destinatário, que ficaria pendente até a válvula sem nunca ter tido dono.
+    if (escolha === 'oferecer' && !ehLegado(processo)) {
+      return require('../utils/emissaoPeca').abrirEmissao(interaction, 'denuncia_mp', numero);
+    }
     return interaction.showModal(modalParecerMp(numero, escolha));
   }
   if (escolha === 'medida') return medidaCmd.abrirSolicitarMedidaDireta(interaction, numero);
+  // BLOCO D — a manifestação livre é o ato do MP que tem TEOR, e por isso é a que entra no gate.
+  // Bifurca por modo, como o `peticionar`: legado segue no modal antigo, processo novo vai para o
+  // formulário com selo. "medida" e "oferecer/arquivar" continuam nos fluxos próprios de sempre.
+  if (escolha === 'livre' && !ehLegado(processo)) {
+    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'manifestacao_mp_gated', numero);
+  }
   if (escolha === 'livre') return interaction.showModal(modalManifestacaoLivre(numero));
   return interaction.reply({ content: 'Opção inválida.', ephemeral: true });
 }
