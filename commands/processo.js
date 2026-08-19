@@ -954,16 +954,18 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
   });
 
   const processo = db.buscarPorNumero('processos', numero);
-  // Processo NOVO nunca é legado (modoParaNovoProcesso só devolve 'ingame' ou 'aberto'), então na
-  // prática este botão só reaparece se um processo legado for reaberto por aqui. O caminho do
-  // processo novo é o "📄 Peticionar" do painel, que bifurca para o formulário com selo.
+  // O MESMO botão serve aos dois ritos desde 19/08/2026 — anexarPeticaoInicial bifurca por modo
+  // (legado → anexo de PDF, novo → formulário com selo, tipo `peticao_inicial_civel`). Antes ele
+  // era escondido no rito novo e o texto mandava usar "Peticionar" noutro menu, o que dava dois
+  // caminhos para a mesma coisa e ainda gerava o documento com o título errado (PETIÇÃO em vez de
+  // PETIÇÃO INICIAL).
   const legado = ehLegado(processo);
-  const componentes = [botoesCivilAbertura(numero), ...(legado ? [botaoAnexarPeticaoInicial(numero)] : [])];
+  const componentes = [botoesCivilAbertura(numero), botaoAnexarPeticaoInicial(numero)];
   if (juizId) componentes.push(...montarPainelAcoes(processo));
   const avisoSemJuiz = juizId ? '' : '\n\n⚠️ **Nenhum Juiz foi sorteado ainda.** Não há Juiz elegível — provavelmente porque o único Juiz cadastrado é parte/advogado deste processo (juiz não julga a própria causa), ou não há Juiz cadastrado. Assim que existir um Juiz elegível, o sorteio acontece **automaticamente** (o bot tenta de novo a cada 10 min). O painel completo (Julgar, etc.) aparece quando houver Juiz.';
   const instrucao = legado
     ? '\n📎 Clique em **"Anexar petição inicial"** abaixo pra juntar o PDF aos autos.'
-    : '\n📄 Clique em **"Peticionar"** no painel abaixo pra protocolar a inicial — ela é gerada pelo sistema, com selo, e entregue em mãos ao Juiz na cena.';
+    : '\n📄 Clique em **"Anexar petição inicial"** abaixo — ela é escrita no formulário, gerada com selo pelo sistema e entregue em mãos ao Juiz na cena.';
   await canal.send({
     content: `<@${advogadoId}>${juizId ? ` <@${juizId}>` : ''}${instrucao}${avisoSemJuiz}`,
     embeds: [embedProcesso(processo)], components: componentes,
@@ -987,16 +989,21 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
 async function anexarPeticaoInicial(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  // Trava no HANDLER, não só na exibição do botão: mensagem antiga ainda na tela, ou replay do
-  // customId, chegariam aqui de outro jeito e o PDF cairia no canal sem passar pelo selo.
-  if (!ehLegado(processo)) {
-    return interaction.reply({ content: 'Este processo usa o rito novo: a petição é gerada pelo sistema, com selo, e entregue em mãos. Use **"📄 Peticionar"** no painel do processo.', ephemeral: true });
-  }
   if (interaction.user.id !== processo.autor && !isSuperStaff(interaction)) {
     return interaction.reply({ content: `Só o Advogado responsável pela autoria pode anexar a petição inicial — no caso, <@${processo.autor}>.`, ephemeral: true });
   }
   if (anexos.listarPorProtocolo(numero).some(d => d.tipo === 'peticao_inicial')) {
     return interaction.reply({ content: 'A petição inicial já foi anexada a este processo.', ephemeral: true });
+  }
+
+  // FAIXA 2 — bifurcação por modo, como o resto do bot. ANTES daqui o handler RECUSAVA em rito
+  // novo e mandava usar "📄 Peticionar" noutro menu: dois caminhos para a mesma coisa, e o
+  // documento saía com o título PETIÇÃO (incidental) em vez de PETIÇÃO INICIAL. Agora o botão em
+  // que o advogado já clica abre o formulário do tipo certo.
+  //
+  // Processo legado segue no anexo de PDF até o fim (SPEC §11.2.1).
+  if (!ehLegado(processo)) {
+    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'peticao_inicial_civel', numero);
   }
 
   const coletado = await coletarAnexoPdf(interaction, { numero, tipo: 'peticao_inicial', protocolo: numero });

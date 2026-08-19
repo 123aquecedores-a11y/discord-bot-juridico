@@ -72,15 +72,21 @@ console.log('1) Sanidade: modoDoProcesso classifica os três casos');
   ok(pecas.modoDoProcesso(novoCivil('aberto')) === 'aberto', '1c: aberto');
 }
 
-console.log('\n2) Handler anexarPeticaoInicial recusa fora do legado');
+console.log('\n2) Handler anexarPeticaoInicial fora do legado abre o FORMULÁRIO GATED');
 {
+  // MUDOU EM 19/08/2026, de propósito. Antes o handler RECUSAVA e mandava usar "Peticionar" noutro
+  // menu — conserto mínimo de quando a petição inicial ainda não tinha tipo próprio. Agora tem
+  // (`peticao_inicial_civel`), então o MESMO botão abre o formulário certo e o documento sai com o
+  // título PETIÇÃO INICIAL, não PETIÇÃO.
+  //
+  // O que este arquivo protege NÃO mudou: o anexo de PDF continua inacessível fora do legado —
+  // antes por recusa, agora por desvio.
   for (const modo of ['ingame', 'aberto']) {
     const p = novoCivil(modo);
     const i = fakeInteraction(ADV); // o AUTOR — passaria em todos os outros gates
     await processoCmd.anexarPeticaoInicial(i, p.numero);
-    const t = textoDe(i.rec.replies[0]);
-    ok(/rito novo/i.test(t) && /Peticionar/.test(t),
-      `2-${modo}: processo ${modo} recusa o anexo de PDF e aponta o botão certo`, t);
+    ok(i.rec.modais.length === 1,
+      `2-${modo}: processo ${modo} abre o formulário gated (e NÃO o anexo de PDF)`);
   }
 
   // Legado continua funcionando: usa OUTRO usuário para parar no gate SEGUINTE (autoria) em vez de
