@@ -272,6 +272,16 @@ async function executarParecerMp(interaction, numero, modo) {
     return interaction.reply({ content: `Só um(a) Promotor(a) pode decidir. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true }).catch(() => {});
   }
 
+  // GUARDA DE COLISÃO por CLAIM SÍNCRONO. O parecer é ato lento (gera PNG e, no oferecimento,
+  // sorteia Juiz): entre verificar e gravar cabem vários segundos, e nesse vão o segundo
+  // Promotor passaria pela mesma checagem. Por isso marca o campo AGORA, antes do primeiro
+  // await — quem chegar depois encontra o campo preenchido e para.
+  const jaOpinado = atosPorCargo.bloqueioPorJaExecutado(processo, ['parecerMpEm'], 'O parecer do Ministério Público');
+  if (jaOpinado) return interaction.reply({ content: jaOpinado, ephemeral: true }).catch(() => {});
+  db.atualizar('processos', numero, {
+    parecerMpEm: new Date().toISOString(), ...atosPorCargo.carimboDeExecucao(interaction.user.id),
+  });
+
   // Defer antes do PNG (Puppeteer) — mesma razão de salvarSentenca: sem isso a janela de 3s
   // do Discord estoura enquanto o Chromium sobe, e a interação "falha" mesmo com tudo certo.
   await interaction.deferReply({ ephemeral: true });
@@ -1781,15 +1791,20 @@ async function decidirHabilitacao(interaction, chave, aprovar) {
 
   const habilitacoes = processo.habilitacoes || [];
   const alvo = habilitacoes.find(h => h.id === habId);
-  if (!alvo || alvo.status !== 'Pendente') {
-    return interaction.reply({ content: 'Esse pedido não existe mais ou já foi decidido.', ephemeral: true });
+  if (!alvo) return interaction.reply({ content: 'Esse pedido não existe mais.', ephemeral: true });
+  // Guarda de colisão no sub-registro: o marcador é o status DO ITEM, não do processo.
+  if (alvo.status !== 'Pendente') {
+    return interaction.reply({
+      content: atosPorCargo.mensagemJaFeito('A decisão desta habilitação', { porId: alvo.decididoPorId || null, em: alvo.decididoEm || null }),
+      ephemeral: true,
+    });
   }
   // Réu pode ser só nome (sem Discord) — evita exibir "<@null>".
   const reuRef = alvo.reuId ? `<@${alvo.reuId}>` : `**${alvo.reuNome || 'o réu'}**`;
 
   const novoStatus = aprovar ? 'Aprovado' : 'Negado';
   // aprovadoEm marca o início do prazo de 24h para apresentar defesa (Parte B, penal).
-  const atualizadas = habilitacoes.map(h => h.id === habId ? { ...h, status: novoStatus, aprovadoEm: aprovar ? new Date().toISOString() : (h.aprovadoEm || null) } : h);
+  const atualizadas = habilitacoes.map(h => h.id === habId ? { ...h, status: novoStatus, decididoPorId: interaction.user.id, decididoEm: new Date().toISOString(), aprovadoEm: aprovar ? new Date().toISOString() : (h.aprovadoEm || null) } : h);
   db.atualizar('processos', numero, { habilitacoes: atualizadas });
 
   if (aprovar) {
@@ -2189,6 +2204,19 @@ async function emitirIntimacao(interaction, numero) {
   // CITAÇÃO (com prazo automático de contestação) quando o civil ainda está na fase pré-citação.
   const ehCitacaoCivil = processo.tipo === 'Civil' && processo.status === 'Aguardando defesa';
 
+  // GUARDA DE COLISÃO só na CITAÇÃO. Intimar é ato repetível de propósito (outras partes,
+  // outros momentos) e travar isso quebraria o fluxo. Citar não é: a citação abre o prazo de
+  // contestação, e uma segunda citação reiniciaria o relógio de um prazo já correndo — o réu
+  // ganharia dias que ninguém decidiu conceder.
+  //
+  // Claim síncrono, antes do defer: entre aqui e a gravação roda o Puppeteer, e nesse vão os
+  // dois Juízes passariam pela mesma checagem se ela fosse só leitura.
+  if (ehCitacaoCivil) {
+    const jaCitado = atosPorCargo.bloqueioPorJaExecutado(processo, ['citacaoEm'], 'A citação deste processo');
+    if (jaCitado) return interaction.reply({ content: jaCitado, ephemeral: true }).catch(() => {});
+    db.atualizar('processos', numero, { citacaoEm: new Date().toISOString() });
+  }
+
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com a intimação/citação sendo emitida com sucesso.
   await interaction.deferReply({ ephemeral: true });
@@ -2269,7 +2297,13 @@ async function arquivarCivil(interaction, numero) {
     return interaction.reply({ content: `Só um(a) Juiz(a) pode arquivar a petição inicial. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
 
-  db.atualizar('processos', numero, { status: 'Arquivado' });
+  const jaArquivado = atosPorCargo.bloqueioPorJaExecutado(processo, ['arquivadoEm'], 'O arquivamento da inicial');
+  if (jaArquivado) return interaction.reply({ content: jaArquivado, ephemeral: true });
+
+  db.atualizar('processos', numero, {
+    status: 'Arquivado', arquivadoEm: new Date().toISOString(),
+    ...atosPorCargo.carimboDeExecucao(interaction.user.id),
+  });
   // SPEC §11.4: arquivou, fecha as janelas de entrega pendentes (sem estado órfão em caso morto).
   try { require('../utils/pecas').fecharJanelasDoProcesso('processos', numero); } catch (e) { console.error('[pecas] fechar janelas no arquivamento:', e.message); }
   await interaction.update({ embeds: [embedProcesso(db.buscarPorNumero('processos', numero))], components: [] });
@@ -2454,11 +2488,17 @@ async function decidirPeticao(interaction, chave, deferir) {
   }
   const peticoesDoProcesso = processo.peticoes || [];
   const alvo = peticoesDoProcesso.find(p => p.id === peticaoId);
-  if (!alvo || alvo.status !== 'Pendente') {
-    return interaction.reply({ content: 'Essa petição não existe mais ou já foi decidida.', ephemeral: true });
+  if (!alvo) return interaction.reply({ content: 'Essa petição não existe mais.', ephemeral: true });
+  // Guarda de colisão no sub-registro: o marcador é o status DO ITEM, não do processo.
+  if (alvo.status !== 'Pendente') {
+    return interaction.reply({
+      content: atosPorCargo.mensagemJaFeito('A decisão desta petição', { porId: alvo.decididoPorId || null, em: alvo.decididoEm || null }),
+      ephemeral: true,
+    });
   }
   const novoStatus = deferir ? 'Deferida' : 'Indeferida';
-  db.atualizar('processos', numero, { peticoes: peticoesDoProcesso.map(p => p.id === peticaoId ? { ...p, status: novoStatus } : p) });
+  const carimboPeticao = { decididoPorId: interaction.user.id, decididoEm: new Date().toISOString() };
+  db.atualizar('processos', numero, { peticoes: peticoesDoProcesso.map(p => p.id === peticaoId ? { ...p, status: novoStatus, ...carimboPeticao } : p) });
 
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'peticao_decidida', titulo: `📄 Petição ${novoStatus.toLowerCase()}`,
@@ -3090,9 +3130,17 @@ async function decidirRequerimentoMp(interaction, chave, deferir) {
   }
   const reqs = processo.requerimentosMp || [];
   const alvo = reqs.find(r => r.id === reqId);
-  if (!alvo || alvo.status !== 'Pendente') return interaction.reply({ content: 'Esse requerimento não existe mais ou já foi decidido.', ephemeral: true });
+  if (!alvo) return interaction.reply({ content: 'Esse requerimento não existe mais.', ephemeral: true });
+  // Guarda de colisão no sub-registro: o marcador é o status DO ITEM, não do processo.
+  if (alvo.status !== 'Pendente') {
+    return interaction.reply({
+      content: atosPorCargo.mensagemJaFeito('A decisão deste requerimento', { porId: alvo.decididoPorId || null, em: alvo.decididoEm || null }),
+      ephemeral: true,
+    });
+  }
   const novoStatus = deferir ? 'Deferido' : 'Indeferido';
-  db.atualizar('processos', numero, { requerimentosMp: reqs.map(r => r.id === reqId ? { ...r, status: novoStatus } : r) });
+  const carimbo = { decididoPorId: interaction.user.id, decididoEm: new Date().toISOString() };
+  db.atualizar('processos', numero, { requerimentosMp: reqs.map(r => r.id === reqId ? { ...r, status: novoStatus, ...carimbo } : r) });
   await andamentos.registrar(interaction.guild, numero, { tipo: 'requerimento_mp_decidido', titulo: `📝 Requerimento do MP ${novoStatus.toLowerCase()}`, detalhe: `Requerimento do MP foi ${novoStatus.toLowerCase()} pelo Juiz.`, executorId: interaction.user.id, metadata: { requerimentoId: reqId, resultado: novoStatus } });
   await repostarPainel(interaction.guild, numero);
   return interaction.update({ content: `Requerimento do MP **${novoStatus.toLowerCase()}** pelo Juiz.`, components: [] });
@@ -3284,7 +3332,10 @@ async function validarDecisaoApelacao(interaction, numeroApelacao) {
     return null;
   }
   if (apelacao.status !== 'Aguardando decisão') {
-    await interaction.reply({ content: 'Essa apelação já foi decidida.', ephemeral: true });
+    await interaction.reply({
+      content: atosPorCargo.mensagemJaFeito('O julgamento desta apelação', { porId: apelacao.executadoPorId || null, em: apelacao.executadoEm || null }),
+      ephemeral: true,
+    });
     return null;
   }
   return apelacao;
@@ -3342,8 +3393,15 @@ async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = 
     else await interaction.deferUpdate();
   }
 
+  // GUARDA DE COLISÃO no ponto de commit — entre validarDecisaoApelacao e aqui passaram o modal
+  // de fundamentação e o defer. Mesmo padrão da sentença: releitura fresca, não a cópia velha.
+  const jaJulgada = atosPorCargo.bloqueioPorStatusDecidido(
+    db.buscarPorNumero('apelacoes', numeroApelacao), ['Aguardando decisão'], 'O julgamento desta apelação',
+  );
+  if (jaJulgada) return interaction.editReply({ content: jaJulgada }).catch(() => {});
+
   const statusFinal = { manter: 'Mantida', reformar: 'Reformada', anular: 'Anulada' }[decisao];
-  db.atualizar('apelacoes', numeroApelacao, { status: statusFinal });
+  db.atualizar('apelacoes', numeroApelacao, { status: statusFinal, ...atosPorCargo.carimboDeExecucao(interaction.user.id) });
 
   const processoOriginal = db.buscarPorNumero('processos', apelacao.processoOriginalNumero);
 

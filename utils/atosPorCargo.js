@@ -85,6 +85,31 @@ function mensagemJaFeito(descricaoDoAto, execucao) {
   return `⚠️ **${descricaoDoAto} já foi feito** por ${quem}${quando}. Nada foi refeito — recarregue o painel para ver o estado atual.`;
 }
 
+// AÇÃO ÚNICA para o ponto de commit de um ato decisório. Devolve a mensagem de recusa se o ato já
+// aconteceu, ou `null` para seguir.
+//
+// O registro deve ser RELIDO DO BANCO imediatamente antes de chamar isto. É o que fecha a janela
+// entre "verifiquei na entrada" e "gravei": entre o clique e o commit existe um `await` (modal,
+// render do PNG, chamada de IA), e é exatamente nessa janela que o segundo magistrado clica.
+//
+// `campos` são os marcadores que provam execução — o horário da decisão, o status terminal já
+// gravado. Estado no banco, nunca lock em memória: o bot reinicia e lock em memória morre junto.
+function bloqueioPorJaExecutado(registro, campos, descricaoDoAto) {
+  const exec = jaExecutado(registro, campos);
+  return exec ? mensagemJaFeito(descricaoDoAto, exec) : null;
+}
+
+// Variante para atos cujo marcador é o STATUS ter saído de um conjunto "ainda decidível".
+// Petição em "Diligência" é o caso que obriga isto a existir: ela JÁ foi decidida uma vez e ainda
+// pode ser decidida de novo, então um marcador de horário sozinho bloquearia o que é legítimo.
+function bloqueioPorStatusDecidido(registro, statusAindaAbertos, descricaoDoAto) {
+  if (!registro || statusAindaAbertos.includes(registro.status)) return null;
+  return mensagemJaFeito(descricaoDoAto, {
+    porId: registro.executadoPorId || null,
+    em: registro.decisaoJuizEm || registro.decididoEm || registro.sentencaEm || null,
+  });
+}
+
 // Campos de auditoria de QUEM REALMENTE praticou o ato. O titular continua gravado no caso (dono
 // para notificação e organização); isto registra o executor, que pode ser outro.
 //
@@ -97,4 +122,5 @@ function carimboDeExecucao(usuarioId, { agora = Date.now() } = {}) {
 module.exports = {
   PAPEIS_COMPARTILHADOS, CARGO_DO_CAMPO, ehCargoCompartilhado,
   podeAtuar, recusa, jaExecutado, mensagemJaFeito, carimboDeExecucao,
+  bloqueioPorJaExecutado, bloqueioPorStatusDecidido,
 };

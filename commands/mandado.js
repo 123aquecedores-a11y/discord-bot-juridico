@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const db = require('../database/db');
 const { truncar } = require('../utils/texto');
+const atosPorCargo = require('../utils/atosPorCargo');
 const { proximoNumero } = require('../utils/numeracao');
 const { isSuperStaff, isAdmin , podeAtuarNoCaso, recusaDoCaso } = require('../utils/permissoes');
 const documentos = require('../utils/documentos');
@@ -140,11 +141,30 @@ async function emitirMandado(interaction, chave) {
   const teor = interaction.fields.getTextInputValue('teor');
   const destinatario = resolverDestinatario(interaction, numero, processo, destinatarioRef);
 
+  // GUARDA DE COLISÃO — emitir vários mandados no mesmo processo é LEGÍTIMO (tipos e alvos
+  // diferentes), então a trava não pode ser "já existe mandado aqui". O que não é legítimo é o
+  // mesmo tipo contra o mesmo alvo com um mandado ainda EM ABERTO: isso é duplo clique no
+  // Submit, ou dois Juízes despachando a mesma coisa. Se o anterior já foi cumprido, reemitir
+  // volta a ser um ato novo e válido — por isso o filtro exige status 'Emitido'.
+  const alvoTexto = destinatario?.discordId ? `<@${destinatario.discordId}>` : (destinatario?.nome || 'destinatário não identificado');
+  const tipoRotuloAtual = rotuloTipo(tipoValue, tipoLivre);
+  const duplicado = db.todos('mandados', m => m.processoVinculado === numero
+    && m.status === 'Emitido' && m.tipo === tipoRotuloAtual && m.alvo === alvoTexto)[0];
+  if (duplicado) {
+    return interaction.reply({
+      content: atosPorCargo.mensagemJaFeito(
+        `O Mandado ${duplicado.numero} (${duplicado.tipo}) contra ${duplicado.alvo}`,
+        { porId: duplicado.emitidoPor || null, em: null },
+      ),
+      ephemeral: true,
+    });
+  }
+
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso.
   await interaction.deferReply({ ephemeral: true });
   const resultado = await emitirMandadoNoProcesso({
-    guild: interaction.guild, processo: db.buscarPorNumero('processos', numero), tipoRotulo: rotuloTipo(tipoValue, tipoLivre),
+    guild: interaction.guild, processo: db.buscarPorNumero('processos', numero), tipoRotulo: tipoRotuloAtual,
     teor, emitidoPorId: interaction.user.id, destinatario,
   });
   return interaction.editReply({ content: `Mandado ${resultado.numero} emitido e juntado ao processo ${numero}.` });

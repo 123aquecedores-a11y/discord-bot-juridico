@@ -9,6 +9,7 @@ const config = require('../config');
 const rascunhoCrimes = require('../utils/rascunhoCrimes');
 const crimePicker = require('../utils/crimePicker');
 const { truncar } = require('../utils/texto');
+const atosPorCargo = require('../utils/atosPorCargo');
 const auditoria = require('../utils/auditoria');
 const documentos = require('../utils/documentos');
 // resolverGuild não é desestruturado no topo de propósito: medida.js -> supervisao.js ->
@@ -267,13 +268,12 @@ async function deferirMedidaDireta(interaction, numero) {
   if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
     return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${medida.juiz}>.`, ephemeral: true });
   }
-  if (medida.status !== 'Aprovada - aguardando juiz') {
-    return interaction.reply({ content: 'Esta solicitação já foi decidida.', ephemeral: true });
-  }
+  const jaDecidida = atosPorCargo.bloqueioPorStatusDecidido(medida, ['Aprovada - aguardando juiz'], 'A decisão desta medida');
+  if (jaDecidida) return interaction.reply({ content: jaDecidida, ephemeral: true });
   const processo = db.buscarPorNumero('processos', medida.processoVinculado);
   if (!processo) return interaction.reply({ content: 'Processo vinculado não encontrado.', ephemeral: true });
 
-  db.atualizar('medidas', numero, { status: 'Deferida', decisaoJuizEm: new Date().toISOString() });
+  db.atualizar('medidas', numero, { status: 'Deferida', decisaoJuizEm: new Date().toISOString(), ...atosPorCargo.carimboDeExecucao(interaction.user.id) });
   if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
 
   const resultadoMandado = await mandadoCmd.emitirMandadoNoProcesso({
@@ -293,11 +293,10 @@ async function indeferirMedidaDireta(interaction, numero) {
   if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
     return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${medida.juiz}>.`, ephemeral: true });
   }
-  if (medida.status !== 'Aprovada - aguardando juiz') {
-    return interaction.reply({ content: 'Esta solicitação já foi decidida.', ephemeral: true });
-  }
+  const jaDecidida = atosPorCargo.bloqueioPorStatusDecidido(medida, ['Aprovada - aguardando juiz'], 'A decisão desta medida');
+  if (jaDecidida) return interaction.reply({ content: jaDecidida, ephemeral: true });
 
-  db.atualizar('medidas', numero, { status: 'Indeferida pelo Juiz', decisaoJuizEm: new Date().toISOString() });
+  db.atualizar('medidas', numero, { status: 'Indeferida pelo Juiz', decisaoJuizEm: new Date().toISOString(), ...atosPorCargo.carimboDeExecucao(interaction.user.id) });
   if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
 
   await auditoria.registrar(interaction.guild, { acao: 'Medida indeferida (solicitação direta)', executorId: interaction.user.id, referencia: numero });
@@ -452,7 +451,12 @@ async function decidirReconsideracaoGenerica(interaction, extra, cfg) {
 
   const medida = db.buscarPorNumero('medidas', numero);
   if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true });
-  if (medida[cfg.campoStatus] !== 'Pendente') return interaction.reply({ content: 'Esse pedido de reconsideração já foi decidido.', ephemeral: true });
+  if (medida[cfg.campoStatus] !== 'Pendente') {
+    return interaction.reply({
+      content: atosPorCargo.mensagemJaFeito('A decisão desta reconsideração', { porId: medida.executadoPorId || null, em: null }),
+      ephemeral: true,
+    });
+  }
 
   const canalMedida = await guild.channels.fetch(medida.canalId).catch(() => null);
   const canalRecon = medida[cfg.campoCanal] ? await guild.channels.fetch(medida[cfg.campoCanal]).catch(() => null) : null;
@@ -463,6 +467,7 @@ async function decidirReconsideracaoGenerica(interaction, extra, cfg) {
 
     db.atualizar('medidas', numero, {
       status: 'Aprovada - aguardando juiz', juiz: juizId, [cfg.campoStatus]: 'Aprovada',
+      ...atosPorCargo.carimboDeExecucao(interaction.user.id),
       aguardandoJuizDesde: new Date().toISOString(), lembreteJuizEnviado: false, escalonamentoJuizEnviado: false,
     });
     if (canalMedida) {
@@ -481,7 +486,7 @@ async function decidirReconsideracaoGenerica(interaction, extra, cfg) {
     return interaction.reply({ content: `Reconsideração aprovada. Medida ${numero} encaminhada a <@${juizId}>.`, ephemeral: true });
   }
 
-  db.atualizar('medidas', numero, { [cfg.campoStatus]: 'Mantida' });
+  db.atualizar('medidas', numero, { [cfg.campoStatus]: 'Mantida', ...atosPorCargo.carimboDeExecucao(interaction.user.id) });
   if (canalMedida) {
     await canalMedida.send({ content: cfg.msgManterCanalMedida(interaction) });
   }
@@ -697,6 +702,8 @@ module.exports = {
     if (!podeAtuarNoCaso(interaction, medida, 'promotor')) {
       return interaction.reply({ content: `Só o Promotor responsável por esta medida pode decidir — no caso, <@${medida.promotor}>.`, ephemeral: true });
     }
+    const jaTriada = atosPorCargo.bloqueioPorStatusDecidido(medida, ['Aguardando MP'], 'A triagem desta medida pelo MP');
+    if (jaTriada) return interaction.reply({ content: jaTriada, ephemeral: true });
     const fundamentacao = interaction.fields.getTextInputValue('fundamentacao');
 
     // Exclui também o alvo identificado — mesma lógica do processo: quem é alvo da medida não
@@ -706,6 +713,7 @@ module.exports = {
 
     db.atualizar('medidas', numero, {
       status: 'Aprovada - aguardando juiz', juiz: juizId, fundamentacaoPromotor: fundamentacao,
+      ...atosPorCargo.carimboDeExecucao(interaction.user.id),
       aguardandoJuizDesde: new Date().toISOString(), lembreteJuizEnviado: false, escalonamentoJuizEnviado: false,
     });
     const canal = await interaction.guild.channels.fetch(medida.canalId).catch(() => null);
@@ -733,7 +741,10 @@ module.exports = {
       return interaction.reply({ content: `Só o Promotor responsável por esta medida pode decidir — no caso, <@${medida.promotor}>.`, ephemeral: true });
     }
 
-    db.atualizar('medidas', numero, { status: 'Negada' });
+    const jaTriada = atosPorCargo.bloqueioPorStatusDecidido(medida, ['Aguardando MP'], 'A triagem desta medida pelo MP');
+    if (jaTriada) return interaction.reply({ content: jaTriada, ephemeral: true });
+
+    db.atualizar('medidas', numero, { status: 'Negada', ...atosPorCargo.carimboDeExecucao(interaction.user.id) });
     await interaction.update({
       embeds: [embedMedida(db.buscarPorNumero('medidas', numero))],
       components: [botaoRecorrer(numero), new ActionRowBuilder().addComponents(botaoArquivarManual(numero))],
@@ -804,7 +815,15 @@ module.exports = {
     // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso. Guard
     // idempotente: no modo "revisão automática" o executarDecisaoMedida já deu deferReply.
     if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
-    db.atualizar('medidas', numero, { status: 'Deferida', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString() });
+
+    // GUARDA DE COLISÃO — relê depois do defer. O referendo emite mandado e gera PNG; sem esta
+    // trava dois Juízes referendando ao mesmo tempo publicavam o documento duas vezes no canal.
+    const jaDecidida = atosPorCargo.bloqueioPorJaExecutado(
+      db.buscarPorNumero('medidas', numero), ['decisaoJuizEm'], 'A decisão desta medida',
+    );
+    if (jaDecidida) return interaction.editReply({ content: jaDecidida });
+
+    db.atualizar('medidas', numero, { status: 'Deferida', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString(), ...atosPorCargo.carimboDeExecucao(interaction.user.id) });
 
     if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
 
@@ -853,7 +872,15 @@ module.exports = {
     }
     const fundamentacaoJuiz = fundamentacaoOverride !== undefined ? fundamentacaoOverride : interaction.fields.getTextInputValue('fundamentacao');
     if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true });
-    db.atualizar('medidas', numero, { status: 'Indeferida pelo Juiz', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString() });
+
+    // Mesma guarda do referendo: negar depois que o colega já referendou apagaria dos autos um
+    // mandado que já foi emitido e publicado no canal.
+    const jaDecidida = atosPorCargo.bloqueioPorJaExecutado(
+      db.buscarPorNumero('medidas', numero), ['decisaoJuizEm'], 'A decisão desta medida',
+    );
+    if (jaDecidida) return interaction.editReply({ content: jaDecidida });
+
+    db.atualizar('medidas', numero, { status: 'Indeferida pelo Juiz', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString(), ...atosPorCargo.carimboDeExecucao(interaction.user.id) });
 
     if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
 
