@@ -26,6 +26,7 @@ const ROTULOS = {
   relatorio_inquerito:   { titulo: 'RELATÓRIO DE INQUÉRITO',                   orgao: 'POLÍCIA CIVIL' },
   sentenca:              { titulo: 'SENTENÇA',                                 orgao: 'PODER JUDICIÁRIO' },
   peticao_administrativa: { titulo: 'PETIÇÃO',                                 orgao: 'PODER JUDICIÁRIO' },
+  peticao_inicial_civel: { titulo: 'PETIÇÃO INICIAL',                          orgao: 'PODER JUDICIÁRIO' },
 };
 
 // Fallback declarado: tipo desconhecido não pode quebrar a renderização de um documento que já

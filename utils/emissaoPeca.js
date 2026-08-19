@@ -94,6 +94,25 @@ const TIPOS = {
     ativo: true,
   },
 
+  // PETIÇÃO INICIAL CÍVEL (SPEC §11, Faixa 2) — a peça que ABRE o caso cível.
+  //
+  // Tipo PRÓPRIO, e não "petição incidental", por dois motivos concretos: o documento precisa sair
+  // com o título PETIÇÃO INICIAL (é peça de abertura, não manifestação no meio dos autos), e o
+  // botão "Anexar petição inicial" recusava em rito novo mandando o advogado usar "Peticionar"
+  // noutro menu — dois caminhos para a mesma coisa, com o rótulo errado no fim.
+  peticao_inicial_civel: {
+    rotulo: 'Petição inicial',
+    titulo: 'PETIÇÃO INICIAL',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Advogado',
+    // O autor do cível é o advogado que abriu (campo `autor` do processo), não uma habilitação de
+    // defesa — mesma mecânica do `requerenteId` da petição administrativa.
+    emissorCampo: 'autor',
+    destinatarios: ['Juiz'],
+    tabela: 'processos',
+    ativo: true, // FAIXA 2 (SPEC §11)
+  },
+
   // PETIÇÃO ADMINISTRATIVA (SPEC §11, Faixa 2) — porte de arma, troca de nome, limpeza de ficha e
   // alvará de evento. Elas eram o último rito preso no anexo de PDF direto.
   //
