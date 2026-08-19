@@ -207,7 +207,7 @@ function submenuMedida(interaction) {
   const doInvestigativo = temCargo(interaction, 'Delegado') || temCargo(interaction, 'Promotor') || temCargo(interaction, 'Juiz');
   return [
     linha(
-      botaoSe(temCargo(interaction, 'Delegado'), 'painel:acao:medida:solicitar', 'Solicitar', ButtonStyle.Success),
+      botaoSe(temCargo(interaction, 'Delegado') || temCargo(interaction, 'Promotor'), 'painel:acao:medida:solicitar', 'Solicitar', ButtonStyle.Success),
       botaoSe(true, 'painel:acao:medida:ver', 'Ver', ButtonStyle.Primary),
       botaoSe(true, 'painel:acao:medida:listar', 'Listar recentes', ButtonStyle.Primary),
     ),
@@ -315,6 +315,18 @@ function submenuMp(interaction) {
       botaoSe(pode, 'painel:acao:mp:recomendacao', 'Recomendação', ButtonStyle.Primary),
       botaoSe(pode, 'painel:acao:mp:inqueritocivil', 'Abrir Inquérito Civil', ButtonStyle.Success),
     ),
+    // ATOS QUE O MP FAZ SOZINHO, sem depender de delegado (19/08/2026). Antes o promotor tinha que
+    // sair deste painel e entrar em "Medida / Mandado / Ofício" — e lá o botão "Solicitar" era
+    // exclusivo do Delegado, então ele simplesmente não conseguia.
+    //
+    // Os customId são os MESMOS do outro menu, de propósito: é atalho para a ação que já existe,
+    // não um segundo caminho com regra própria (dois caminhos para a mesma coisa foi um dos
+    // achados da auditoria de ontem).
+    linha(
+      botaoSe(pode, 'painel:acao:medida:solicitar', '🔒 Solicitar medida cautelar', ButtonStyle.Secondary),
+      botaoSe(pode && podeEmitirOficio(interaction), 'painel:menu:oficio', '✉️ Ofício', ButtonStyle.Secondary),
+      botaoSe(pode, 'painel:menu:mandado', '📜 Mandado', ButtonStyle.Secondary),
+    ),
     !pode ? new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('painel:disabled').setLabel('Só Promotor/Procurador — atribuição exclusiva do MP').setStyle(ButtonStyle.Secondary).setDisabled(true)) : null,
     botaoVoltar(),
   ].filter(Boolean);
@@ -413,7 +425,14 @@ function abrirModalProcessoPenal(interaction) {
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Descrição objetiva dos fatos').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_nome').setLabel('Nome do réu (se não tiver Discord)').setStyle(TextInputStyle.Short).setRequired(false)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_rg').setLabel('RG do réu').setStyle(TextInputStyle.Short).setRequired(false)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reus').setLabel('Menções @ dos réus (se tiverem Discord)').setStyle(TextInputStyle.Short).setRequired(false)),
+    // CAMPO "Menções @ dos réus" REMOVIDO em 19/08/2026: o réu não fica no Discord — ele é
+    // referência nos autos por nome + RG (SPEC §11.1, que é justamente por isso que a intimação do
+    // réu não tem gate). Pedir a menção era pedir um dado que não existe, e ele não era usado para
+    // nada além de encher `reus[]` com IDs que ninguém resolvia.
+    //
+    // Quem PRECISA vincular um réu com Discord depois (caso raro) continua tendo caminho: o fluxo
+    // de "parte tardia" chama vincularReu() com a menção montada a partir do select — ver
+    // processo.js:1482. A função continua existindo e exportada; só deixou de ser alimentada aqui.
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('medida').setLabel('Nº da medida vinculada (opcional)').setStyle(TextInputStyle.Short).setRequired(false)),
   );
   return interaction.showModal(modal);
@@ -432,7 +451,6 @@ async function finalizarProcessoPenal(interaction) {
       promotorId: rascunho.dados.promotorId || null,
       crimesTexto: rascunho.crimes.join(','),
       motivo: rascunho.dados.motivo,
-      reusTexto: rascunho.dados.reusTexto,
       reuNome: rascunho.dados.reuNome,
       reuRg: rascunho.dados.reuRg,
       medidaNumero: rascunho.dados.medidaNumero,
@@ -871,6 +889,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'gerenciar') return processoCmd.abrirGerenciar(interaction, extra);
     if (acao === 'intimarreu') return processoCmd.intimarReu(interaction, extra);
     if (acao === 'intimarreucumprida') return processoCmd.marcarIntimacaoReuCumprida(interaction, extra);
+    if (acao === 'citacaocumprida') return processoCmd.marcarCitacaoCumprida(interaction, extra);
     if (acao === 'voltarfase') return processoCmd.abrirModalVoltarFase(interaction, extra);
     if (acao === 'manifestacaomp') return processoCmd.abrirManifestacaoMp(interaction, extra);
     if (acao === 'deferirreqmp') return processoCmd.decidirRequerimentoMp(interaction, extra, true);
@@ -959,7 +978,14 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
 
   if (modulo === 'medida') {
     if (acao === 'solicitar') {
-      if (!temCargo(interaction, 'Delegado')) return interaction.reply({ content: 'Só Delegados podem solicitar medida cautelar.', ephemeral: true });
+      // PROMOTOR TAMBÉM SOLICITA (19/08/2026). Antes só Delegado podia, o que obrigava o MP a
+      // esperar a polícia para pedir uma cautelar — no mundo real o MP requer medida direto ao
+      // juízo, e no RP isso travava o promotor sem nenhum ganho. Com o acúmulo Delegado+Promotor
+      // (utils/acumuloDePapeis.js), quem pede sem delegado separado ocupa os dois papéis e a medida
+      // não nasce órfã. Juiz continua de fora: quem defere não pede.
+      if (!temCargo(interaction, 'Delegado') && !temCargo(interaction, 'Promotor')) {
+        return interaction.reply({ content: 'Só Delegado ou Promotor podem solicitar medida cautelar.', ephemeral: true });
+      }
       const row = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder().setCustomId('painel:select:medida:tipo').setPlaceholder('Tipo de medida')
           .addOptions(medidaCmd.TIPOS_MEDIDA.map((t, i) => ({ label: t, value: String(i) }))),
@@ -1336,7 +1362,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
         delegadoId: interaction.user.id,
         promotorId: null,
         motivo: interaction.fields.getTextInputValue('motivo'),
-        reusTexto: interaction.fields.getTextInputValue('reus'),
+        // `reus` saiu do modal (ver abrirModalPenal) — o réu é nome + RG nos autos, não menção.
         reuNome: interaction.fields.getTextInputValue('reu_nome') || null,
         reuRg: interaction.fields.getTextInputValue('reu_rg') || null,
         medidaNumero: interaction.fields.getTextInputValue('medida') || null,

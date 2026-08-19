@@ -156,4 +156,10 @@ function criarProcessoModal(interaction, numero) {
 module.exports = {
   ehMembroDoMP, abrirRequisicao, abrirRecomendacao, abrirInqueritoCivil,
   abrirProcessoDeAto, criarProcessoModal,
+  // FALTAVA NO EXPORT desde que commands/peticao.js:377 passou a chamá-la (commit 9180eae,
+  // "manifestação do MP em petições"). A função sempre existiu aqui e era usada internamente, mas
+  // nunca saiu do módulo — então toda petição administrativa estourava
+  // "ministerioPublico.postarNoCanalMP is not a function" no momento de avisar o MP designado.
+  // Não é regressão recente: está assim desde aquele commit.
+  postarNoCanalMP,
 };

@@ -136,11 +136,21 @@ console.log('\n4) Os pontos que POSTAM o botão passam pelo mesmo gate');
   ok(semGate.length === 0, '4a: todo ponto que posta botão de PDF consulta o modo do processo', semGate.join(' | '));
 
   // CANÁRIO. Se o nome do helper mudar, o scan acima varre zero linhas e aprova em silêncio —
-  // teste vazio dá confiança falsa, é pior que teste ausente. Conferi na mão que hoje são 3 sites;
-  // esta asserção é o que mantém isso verdadeiro sem depender de eu conferir de novo.
+  // teste vazio dá confiança falsa, é pior que teste ausente.
+  //
+  // ERAM 3 SITES ATÉ 19/08/2026; hoje são 2. O terceiro (citação cível) passou a postar
+  // `botoesDefesaCivel`, que traz contestação + prova juntas — e aquele botão NÃO consulta o modo
+  // na exibição de propósito: quem bifurca é o handler `anexarContestacao` (legado → PDF, novo →
+  // formulário com selo), coberto pelos blocos 2 e 3 deste mesmo arquivo. Este canário foi quem
+  // avisou da mudança em vez de deixá-la passar silenciosa.
   const sitesVarridos = linhas.filter((l, i) =>
     /botaoAnexarPeticaoInicial\(|botaoAnexarContestacao\(/.test(l) && !/^function botaoAnexar/.test(l)).length;
-  ok(sitesVarridos >= 3, '4z: o scan realmente inspecionou os pontos de postagem (não passou vazio)', `varreu ${sitesVarridos}`);
+  ok(sitesVarridos >= 2, '4z: o scan realmente inspecionou os pontos de postagem (não passou vazio)', `varreu ${sitesVarridos}`);
+
+  // E o caminho novo (botoesDefesaCivel) tem que existir e apontar para o handler que bifurca —
+  // senão a defesa cível ficaria sem botão nenhum e o processo travaria depois da citação.
+  ok(/function botoesDefesaCivel/.test(src), '4y: a defesa cível tem botões próprios (contestação + prova)');
+  ok(/painel:acao:processo:anexarcontestacao/.test(src), '4x: ...e a contestação aponta para o handler que bifurca por modo');
 
   ok(/const ehLegado = /.test(src), '4b: existe um único helper de decisão (ehLegado), não a regra copiada em cada ponto');
 }

@@ -3,6 +3,7 @@ const db = require('../database/db');
 const { proximoNumero } = require('../utils/numeracao');
 const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
 const rh = require('../utils/rh');
+const acumuloDePapeis = require('../utils/acumuloDePapeis');
 const canais = require('../utils/canais');
 const config = require('../config');
 const rascunhoCrimes = require('../utils/rascunhoCrimes');
@@ -306,7 +307,17 @@ async function indeferirMedidaDireta(interaction, numero) {
 }
 
 async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvoDiscordId, rgAlvo = null, motivo, semIndicios = false }) {
-  let promotorFinal = promotorId;
+  // MESMA regra de acúmulo do processo penal (utils/acumuloDePapeis.js — um módulo só, para os dois
+  // fluxos não divergirem): promotor que abre sem delegado separado ocupa os dois papéis. Sem isso,
+  // o promotor pedia a medida e o bot sorteava OUTRO promotor para analisar o próprio pedido dele.
+  const acumulo = acumuloDePapeis.resolverDelegadoEPromotor({
+    aberturaPorId: delegadoId || promotorId || null,
+    delegadoId,
+    promotorInformado: promotorId,
+  });
+  const delegadoFinal = acumulo.delegado;
+  let promotorFinal = acumulo.promotor;
+
   if (!promotorFinal) {
     const promotores = rh.listarPorCargo('Promotor').filter(p => !p.licenca);
     if (promotores.length === 0) return { erro: 'Não há Promotor ativo cadastrado. Informe um manualmente na opção `promotor`.' };
@@ -319,13 +330,13 @@ async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvo
     categoriaId: config.categoriaMedidasId,
     prefixo: 'medida',
     numero,
-    membros: [delegadoId, promotorFinal],
+    membros: [delegadoFinal, promotorFinal].filter(Boolean),
   });
 
   db.inserir('medidas', {
     numero, tipo, alvo, alvoDiscordId: alvoDiscordId || null, rgAlvo: rgAlvo || null, motivo,
     status: semIndicios ? 'Aguardando anexo de indícios' : 'Aguardando MP',
-    delegado: delegadoId, promotor: promotorFinal, juiz: null,
+    delegado: delegadoFinal || null, promotor: promotorFinal, juiz: null,
     canalId: canal.id,
     aguardandoMpDesde: semIndicios ? null : new Date().toISOString(), lembreteMpEnviado: false, escalonamentoMpEnviado: false,
   });
