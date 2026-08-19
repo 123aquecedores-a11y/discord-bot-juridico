@@ -201,8 +201,32 @@ function classificarDestinatarioIntimacao(processo, { discordId = null, parteId 
   return { via: 'aberto' };
 }
 
-const ocupaDestinatario = (processoTabela, registro, destinatario, usuarioId) =>
-  !!usuarioId && ocupanteAtual(processoTabela, registro, destinatario) === usuarioId;
+// OCUPA o papel de destinatário? Desde 19/08/2026 isto é por CARGO nos papéis de magistratura e MP,
+// não só por titularidade.
+//
+// O PROBLEMA QUE ISSO RESOLVE: um documento endereçado ao "Juiz do processo" não tinha quem
+// recebesse quando aquele juiz não estava online — ou quando o processo ainda nem tinha juiz
+// atribuído. O ato ficava pendente até a válvula, e a entrega in-game não acontecia por ausência,
+// não por regra. Agora qualquer Juiz recebe no lugar do colega, como cobertura de plantão.
+//
+// ADVOGADO CONTINUA POR HABILITAÇÃO ESPECÍFICA, e isso é o que impede a abertura de virar
+// vazamento: a intimação dirigida ao advogado de uma parte não pode ser recebida pelo advogado da
+// outra. Só Juiz/Promotor/Desembargador/Procurador compartilham.
+const CARGOS_QUE_COBREM = { Juiz: 'Juiz', Promotor: 'Promotor', Desembargador: 'Desembargador', Procurador: 'Procurador' };
+
+function ocupaDestinatario(processoTabela, registro, destinatario, usuarioId) {
+  if (!usuarioId || !destinatario) return false;
+  if (ocupanteAtual(processoTabela, registro, destinatario) === usuarioId) return true;
+
+  // Cobertura por cargo — nunca para Advogado nem para Autor (partes, não órgãos).
+  const cargo = CARGOS_QUE_COBREM[destinatario.papel];
+  if (!cargo) return false;
+  if (rh.temCargo(usuarioId, cargo)) return true;
+  // Chefia cobre a base, como já valia na supervisão.
+  if (cargo === 'Promotor' && rh.temCargo(usuarioId, 'Procurador')) return true;
+  if (cargo === 'Juiz' && rh.temCargo(usuarioId, 'Desembargador')) return true;
+  return false;
+}
 
 // Supervisão. Isto é cargo GLOBAL, não ocupação de papel no processo — por isso resolve pelo RH
 // (fonte da verdade de cargo no projeto, nunca a role do Discord). Não é a checagem vetada acima:

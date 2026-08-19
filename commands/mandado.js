@@ -2,7 +2,7 @@ const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, Butt
 const db = require('../database/db');
 const { truncar } = require('../utils/texto');
 const { proximoNumero } = require('../utils/numeracao');
-const { isSuperStaff, isAdmin } = require('../utils/permissoes');
+const { isSuperStaff, isAdmin , podeAtuarNoCaso, recusaDoCaso } = require('../utils/permissoes');
 const documentos = require('../utils/documentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const diario = require('../utils/diarioOficial');
@@ -73,8 +73,8 @@ function botaoEmitirMandado(numero) {
 async function abrirSelectTipo(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode emitir mandado — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode emitir mandado. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
   if (processo.tipo !== 'Penal') {
     return interaction.reply({ content: 'Mandado só se aplica a processo penal.', ephemeral: true });
@@ -132,8 +132,8 @@ async function emitirMandado(interaction, chave) {
   const [numero, tipoValue, destinatarioRef] = chave.split('#');
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (interaction.user.id !== processo.juiz && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só o Juiz deste processo pode emitir mandado — no caso, <@${processo.juiz}>.`, ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode emitir mandado. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
 
   const tipoLivre = tipoValue === 'outro' ? interaction.fields.getTextInputValue('tipoLivre') : null;
