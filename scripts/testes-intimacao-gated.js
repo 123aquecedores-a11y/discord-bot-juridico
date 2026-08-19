@@ -351,6 +351,45 @@ console.log('\n11) BLOCO D — CAMINHO DE ENTRADA de cada tipo novo (o que falta
   ok(iLeg.rec.modais.length === 0, '11f: processo LEGADO não abre o formulário — segue no anexo de PDF');
 }
 
+console.log('\n12) BLOCO E — a SENTENÇA está no catálogo e o teor não vaza pelas outras portas');
+{
+  const emissao = require('../utils/emissaoPeca');
+  ok(emissao.tipoAtivo('sentenca'), '12a: sentença está no catálogo e ativa');
+  ok(emissao.TIPOS.sentenca.destinatarios.includes('Advogado'),
+    '12b: destinatário é o ADVOGADO de cada parte — um token por habilitação (SPEC §11.3)');
+  ok(!emissao.TIPOS.acordao, '12c: acórdão ficou FORA de propósito — emissor mora em `apelacoes` e destinatários em `processos`');
+
+  // As três portas por onde a sentença vazava, todas condicionadas ao modo agora.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'commands', 'processo.js'), 'utf-8');
+  // lastIndexOf no fim: `postarOuAtualizarCapaPublica` também é chamado na ABERTURA do cível, muito
+  // antes no arquivo — indexOf pegava aquela e devolvia fatia vazia. Foi o canário 12z que pegou.
+  const trecho = src.slice(src.indexOf('const sentencaGated ='), src.lastIndexOf('await postarOuAtualizarCapaPublica(interaction.guild, numero)'));
+  ok(trecho.length > 800, '12z: o trecho analisado é o corpo real do julgamento (o scan não passou vazio)');
+
+  ok(/if \(!sentencaGated\) \{\s*try \{\s*await diario\.publicarNoDiario/.test(trecho),
+    '12d: DIÁRIO não recebe sentença em processo gated (política cancelada — se o resultado é público, ninguém procura o juiz)');
+  ok(/tipo === 'Penal' && !sentencaGated/.test(trecho),
+    '12e: devolutiva à Polícia Civil também não sai no gated (seria segunda porta do teor)');
+  ok(/const anexoUrlSentenca = null/.test(trecho),
+    '12f: URL de anexo não é mais guardada (SPEC §3.7 — link do CDN expira em 24h e vira link morto)');
+  ok(/canal && !sentencaGated\) await canais\.arquivarCanal/.test(trecho),
+    '12g: canal NÃO é arquivado no gated — arquivar antes da entrega trancaria a sentença para sempre');
+  ok(/restrito até a entrega pessoal/.test(trecho), '12h: o canal recebe metadado, não o teor');
+}
+
+console.log('\n13) §6.2 — a válvula reinicia na troca de responsável (era o SEXTO órfão)');
+{
+  // `pecas.reiniciarValvulaPorTroca` existia, testado, e NUNCA era chamado: a regra da SPEC §7 não
+  // valia em produção. O substituto herdava um caso cuja válvula já estava correndo e que podia
+  // destravar sozinho em minutos — a cena nunca aconteceria e ninguém saberia por quê.
+  const resp = fs.readFileSync(path.join(__dirname, '..', 'utils', 'responsaveis.js'), 'utf-8');
+  ok(/reiniciarValvulaPorTroca\(tabela, numero, papel\)/.test(resp),
+    '13a: a troca de responsável AGORA chama o reinício da válvula (caminho de produção existe)');
+  const corpo = resp.slice(resp.indexOf('async function trocarManual'), resp.indexOf('function componentesPendencia'));
+  ok(corpo.length > 500, '13z: o trecho analisado é o corpo real de trocarManual (não passou vazio)');
+  ok(/reiniciarValvulaPorTroca/.test(corpo), '13b: ...e a chamada está DENTRO de trocarManual, não solta no arquivo');
+}
+
 try { fs.unlinkSync(DB_TESTE); } catch (_) {}
 try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);

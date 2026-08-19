@@ -383,6 +383,25 @@ async function trocarManual(guild, { tabela, numero, papel, novoId, motivo, exec
     motivoAuditoria: String(motivo).trim(), executorId,
   });
   if (!r.ok) return { ok: false, erro: r.razao || 'Não foi possível concluir a troca.' };
+
+  // SEXTO CÓDIGO ÓRFÃO, achado em 18/08/2026 ao verificar a §6.2 a pedido do operador.
+  //
+  // `pecas.reiniciarValvulaPorTroca` existia, estava testado e NUNCA ERA CHAMADO. A regra da SPEC §7
+  // — "a contagem reinicia na troca de responsável" — simplesmente não valia em produção: o
+  // substituto herdava um caso cuja válvula já estava correndo, e que podia destravar sozinho em
+  // minutos. A cena nunca aconteceria, e ninguém saberia por quê.
+  //
+  // A §6.2 e a disponibilidade (Bloco F) NÃO se atropelam, e este é o ponto exato onde isso se vê:
+  // disponibilidade é PREVENÇÃO (escolhe quem entra); substituição é REMÉDIO (conserta quem saiu).
+  // O substituto assume as entregas pendentes por PAPEL, sem regenerar nada — e agora com o relógio
+  // reiniciado, que é o que torna a herança justa.
+  try {
+    const reiniciadas = require('./pecas').reiniciarValvulaPorTroca(tabela, numero, papel);
+    if (reiniciadas.length) {
+      console.log(`[pecas] troca de ${papel} em ${numero}: válvula reiniciada em ${reiniciadas.length} entrega(s) pendente(s).`);
+    }
+  } catch (e) { console.error('[pecas] falha ao reiniciar válvula na troca:', e.message); }
+
   return { ...r, papel, tabela, numero };
 }
 

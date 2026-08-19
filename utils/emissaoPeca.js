@@ -93,6 +93,24 @@ const TIPOS = {
     tabela: 'processos',
     ativo: true,
   },
+
+  // BLOCO E — a sentença. Destinatário é o ADVOGADO de cada parte (um token por habilitação
+  // aprovada, SPEC §11.3): a sentença é entregue em mãos a cada defesa, e o ato só se cumpre por
+  // inteiro quando todos receberam ou a válvula estourar.
+  //
+  // ACÓRDÃO FICOU DE FORA, e o motivo é estrutural, não de esquecimento: o emissor (Desembargador)
+  // mora na tabela `apelacoes` e os destinatários (advogados habilitados) moram em `processos`. O
+  // módulo resolve emissor e destinatário na MESMA tabela (`cfg.tabela`), então o acórdão não fecha
+  // sem uma capacidade nova — resolução cruzada entre tabelas. Registrado, não improvisado.
+  sentenca: {
+    rotulo: 'Sentença',
+    titulo: 'SENTENÇA',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Juiz',
+    destinatarios: ['Advogado'],
+    tabela: 'processos',
+    ativo: true, // FAIXA 5 (SPEC §11)
+  },
 };
 
 const tipoAtivo = (chave) => !!(TIPOS[chave] && TIPOS[chave].ativo);

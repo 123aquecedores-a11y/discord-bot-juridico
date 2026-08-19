@@ -3428,13 +3428,46 @@ async function executarSentenca(interaction, numero, modo) {
     nomeReu, nomeAutor, crimeDescricao, pena, regime, nomeAssinante, cargoAssinante: 'Juiz de Direito',
   }).catch(err => { console.error('Falha ao gerar PNG da sentença:', err.message); return null; });
 
-  const msgSentenca = await interaction.editReply({
-    content: documentos.textoSentenca(processo), embeds: [embedProcesso(processo)], components: [botaoRecorrer(numero)],
-    ...(pngSentenca ? { files: [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] } : {}),
-  });
-  const anexoUrlSentenca = msgSentenca?.attachments?.first()?.url || null;
+  // BLOCO E — SENTENÇA GATED. Em processo `ingame` a sentença vira PEÇA: só o juiz vê o teor, e
+  // cada advogado habilitado recebe a via dele em mãos, com selo (um token por habilitação, §11.3).
+  // O canal recebe METADADO. Sem isso o resultado ficava público no instante do julgamento, e
+  // ninguém precisaria procurar o juiz — que é exatamente o que a entrega in-game existe para
+  // forçar.
+  const sentencaGated = require('../utils/pecas').modoDoProcesso(processo) === 'ingame';
+  let msgSentenca = null;
+  if (sentencaGated) {
+    const habilitados = (processo.habilitacoes || [])
+      .filter(h => h.status === 'Aprovado')
+      .map(h => ({ papel: 'Advogado', habilitacaoId: h.id }));
+    // Sem defesa habilitada não há a quem entregar. A peça não é criada (seria órfã, pendente até a
+    // válvula sem dono) e o ato segue no caminho aberto — mesmo critério do arquivamento do MP.
+    if (habilitados.length) {
+      require('../utils/pecas').gerar({
+        processoTabela: 'processos', processoNumero: numero, tipo: 'sentenca',
+        autorId: interaction.user.id, autorPapel: 'Juiz', texto,
+        assinante: nomeAssinante, destinatarios: habilitados,
+      });
+    }
+    await interaction.editReply({
+      content: `⚖️ **Sentença proferida — ${numero}** (${resultado}).\n`
+        + (habilitados.length
+          ? '🔒 O teor fica restrito até a entrega pessoal a cada advogado. Use **Entregar agora** no canal do processo quando estiver em cena.'
+          : '⚠️ Não há defesa habilitada neste processo — a sentença foi lavrada sem peça de entrega.'),
+      embeds: [embedProcesso(processo)], components: [botaoRecorrer(numero)],
+    });
+  } else {
+    msgSentenca = await interaction.editReply({
+      content: documentos.textoSentenca(processo), embeds: [embedProcesso(processo)], components: [botaoRecorrer(numero)],
+      ...(pngSentenca ? { files: [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] } : {}),
+    });
+  }
+  // URL DE ANEXO NÃO É MAIS GUARDADA (SPEC §3.7): link assinado do CDN do Discord expira em 24h e
+  // vira link morto nos autos. O original é o registro no banco; o PNG se regera do texto.
+  const anexoUrlSentenca = null;
 
-  if (processo.tipo === 'Penal') {
+  // A devolutiva à Polícia Civil manda o TEOR para outro canal. Em processo gated isso seria uma
+  // segunda porta de saída da sentença, por fora da entrega — o mesmo furo do Diário.
+  if (processo.tipo === 'Penal' && !sentencaGated) {
     await devolutivaPoliciaCivil.enviarSentencaPoliciaCivil({ processo, texto: documentos.textoSentenca(processo), pngBuffer: pngSentenca });
   }
   // VAZAMENTO FECHADO EM 18/08/2026. `detalhe` do andamento guardava a fundamentação INTEIRA, e
@@ -3455,15 +3488,27 @@ async function executarSentenca(interaction, numero, modo) {
   });
   await repostarPainel(interaction.guild, numero);
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
-  if (canal) await canais.arquivarCanal(canal);
+  // CANAL NÃO É ARQUIVADO EM PROCESSO GATED. A entrega da sentença acontece DEPOIS do julgamento —
+  // arquivar aqui fecharia o canal antes de o juiz conseguir entregar em mãos, e a sentença nunca
+  // sairia do gate. O arquivamento passa a ser consequência da entrega, não do julgamento.
+  if (canal && !sentencaGated) await canais.arquivarCanal(canal);
   await auditoria.registrar(interaction.guild, { acao: `Sentença: ${resultado}`, executorId: interaction.user.id, referencia: `Processo ${numero}` });
-  // Publica a sentença no Diário Oficial (try/catch — falha aqui não pode quebrar o julgamento).
-  try {
-    await diario.publicarNoDiario(interaction.guild, 'sentenca', {
-      numero, tipoProcesso: processo.tipo, resultado, parte: nomeReu, magistrado: nomeAssinante,
-      files: pngSentenca ? [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] : undefined,
-    });
-  } catch (e) { console.error('[processo] publicação de sentença no Diário falhou (ignorado):', e.message); }
+
+  // DIÁRIO OFICIAL — política cancelada em 18/08/2026 (ver o cabeçalho de utils/diarioOficial.js).
+  // Enquanto o Modo Entrega In-Game estiver ativo, NENHUM ato processual é publicado. O motivo é o
+  // desenho inteiro: se o resultado sai no Diário, ninguém precisa procurar o juiz, e a entrega em
+  // mãos perde a razão de existir. O Diário fica só para comunicado administrativo.
+  //
+  // Condicional ao interruptor, não removido: em processo `aberto`/`legado` a publicação continua,
+  // porque ali não há entrega pessoal a proteger.
+  if (!sentencaGated) {
+    try {
+      await diario.publicarNoDiario(interaction.guild, 'sentenca', {
+        numero, tipoProcesso: processo.tipo, resultado, parte: nomeReu, magistrado: nomeAssinante,
+        files: pngSentenca ? [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] : undefined,
+      });
+    } catch (e) { console.error('[processo] publicação de sentença no Diário falhou (ignorado):', e.message); }
+  }
   await postarOuAtualizarCapaPublica(interaction.guild, numero);
 }
 
