@@ -167,6 +167,81 @@ const EFEITOS_POS_CRIACAO = {
   contestacao: () => ({ status: 'Concluso para julgamento', contestacaoEm: new Date().toISOString() }),
 };
 
+// ---------------------------------------------------------------------------
+// EFEITOS DO RECEBIMENTO — o elo "documento entregue → próxima etapa destravada"
+// ---------------------------------------------------------------------------
+// Espelha EFEITOS_POS_CRIACAO, mas dispara quando o selo é conferido, não quando a peça nasce.
+//
+// A SEPARAÇÃO QUE CONTINUA VALENDO (ver teste 9 em scripts/testes-intimacao-gated.js): receber o
+// PAPEL não é receber a DENÚNCIA. O gate do QR prova que o documento chegou às mãos do Juiz e
+// libera a leitura do teor — não é ato judicial, não julga nada.
+//
+// O que este efeito faz é DISTRIBUIÇÃO, não juízo de mérito: o Juiz que fisicamente recebeu a
+// denúncia passa a ser o responsável pelo caso. É exatamente o que o sorteio automático já fazia
+// (executarParecerMp → rh.sortearJuiz → status 'Instrução'), sem nenhuma decisão pelo caminho.
+// Quando não havia Juiz elegível o sorteio falhava e o processo ficava em
+// 'Denúncia oferecida - aguardando juiz', esperando um job de 10 em 10 minutos. Quem recebe o papel
+// resolve isso na hora.
+//
+// POR ISSO A CONDIÇÃO É "processo SEM juiz". Com juiz já designado, o caso já foi distribuído e
+// nada aqui tem o que fazer — é também a guarda de colisão: o segundo recebimento não reatribui.
+const EFEITOS_POS_RECEBIMENTO = {
+  denuncia_mp: (processo, _peca, recebedorId) => {
+    const rh = require('./rh');
+    const acumulo = require('./acumuloDePapeis');
+
+    // GUARDA DE COLISÃO — processo já distribuído não é redistribuído. Vale tanto para o segundo
+    // Juiz que recebe quanto para o caso em que o sorteio automático chegou primeiro.
+    if (processo.juiz) {
+      return processo.juiz === recebedorId
+        ? null
+        : { recusa: `ℹ️ O processo **${processo.numero}** já tem Juiz responsável: <@${processo.juiz}>. Você recebeu o documento e pode ler o teor, mas a titularidade não muda.` };
+    }
+
+    // Recebeu pelo papel de Juiz mas não tem o cargo (staff, supervisão): entrega o documento,
+    // não vira titular. Designar Juiz sem cargo de Juiz seria pior que o processo parado.
+    if (!rh.temCargo(recebedorId, 'Juiz') && !rh.temCargo(recebedorId, 'Desembargador')) {
+      return { recusa: `ℹ️ Documento entregue. A titularidade do processo **${processo.numero}** não foi atribuída a você porque o cargo de Juiz não consta no seu registro do **/rh** — outro Juiz precisa receber para assumir o caso.` };
+    }
+
+    // ACÚMULO PROIBIDO — quem acusa não julga. Alguém com cargo de Juiz E Promotor cobre o papel de
+    // destinatário "Juiz" e chega até aqui; se for o promotor DESTE caso, entregar o papel é certo,
+    // mas designá-lo juiz do próprio caso não. Mudo seria o pior: a pessoa acharia que destravou.
+    const conflito = acumulo.conflitoDePapeis({ Juiz: recebedorId, Promotor: processo.promotor })
+      || acumulo.conflitoDePapeis({ Juiz: recebedorId, Advogado: processo.advogadoId });
+    if (conflito) {
+      return { recusa: `⚠️ **Você é o Promotor deste caso e não pode ser o Juiz dele.** ${conflito}\n\nO documento está entregue e você pode ler o teor, mas **outro Juiz precisa recebê-lo** para o processo seguir para instrução.` };
+    }
+    // O réu do próprio processo julgando a si mesmo — mesma razão de rh.sortearJuiz excluí-lo.
+    if ((processo.reus || []).includes(recebedorId) || processo.autor === recebedorId) {
+      return { recusa: `⚠️ **Você é parte neste processo e não pode julgá-lo.** O documento está entregue, mas outro Juiz precisa recebê-lo para o caso seguir.` };
+    }
+
+    return {
+      campos: {
+        juiz: recebedorId,
+        juizDesde: new Date().toISOString(),
+        status: 'Instrução',
+        distribuidoPorRecebimento: true,
+      },
+      aviso: `⚖️ Você recebeu a denúncia e passa a ser o **Juiz responsável** pelo processo **${processo.numero}**, que segue para instrução.`,
+    };
+  },
+};
+
+// Devolve { campos, aviso } aplicado, { recusa } explicando por que não aplicou, ou null (nada a
+// fazer). Nunca lança: falha aqui não pode derrubar uma entrega que já foi lavrada nos autos.
+function aplicarEfeitoDoRecebimento(tipoChave, processo, peca, recebedorId) {
+  const efeito = EFEITOS_POS_RECEBIMENTO[tipoChave];
+  if (!efeito || !processo) return null;
+  const r = efeito(processo, peca, recebedorId);
+  if (!r || !r.campos) return r || null;
+  const cfg = TIPOS[tipoChave];
+  db.atualizar(cfg.tabela, processo.numero, r.campos);
+  console.log(`[pecas] ${peca.numero} (${tipoChave}) recebida por ${recebedorId}: processo ${processo.numero} → ${r.campos.status || 'campos atualizados'}.`);
+  return r;
+}
+
 async function aplicarEfeitoNoProcesso(tipoChave, processo, peca) {
   const efeito = EFEITOS_POS_CRIACAO[tipoChave];
   if (!efeito) return null;
@@ -795,6 +870,36 @@ async function abrirRecebimento(interaction, numeroPeca) {
         executorId: interaction.user.id,
         metadata: { peca: numeroPeca },
       }).catch(err => console.error(`[pecas] falha ao lavrar recebimento de ${numeroPeca}:`, err.message));
+
+      // ELO DE DESTRAVAMENTO — a entrega já está lavrada acima. O que vem abaixo é o efeito no
+      // processo, e é blindado de propósito: se falhar, a entrega continua válida. Perder a
+      // lavratura por causa do efeito seria trocar um problema por um pior.
+      try {
+        const processoAtual = db.buscarPorNumero(meta.processoTabela, meta.processoNumero);
+        const efeito = aplicarEfeitoDoRecebimento(meta.tipo, processoAtual, { numero: numeroPeca }, interaction.user.id);
+        if (efeito && efeito.recusa) {
+          await msg.reply({ content: efeito.recusa }).catch(() => {});
+        } else if (efeito && efeito.campos) {
+          await msg.reply({ content: efeito.aviso }).catch(() => {});
+          const proc = db.buscarPorNumero(meta.processoTabela, meta.processoNumero);
+          // Lazy require: commands/processo.js importa utils/pecas, e o require no topo fecharia o
+          // ciclo. Mesmo padrão já usado em `require('./estado')` mais abaixo neste arquivo.
+          const processoCmd = require('../commands/processo');
+          await require('./canais').adicionarMembro(
+            await interaction.guild.channels.fetch(proc.canalId).catch(() => null), interaction.user.id,
+          ).catch(() => {});
+          await processoCmd.repostarPainel(interaction.guild, proc.numero).catch(() => {});
+          await andamentos.registrar(interaction.guild, meta.processoNumero, {
+            tipo: 'juiz_designado',
+            titulo: '⚖️ Juiz designado pelo recebimento da denúncia',
+            detalhe: `<@${interaction.user.id}> recebeu a denúncia em cena e assumiu o processo, que segue para instrução.`,
+            executorId: interaction.user.id,
+            metadata: { peca: numeroPeca, juiz: interaction.user.id },
+          }).catch(() => {});
+        }
+      } catch (e) {
+        console.error(`[pecas] efeito do recebimento de ${numeroPeca} falhou (entrega segue válida):`, e.message);
+      }
       return;
     }
 
@@ -1071,4 +1176,5 @@ module.exports = {
   estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA, TTL_RASCUNHO_MS,
   verificarValvulaEEncerramento, publicarRelatorioSemanal, unidadeDoProcesso,
   qualificacao, // exportada para teste: e ela que classifica o rito no cabecalho do documento
+  aplicarEfeitoDoRecebimento, EFEITOS_POS_RECEBIMENTO, // elo "documento entregue -> proxima etapa"
 };
