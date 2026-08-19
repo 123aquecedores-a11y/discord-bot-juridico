@@ -35,12 +35,13 @@ function ok(cond, nome, detalhe = '') {
 const ADV = 'id_adv', OUTRO = 'id_outro';
 
 function fakeInteraction(userId) {
-  const rec = { replies: [] };
+  const rec = { replies: [], modais: [] };
   return {
     rec,
     user: { id: userId },
     member: { roles: { cache: { has: () => false } }, permissions: { has: () => false } },
     guild: { id: 'guild1' },
+    showModal: async (m) => { rec.modais.push(m); },
     reply: async (o) => { rec.replies.push(o); },
     followUp: async (o) => { rec.replies.push(o); },
   };
@@ -92,15 +93,21 @@ console.log('\n2) Handler anexarPeticaoInicial recusa fora do legado');
     '2-legado: processo legado NÃO é barrado pelo modo (cai no gate de autoria, como antes)', tLegado);
 }
 
-console.log('\n3) Handler anexarContestacao recusa fora do legado');
+console.log('\n3) Handler anexarContestacao fora do legado abre o FORMULÁRIO GATED');
 {
+  // MUDOU NO BLOCO D, de propósito. Antes o handler RECUSAVA e mandava usar "Peticionar" — era o
+  // conserto mínimo do vazamento, quando a contestação ainda não tinha tipo próprio. Agora ela tem
+  // (`contestacao` no catálogo), então o MESMO botão em que o advogado já clica abre o formulário
+  // certo: o documento sai com o título CONTESTAÇÃO, não PETIÇÃO.
+  //
+  // O que NÃO mudou, e é o que este arquivo protege: o caminho do PDF continua inacessível fora do
+  // legado. Antes por recusa, agora por desvio — o efeito de segurança é o mesmo.
   for (const modo of ['ingame', 'aberto']) {
     const p = novoCivil(modo);
     const i = fakeInteraction(ADV);
     await processoCmd.anexarContestacao(i, `${p.numero}#1`);
-    const t = textoDe(i.rec.replies[0]);
-    ok(/rito novo/i.test(t) && /Peticionar/.test(t),
-      `3-${modo}: processo ${modo} recusa a contestação em PDF`, t);
+    ok(i.rec.modais.length === 1,
+      `3-${modo}: processo ${modo} abre o formulário gated (e NÃO o anexo de PDF)`);
   }
 
   const pLegado = novoCivil(null);

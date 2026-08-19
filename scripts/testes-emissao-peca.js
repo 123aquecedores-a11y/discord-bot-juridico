@@ -117,7 +117,11 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     ok(emissao.tipoAtivo('peticao_incidental'), '1a: petição incidental está na Faixa 1');
     ok(!emissao.TIPOS.peticao_inicial_penal, '1a2: "petição inicial penal" não existe — no penal o caso nasce de inquérito ou ato do MP');
     ok(emissao.tipoAtivo('intimacao_juiz'), '1b: intimação do juiz está na Faixa 1');
-    ok(!emissao.tipoAtivo('sentenca'), '1c: tipo fora da faixa não está ativo');
+    // A sentença ERA o exemplo de "tipo fora da faixa" — até o Bloco E ativá-la (18/08/2026).
+    // Trocado por um tipo que de fato não existe, para a asserção continuar significando o que ela
+    // diz: `tipoAtivo` recusa o que não está no catálogo, em vez de devolver verdadeiro por engano.
+    ok(!emissao.tipoAtivo('tipo_que_nao_existe'), '1c: tipo fora do catálogo não está ativo');
+    ok(emissao.tipoAtivo('sentenca'), '1c2: a sentença ENTROU no catálogo no Bloco E (era o exemplo de inativo)');
     const papeis = Object.values(emissao.TIPOS).flatMap(t => [t.emissor, ...t.destinatarios]);
     ok(papeis.every(p => /^[A-Z]/.test(p) && !/^\d+$/.test(p)), '1d: catálogo usa PAPÉIS, nunca IDs');
   }
