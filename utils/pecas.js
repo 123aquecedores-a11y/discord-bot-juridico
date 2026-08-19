@@ -218,14 +218,11 @@ function ocupaDestinatario(processoTabela, registro, destinatario, usuarioId) {
   if (!usuarioId || !destinatario) return false;
   if (ocupanteAtual(processoTabela, registro, destinatario) === usuarioId) return true;
 
-  // Cobertura por cargo — nunca para Advogado nem para Autor (partes, não órgãos).
+  // Cobertura por cargo — nunca para Advogado nem para Autor (partes, não órgãos). A lista acima
+  // é o ESCOPO (quais papéis compartilham); quem cobre quem é rh.cobreOPapel, o ponto único.
   const cargo = CARGOS_QUE_COBREM[destinatario.papel];
   if (!cargo) return false;
-  if (rh.temCargo(usuarioId, cargo)) return true;
-  // Chefia cobre a base, como já valia na supervisão.
-  if (cargo === 'Promotor' && rh.temCargo(usuarioId, 'Procurador')) return true;
-  if (cargo === 'Juiz' && rh.temCargo(usuarioId, 'Desembargador')) return true;
-  return false;
+  return rh.cobreOPapel(usuarioId, cargo);
 }
 
 // Supervisão. Isto é cargo GLOBAL, não ocupação de papel no processo — por isso resolve pelo RH

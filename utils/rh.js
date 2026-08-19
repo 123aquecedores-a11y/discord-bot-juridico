@@ -23,6 +23,38 @@ function temCargo(discordId, cargo) {
   return !!r && r.cargo === cargo;
 }
 
+// ---------------------------------------------------------------------------
+// COBERTURA DE PAPEL — ponto único (19/08/2026)
+// ---------------------------------------------------------------------------
+// A CHEFIA COBRE A BASE: onde um Promotor atua, o Procurador também; onde um Juiz atua, o
+// Desembargador também. Isso já valia na supervisão e passou a valer nos atos ordinários e no
+// recebimento de peças.
+//
+// POR QUE ISTO EXISTE COMO FUNÇÃO: a regra estava escrita em TRÊS lugares, e um deles não sabia
+// dela. `atosPorCargo.podeAtuar` e `pecas.ocupaDestinatario` aplicavam a cobertura; a varredura de
+// responsáveis fantasma (responsaveis.motivoInvalidez) comparava o cargo EXATO. O resultado
+// apareceu em produção: um Desembargador responsável por seis processos cíveis — que ele pode
+// julgar sem problema — foi contado como "sem o cargo" nos seis de uma vez, e só não teve os casos
+// redistribuídos porque a trava de segurança de 5 abortou a rodada.
+//
+// Regra copiada é regra que diverge. Aqui é UM lugar, e os três consultam.
+const COBERTURA = {
+  Juiz: ['Juiz', 'Desembargador'],
+  Promotor: ['Promotor', 'Procurador'],
+  Desembargador: ['Desembargador'],
+  Procurador: ['Procurador'],
+};
+
+// Esta pessoa cobre `papel`? Para papel FORA do mapa (Advogado, Autor, Delegado, réu) a resposta é
+// o cargo exato — partes e integrações não têm chefia que as substitua, e afrouxar isso seria
+// exatamente o vazamento que a separação entre órgão e parte existe para impedir.
+function cobreOPapel(discordId, papel) {
+  if (!discordId || !papel) return false;
+  const aceitos = COBERTURA[papel];
+  if (!aceitos) return temCargo(discordId, papel);
+  return aceitos.some(c => temCargo(discordId, c));
+}
+
 function contratar(discordId, cargo, nomePersonagem = null, rg = null) {
   // desativa cadastro anterior (se houver) e cria um novo
   const dados = db.buscarUm('rh', r => r.discordId === discordId && r.ativo);
@@ -94,4 +126,4 @@ function sortearPorCargo(cargo, { excluirIds = [] } = {}) {
   return ativos[Math.floor(Math.random() * ativos.length)].discordId;
 }
 
-module.exports = { CARGOS, CARGOS_MAGISTRATURA, precisaRg, getCargo, temCargo, contratar, atualizarDados, demitir, setLicenca, listarPorCargo, magistradosSemRg, sortearJuiz, sortearPorCargo };
+module.exports = { CARGOS, CARGOS_MAGISTRATURA, COBERTURA, precisaRg, getCargo, temCargo, cobreOPapel, contratar, atualizarDados, demitir, setLicenca, listarPorCargo, magistradosSemRg, sortearJuiz, sortearPorCargo };
