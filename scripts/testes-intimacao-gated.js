@@ -261,6 +261,32 @@ console.log('\n9) OS DOIS "RECEBIMENTOS" SÃO COISAS DIFERENTES — e não podem
   ok(corpoReceber.length > 500, '9z: o trecho analisado é o corpo real da função (o scan não passou vazio)');
 }
 
+console.log('\n10) DEFENSOR DATIVO enxerga sem cena (exceção da SPEC §11.1 e §6.2)');
+{
+  // O dativo é nomeado pelo BOT quando passam 48h sem advogado constituído (utils/prazos.js,
+  // nomearDefensorDativo — verificado que EXISTE antes de implementar a exceção). Fazê-lo esperar
+  // uma cena para poder LER anula o propósito do sorteio: o réu voltaria a ficar sem defesa
+  // efetiva, agora com um defensor nomeado que não consegue ver a acusação.
+  const DAT = '200000000000000001', CONST = '200000000000000002';
+  const p = db.inserir('processos', {
+    numero: '0900PN', tipo: 'Penal', status: 'Instrução', modoEntrega: 'ingame', juiz: JUIZ,
+    habilitacoes: [
+      { id: 1, advogadoId: DAT, status: 'Aprovado', dativo: true },
+      { id: 2, advogadoId: CONST, status: 'Aprovado' },
+    ],
+  });
+  const g = pecas.gerar({
+    processoTabela: 'processos', processoNumero: p.numero, tipo: 'intimacao_juiz',
+    autorId: JUIZ, autorPapel: 'Juiz', texto: 'teor',
+    destinatarios: [{ papel: 'Advogado', habilitacaoId: 1 }, { papel: 'Advogado', habilitacaoId: 2 }],
+  });
+
+  ok(pecas.podeVerTeor(DAT, g.peca.numero) === true, '10a: dativo enxerga o teor SEM entrega — destrava ao ser nomeado');
+  // O escopo é estreito de propósito: a exceção é do DATIVO, não de "todo advogado habilitado".
+  ok(pecas.podeVerTeor(CONST, g.peca.numero) === false,
+    '10b: advogado CONSTITUÍDO continua precisando receber em cena — a exceção não vazou para o caso geral');
+}
+
 try { fs.unlinkSync(DB_TESTE); } catch (_) {}
 try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);

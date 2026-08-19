@@ -51,6 +51,48 @@ const TIPOS = {
     tabela: 'processos',
     ativo: true, // FAIXA 1
   },
+
+  // BLOCO D — atos do penal, aprovados em 18/08/2026. Todos entram por CONFIGURAÇÃO: nenhuma linha
+  // de lógica de rito foi escrita para eles. `podeEmitir` resolve Promotor e Delegado pelo
+  // TABELAS_TICKET que já existia, e o destinatário Juiz/Promotor é slot direto.
+  denuncia_mp: {
+    rotulo: 'Denúncia',
+    titulo: 'DENÚNCIA',
+    orgao: 'MINISTÉRIO PÚBLICO',
+    emissor: 'Promotor',
+    destinatarios: ['Juiz'],
+    tabela: 'processos',
+    ativo: true, // FAIXA 3 (SPEC §11)
+  },
+  manifestacao_mp_gated: {
+    rotulo: 'Manifestação do MP',
+    titulo: 'MANIFESTAÇÃO DO MINISTÉRIO PÚBLICO',
+    orgao: 'MINISTÉRIO PÚBLICO',
+    emissor: 'Promotor',
+    destinatarios: ['Juiz'],
+    tabela: 'processos',
+    ativo: true, // FAIXA 4 (SPEC §11)
+  },
+  contestacao: {
+    rotulo: 'Contestação / defesa',
+    titulo: 'CONTESTAÇÃO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Advogado',
+    destinatarios: ['Juiz'],
+    tabela: 'processos',
+    ativo: true, // FAIXA 3 (SPEC §11)
+  },
+  // NÃO está na tabela de exclusões da §11.1, e os dois lados são jogadores com papel resolvível
+  // que vivem no fórum — por isso entra no gate. Único ato aprovado cujo destinatário é o Promotor.
+  relatorio_inquerito: {
+    rotulo: 'Relatório de inquérito',
+    titulo: 'RELATÓRIO DE INQUÉRITO',
+    orgao: 'POLÍCIA CIVIL',
+    emissor: 'Delegado',
+    destinatarios: ['Promotor'],
+    tabela: 'processos',
+    ativo: true,
+  },
 };
 
 const tipoAtivo = (chave) => !!(TIPOS[chave] && TIPOS[chave].ativo);

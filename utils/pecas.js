@@ -519,6 +519,26 @@ function podeVerTeor(usuarioId, pecaRef, processoOpcional = null, { ehStaff = fa
   // Após a sentença tudo abre no fluxo normal — o sigilo aqui é temporal, não permanente (SPEC §1).
   if (processoSentenciado(processo)) return habilitadoNoProcesso(peca.processoTabela, processo, usuarioId);
 
+  // DEFENSOR DATIVO — exceção da SPEC §11.1 e §6.2, implementada em 18/08/2026.
+  //
+  // "O defensor dativo sorteado pelo sistema entra por papel e enxerga a peça sem precisar de cena.
+  //  Nomeação do sistema nunca depende de entrega in-game — senão o réu fica sem defesa, que é
+  //  justamente o que o sorteio existe para evitar."
+  //
+  // O dativo é nomeado pelo BOT (utils/prazos.js) quando passam 48h sem advogado constituído. Fazer
+  // ele esperar uma cena para poder LER os autos anula o propósito do sorteio: o réu voltaria a
+  // ficar sem defesa efetiva, agora com um defensor nomeado que não consegue ver a acusação.
+  //
+  // ESCOPO ESTREITO DE PROPÓSITO: só vale para peça de que ele é DESTINATÁRIO. Não é passe livre
+  // para os autos inteiros — é o mesmo que um advogado constituído veria, só que sem a cena. A
+  // habilitação dele já nasce `dativo: true` e `status: 'Aprovado'` (ver nomearDefensorDativo).
+  const ehDativoDestinatario = peca.destinatarios.some(d => {
+    if (d.papel !== 'Advogado') return false;
+    const hab = (processo.habilitacoes || []).find(h => h.id === d.habilitacaoId);
+    return !!(hab && hab.dativo && hab.status === 'Aprovado' && hab.advogadoId === usuarioId);
+  });
+  if (ehDativoDestinatario) return true;
+
   // Quem já registrou recebimento vê — resolvido por PAPEL, não pelo ID que clicou. É isso que faz
   // o juiz substituto enxergar o teor de uma peça recebida pelo antecessor (SPEC §8, teste 16).
   // E é irreversível: voltar fase não re-trava o que já foi recebido.
