@@ -10,6 +10,7 @@ const rh = require('../utils/rh');
 const { proximoNumero } = require('../utils/numeracao');
 const { temCargo, isSuperStaff, isAdmin, papelInstitucional , podeAtuarNoCaso, recusaDoCaso } = require('../utils/permissoes');
 const { truncar, extrairMencaoOuId } = require('../utils/texto');
+const atosPorCargo = require('../utils/atosPorCargo');
 const cruzamento = require('../utils/cruzamento');
 const ficha = require('../utils/ficha');
 const auditoria = require('../utils/auditoria');
@@ -847,8 +848,25 @@ function processarModalLimpezaFicha(interaction) {
 // ---- Decisão (Juiz) ----
 
 async function finalizarDecisao(guild, numero, status, extras = {}, executorId = null) {
-  const campos = { status, ...extras };
   const peticaoAtual = db.buscarPorNumero('peticoes', numero);
+
+  // GUARDA DE COLISÃO — relida do banco AGORA, não herdada da checagem da entrada.
+  // Entre o clique em "Deferir" e este ponto passaram um modal, uma tela de confirmação e/ou o
+  // seletor de risco. É nessa janela que o segundo Juiz decide a mesma petição, e a verificação
+  // feita lá atrás já está velha quando chega aqui.
+  //
+  // Pega também o indeferimento automático por decurso de prazo (utils/prazos.js): sem isto o job
+  // indeferiria uma petição que um Juiz acabou de deferir no segundo anterior.
+  const colisao = atosPorCargo.bloqueioPorStatusDecidido(
+    peticaoAtual, ['Pendente', 'Diligência'], 'A decisão desta petição',
+  );
+  if (colisao) return { colisao };
+
+  const campos = { status, ...extras };
+  // Só marca decisaoJuizEm quando a decisão é TERMINAL. Diligência é reversível por natureza (o
+  // Juiz volta a decidir depois que o documento chega), então carimbá-la travaria o legítimo.
+  if (status !== 'Diligência') campos.decisaoJuizEm = new Date().toISOString();
+  if (executorId) Object.assign(campos, atosPorCargo.carimboDeExecucao(executorId));
   if (status === 'Deferido' && peticaoAtual.tipo === 'PorteArma') {
     campos.validadeAte = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString();
   }
@@ -999,9 +1017,8 @@ async function decidir(interaction, numero, acao) {
   }
   // "Diligência" não é terminal — o Juiz pode (e deve) decidir de novo depois que o documento
   // pedido for anexado na conversa. Só bloqueia se já foi Deferido/Indeferido de verdade.
-  if (!['Pendente', 'Diligência'].includes(peticao.status)) {
-    return interaction.reply({ content: 'Essa petição já foi decidida (deferida ou indeferida).', ephemeral: true });
-  }
+  const jaDecidida = atosPorCargo.bloqueioPorStatusDecidido(peticao, ['Pendente', 'Diligência'], 'A decisão desta petição');
+  if (jaDecidida) return interaction.reply({ content: jaDecidida, ephemeral: true });
   // Trava de manifestação do MP (lazy): a decisão FINAL (deferir/indeferir) espera a manifestação do
   // MP ou o decurso das 24h. Diligência e outros atos (intimar, pedir documento) seguem livres — a
   // trava é só sobre a decisão final. Se a IA cai, o promotor ainda registra o parecer (fallback);
@@ -1047,9 +1064,8 @@ async function confirmarDeferimento(interaction, numero) {
   if (!podeAtuarNoCaso(interaction, peticao, 'juiz')) {
     return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${peticao.juiz}>.`, ephemeral: true });
   }
-  if (!['Pendente', 'Diligência'].includes(peticao.status)) {
-    return interaction.update({ content: 'Essa petição já foi decidida (deferida ou indeferida).', components: [] });
-  }
+  const jaDecidida = atosPorCargo.bloqueioPorStatusDecidido(peticao, ['Pendente', 'Diligência'], 'A decisão desta petição');
+  if (jaDecidida) return interaction.update({ content: jaDecidida, components: [] });
 
   if (peticao.tipo === 'PorteArma') {
     const row = new ActionRowBuilder().addComponents(
@@ -1060,7 +1076,8 @@ async function confirmarDeferimento(interaction, numero) {
   }
 
   await interaction.deferUpdate();
-  await finalizarDecisao(interaction.guild, numero, 'Deferido', {}, interaction.user.id);
+  const r = await finalizarDecisao(interaction.guild, numero, 'Deferido', {}, interaction.user.id);
+  if (r && r.colisao) return interaction.editReply({ content: r.colisao, components: [] });
   return interaction.editReply({ content: `Petição ${numero} deferida.`, components: [] });
 }
 
@@ -1081,7 +1098,8 @@ async function processarDecisaoRisco(interaction, numero) {
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com a petição sendo deferida com sucesso.
   await interaction.deferUpdate();
-  await finalizarDecisao(interaction.guild, numero, 'Deferido', { nivelRisco: nivel }, interaction.user.id);
+  const r = await finalizarDecisao(interaction.guild, numero, 'Deferido', { nivelRisco: nivel }, interaction.user.id);
+  if (r && r.colisao) return interaction.editReply({ content: r.colisao, components: [] });
   return interaction.editReply({ content: `Nível de risco ${nivel} registrado. Petição ${numero} deferida (porte válido por 15 dias).`, components: [] });
 }
 
@@ -1097,7 +1115,8 @@ async function processarModalDecisao(interaction, numero, acao) {
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com a decisão sendo registrada com sucesso.
   await interaction.deferReply({ ephemeral: true });
-  await finalizarDecisao(interaction.guild, numero, status, { motivo }, interaction.user.id);
+  const r = await finalizarDecisao(interaction.guild, numero, status, { motivo }, interaction.user.id);
+  if (r && r.colisao) return interaction.editReply({ content: r.colisao });
   return interaction.editReply({ content: `Petição ${numero}: ${status.toLowerCase()}.` });
 }
 
