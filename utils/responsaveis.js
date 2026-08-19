@@ -141,7 +141,10 @@ async function motivoInvalidez(guild, papel, id) {
   if (estado === 'indeterminado') return null; // falha transitória de rede: não arrisca
   if (estado === 'ausente') return 'ausente';
   if (EXIGE_CARGO_RH[papel] === false) return null;
-  return rh.temCargo(id, papel) ? null : 'semcargo';
+  // cobreOPapel, não temCargo: um Desembargador responsável por caso de Juiz PODE atuar nele
+  // (atosPorCargo/ocupaDestinatario dizem isso), então tratá-lo como fantasma redistribuiria
+  // casos de quem está perfeitamente apto. Foi o que aconteceu em produção em 19/08/2026.
+  return rh.cobreOPapel(id, papel) ? null : 'semcargo';
 }
 
 // Sorteio do substituto por papel (Juiz balanceia carga; os outros é sorteio simples).

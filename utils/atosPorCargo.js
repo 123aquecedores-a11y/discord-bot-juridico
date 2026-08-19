@@ -35,14 +35,10 @@ function podeAtuar({ usuarioId, cargo, titularId = null, ehStaff = false }) {
   if (ehStaff) return true;
   if (titularId && titularId === usuarioId) return true;
   if (!ehCargoCompartilhado(cargo)) return false;
-  if (rh.temCargo(usuarioId, cargo)) return true;
 
-  // Procurador é a chefia do MP e Desembargador a da magistratura: onde um Promotor pode agir, o
-  // Procurador também pode, e o mesmo para Juiz/Desembargador. Isso já valia na supervisão; aqui só
-  // fica explícito para os atos ordinários.
-  if (cargo === 'Promotor' && rh.temCargo(usuarioId, 'Procurador')) return true;
-  if (cargo === 'Juiz' && rh.temCargo(usuarioId, 'Desembargador')) return true;
-  return false;
+  // A cobertura (chefia cobre a base) mora em rh.cobreOPapel — ponto único, consultado também
+  // por pecas.ocupaDestinatario e pela varredura de responsáveis fantasma.
+  return rh.cobreOPapel(usuarioId, cargo);
 }
 
 // Mensagem de recusa que DIZ O QUE FAZER — recusa sem saída é beco disfarçado.
