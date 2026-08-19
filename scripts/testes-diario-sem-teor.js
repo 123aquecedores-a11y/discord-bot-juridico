@@ -106,9 +106,13 @@ async function secao2() {
   ok(!/\{ files \}/.test(src), '2c: e nada é repassado ao publicarNoDiario');
 
   // E funciona de ponta a ponta: o ato publica, sem anexo.
+  //
+  // FIXTURE TROCADO EM 19/08/2026: porte de arma deixou de ir ao Diário por completo (revelar quem
+  // está armado é informação tática num canal que @everyone lê). Com ele aqui, este bloco passaria
+  // pelo motivo errado — "não vazou anexo" porque não publicou nada.
   db.inserir('peticoes', {
-    numero: '0012PA', tipo: 'PorteArma', status: 'Deferido', requerenteId: 'a1', juiz: 'j1',
-    nomeCliente: 'Cliente RP', rgCliente: '123', validadeAte: new Date(Date.now() + 864e5).toISOString(),
+    numero: '0012PA', tipo: 'TrocaNome', status: 'Deferido', requerenteId: 'a1', juiz: 'j1',
+    nomeCliente: 'Cliente RP', nomeNovo: 'Cliente Novo', rgCliente: '123',
     motivo: 'Fundamentação secreta que não pode vazar.',
   });
   enviados.length = 0;
@@ -120,6 +124,20 @@ async function secao2() {
   const textoDoCard = JSON.stringify(enviados[0].embeds || []);
   ok(!/Fundamentação secreta/.test(textoDoCard), '2f: o card não carrega a fundamentação no corpo');
   ok(/0012PA/.test(textoDoCard), '2g: mas carrega o protocolo — é resumo de resultado, não teor');
+
+  // PORTE DE ARMA não vai ao Diário de forma nenhuma: nem card, nem anexo. É a outra metade da
+  // política — aqui tiramos o teor de todos os tipos; ali, o tipo inteiro sai do mural.
+  db.inserir('peticoes', {
+    numero: '0013PA', tipo: 'PorteArma', status: 'Deferido', requerenteId: 'a1', juiz: 'j1',
+    nomeCliente: 'Armado da Silva', rgCliente: '456',
+    validadeAte: new Date(Date.now() + 864e5).toISOString(),
+  });
+  enviados.length = 0;
+  const pubPorte = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', db.buscarPorNumero('peticoes', '0013PA'));
+  ok(pubPorte === false && enviados.length === 0,
+    '2h: porte de arma NÃO publica no Diário — nem o card do resultado');
+  ok(db.buscarPorNumero('peticoes', '0013PA').status === 'Deferido',
+    '2i: ...e ainda assim o resultado segue gravado nos autos');
 }
 
 // ---------------------------------------------------------------------------

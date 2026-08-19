@@ -765,7 +765,10 @@ function seedProcesso(numero, extra) {
     const acharPub = () => rec.sends.find(s => s.content === '@everyone' && Array.isArray(s.embeds) && s.embeds.length);
 
     // 18a: engine publica a decisão de petição administrativa (Deferido) com card + tipo + PNG + marcador
-    const pDef = db.inserir('peticoes', { numero: 'DIA-PA1', tipo: 'PorteArma', status: 'Deferido', juiz: 'juizD', nomeCliente: 'Fulano da Silva', validadeAte: new Date(Date.now() + 15 * 864e5).toISOString() });
+    // FIXTURE TROCADO EM 19/08/2026: porte de arma deixou de ir ao Diário (revelar quem está
+    // armado é informação tática num canal que @everyone lê). Troca de nome segue publicando, e é
+    // ela que exercita o caminho feliz daqui em diante. O porte tem bloco próprio, em 18f.
+    const pDef = db.inserir('peticoes', { numero: 'DIA-PA1', tipo: 'TrocaNome', status: 'Deferido', juiz: 'juizD', nomeCliente: 'Fulano da Silva', nomeNovo: 'Fulano Novo' });
     rec.sends.length = 0;
     // INVERTIDO EM 19/08/2026. Este teste afirmava o vazamento como comportamento correto: a
     // decisão do porte de arma ia ao Diário com o PNG INTEIRO da sentença, para @everyone. O
@@ -774,7 +777,7 @@ function seedProcesso(numero, extra) {
     const pub1 = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', pDef, { files: [{ attachment: Buffer.from('x'), name: 'Sentenca.png' }] });
     const emb1 = acharPub();
     ok(pub1 === true && !!emb1, '18a: publicarAto publica a decisão de petição administrativa');
-    ok(emb1 && /porte de arma/i.test(JSON.stringify(emb1.embeds[0].data)), '  ...com o tipo do pedido no card');
+    ok(emb1 && /troca de nome/i.test(JSON.stringify(emb1.embeds[0].data)), '  ...com o tipo do pedido no card');
     ok(emb1 && !emb1.files, '  ...e SEM o PNG — o teor não vai ao Diário');
     ok((db.buscarPorNumero('peticoes', 'DIA-PA1') || {}).diarioPublicado?.peticaoAdministrativa, '  ...e marca diarioPublicado[peticaoAdministrativa] no registro');
 
@@ -784,17 +787,34 @@ function seedProcesso(numero, extra) {
     ok(pub2 === false && !acharPub(), '18b: idempotente — não republica ato já publicado');
 
     // 18c: estado ainda não-decidido não é publicável
-    const pPend = db.inserir('peticoes', { numero: 'DIA-PA2', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD' });
+    // TrocaNome de propósito: com PorteArma o teste passaria pelo motivo ERRADO (o tipo é
+    // sigiloso), e não pelo que ele quer provar — que estado não-decidido não publica.
+    const pPend = db.inserir('peticoes', { numero: 'DIA-PA2', tipo: 'TrocaNome', status: 'Pendente', juiz: 'juizD' });
     rec.sends.length = 0;
     const pub3 = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', pPend);
     ok(pub3 === false && !acharPub(), '18c: petição ainda Pendente não publica (publicavel=false)');
 
     // 18d: END-TO-END — finalizarDecisao(Deferido) publica no Diário = o bug do porte de arma resolvido
-    db.inserir('peticoes', { numero: 'DIA-PA3', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD', canalId: 'cpa3', nomeCliente: 'Beltrano', requerenteId: 'advA', rgCliente: 'RG9' });
+    db.inserir('peticoes', { numero: 'DIA-PA3', tipo: 'TrocaNome', status: 'Pendente', juiz: 'juizD', canalId: 'cpa3', nomeCliente: 'Beltrano', nomeNovo: 'Beltrano Novo', requerenteId: 'advA', rgCliente: 'RG9' });
     rec.sends.length = 0;
     await peticaoCmd.finalizarDecisao(fakeGuild(), 'DIA-PA3', 'Deferido', { motivo: 'Autorizado.', nivelRisco: 'Baixo' }, 'juizD');
-    ok(acharPub(), '18d: finalizarDecisao(Deferido) publica no Diário — porte de arma resolvido');
+    ok(acharPub(), '18d: finalizarDecisao(Deferido) publica no Diário (fim a fim)');
     ok((db.buscarPorNumero('peticoes', 'DIA-PA3') || {}).diarioPublicado?.peticaoAdministrativa, '  ...e marca o registro');
+
+    // 18f: PORTE DE ARMA NÃO VAI AO DIÁRIO — nem deferido, nem indeferido.
+    // Revelar quem está armado (ou quem pediu e foi negado) é informação tática num canal que
+    // @everyone lê: vira alvo, vira aviso a quem planeja assalto, vira metagaming.
+    for (const status of ['Deferido', 'Indeferido']) {
+      const num = `DIA-PORTE-${status}`;
+      const p = db.inserir('peticoes', { numero: num, tipo: 'PorteArma', status, juiz: 'juizD', nomeCliente: 'Armado da Silva' });
+      rec.sends.length = 0;
+      const r = await diarioAtos.publicarAto(fakeGuild(), 'peticaoAdministrativa', p);
+      ok(r === false && !acharPub(), `18f-${status}: porte de arma ${status.toLowerCase()} NÃO publica no Diário`);
+      ok(!(db.buscarPorNumero('peticoes', num) || {}).diarioPublicado?.peticaoAdministrativa,
+        `  ...e não marca como publicado (senão a varredura acharia que já foi)`);
+      // O ato continua nos autos — o que saiu foi a vitrine, não o registro.
+      ok((db.buscarPorNumero('peticoes', num) || {}).status === status, '  ...e o resultado segue gravado nos autos');
+    }
 
     // 18e: Diligência (Nível 3) NÃO publica
     db.inserir('peticoes', { numero: 'DIA-PA4', tipo: 'PorteArma', status: 'Pendente', juiz: 'juizD', canalId: 'cpa4', nomeCliente: 'Ciclano', requerenteId: 'advB' });
@@ -917,7 +937,7 @@ function seedProcesso(numero, extra) {
     const pings = () => rec.sends.filter(s => s.content === '@everyone');
 
     // 22a: backfill — petição decidida ANTES da feature (sem marcador) é publicada em SILÊNCIO
-    db.inserir('peticoes', { numero: 'BACK-PA', tipo: 'PorteArma', status: 'Deferido', juiz: 'juizB', nomeCliente: 'Antigo', criadoEm: '2026-01-01T00:00:00.000Z' });
+    db.inserir('peticoes', { numero: 'BACK-PA', tipo: 'TrocaNome', status: 'Deferido', juiz: 'juizB', nomeCliente: 'Antigo', criadoEm: '2026-01-01T00:00:00.000Z' });
     rec.sends.length = 0;
     const r = await diarioAtos.varrerDiario(fakeGuild());
     ok(r.publicados >= 1 && (db.buscarPorNumero('peticoes', 'BACK-PA') || {}).diarioPublicado?.peticaoAdministrativa, '22a: varredura faz backfill da petição decidida não publicada');
