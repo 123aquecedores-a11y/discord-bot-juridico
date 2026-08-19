@@ -413,7 +413,14 @@ function abrirModalProcessoPenal(interaction) {
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Descrição objetiva dos fatos').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_nome').setLabel('Nome do réu (se não tiver Discord)').setStyle(TextInputStyle.Short).setRequired(false)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_rg').setLabel('RG do réu').setStyle(TextInputStyle.Short).setRequired(false)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reus').setLabel('Menções @ dos réus (se tiverem Discord)').setStyle(TextInputStyle.Short).setRequired(false)),
+    // CAMPO "Menções @ dos réus" REMOVIDO em 19/08/2026: o réu não fica no Discord — ele é
+    // referência nos autos por nome + RG (SPEC §11.1, que é justamente por isso que a intimação do
+    // réu não tem gate). Pedir a menção era pedir um dado que não existe, e ele não era usado para
+    // nada além de encher `reus[]` com IDs que ninguém resolvia.
+    //
+    // Quem PRECISA vincular um réu com Discord depois (caso raro) continua tendo caminho: o fluxo
+    // de "parte tardia" chama vincularReu() com a menção montada a partir do select — ver
+    // processo.js:1482. A função continua existindo e exportada; só deixou de ser alimentada aqui.
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('medida').setLabel('Nº da medida vinculada (opcional)').setStyle(TextInputStyle.Short).setRequired(false)),
   );
   return interaction.showModal(modal);
@@ -432,7 +439,6 @@ async function finalizarProcessoPenal(interaction) {
       promotorId: rascunho.dados.promotorId || null,
       crimesTexto: rascunho.crimes.join(','),
       motivo: rascunho.dados.motivo,
-      reusTexto: rascunho.dados.reusTexto,
       reuNome: rascunho.dados.reuNome,
       reuRg: rascunho.dados.reuRg,
       medidaNumero: rascunho.dados.medidaNumero,
@@ -1336,7 +1342,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
         delegadoId: interaction.user.id,
         promotorId: null,
         motivo: interaction.fields.getTextInputValue('motivo'),
-        reusTexto: interaction.fields.getTextInputValue('reus'),
+        // `reus` saiu do modal (ver abrirModalPenal) — o réu é nome + RG nos autos, não menção.
         reuNome: interaction.fields.getTextInputValue('reu_nome') || null,
         reuRg: interaction.fields.getTextInputValue('reu_rg') || null,
         medidaNumero: interaction.fields.getTextInputValue('medida') || null,

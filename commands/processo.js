@@ -4,6 +4,7 @@ const { proximoNumero } = require('../utils/numeracao');
 const modoEntrega = require('../utils/modoEntrega');
 const { temCargo, isAdmin, isSuperStaff } = require('../utils/permissoes');
 const rh = require('../utils/rh');
+const acumuloDePapeis = require('../utils/acumuloDePapeis');
 const canais = require('../utils/canais');
 const config = require('../config');
 const { penaTexto, crimeLabel, resolverCrimesTexto, normalizarCrime } = require('../utils/crimesTexto');
@@ -815,7 +816,17 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
 
   const reus = extrairMencoes(reusTexto);
 
-  let promotorFinal = promotorId;
+  // ACÚMULO DELEGADO + PROMOTOR (regra do operador, 19/08/2026): se quem abre é Promotor e não há
+  // delegado separado, ele ocupa os dois papéis — não faz sentido sortear um promotor para o caso
+  // que o próprio promotor acabou de abrir, nem travar esperando um delegado que não existe.
+  const acumulo = acumuloDePapeis.resolverDelegadoEPromotor({
+    aberturaPorId: delegadoId || promotorId || null,
+    delegadoId,
+    promotorInformado: promotorId,
+  });
+  let delegadoFinal = acumulo.delegado;
+  let promotorFinal = acumulo.promotor;
+
   if (!promotorFinal) {
     // Se o(s) réu(s) já foi(ram) identificado(s) na abertura, exclui do sorteio — mesmo
     // problema de conflito de interesse corrigido no sorteio de Juiz (ver `oferecer` e
@@ -831,7 +842,7 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
   // Civil), sem inquérito policial por trás — o Promotor que expediu o ato é quem abre.
   const canal = await canais.criarCanalTicket(guild, {
     categoriaId: config.categoriaProcessosPenaisId, prefixo: 'processo', numero,
-    membros: [delegadoId, promotorFinal].filter(Boolean), bloquearConversa: true,
+    membros: [delegadoFinal, promotorFinal].filter(Boolean), bloquearConversa: true,
   });
 
   db.inserir('processos', {
@@ -840,7 +851,7 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
     // nele. O interruptor da staff só decide o que carimbar aqui — nunca afeta processo em curso.
     modoEntrega: modoEntrega.modoParaNovoProcesso(guild.id),
     crimes: crimesEscolhidos, motivo,
-    reus, reuNome, reuRg, advogados: [], delegado: delegadoId || null, promotor: promotorFinal, juiz: null,
+    reus, reuNome, reuRg, advogados: [], delegado: delegadoFinal || null, promotor: promotorFinal, juiz: null,
     canalId: canal.id, medidaVinculada: medidaNumero || null, atoMpVinculado: atoMpNumero || null, sentenca: null,
     // Registro unificado de partes (spec-atualizacoes-bot-juridico.md, seção 0) — réu(s) já
     // identificado(s) na abertura nascem espelhados aqui (por @ e/ou por nome+RG — Frente 7).
@@ -3528,7 +3539,9 @@ module.exports = {
       .addStringOption(o => o.setName('crimes').setDescription('Crimes separados por vírgula: ID, artigo ou nome (ver /crime buscar)').setRequired(true))
       .addStringOption(o => o.setName('motivo').setDescription('Descrição objetiva dos fatos').setRequired(true))
       .addUserOption(o => o.setName('promotor').setDescription('Promotor responsável'))
-      .addStringOption(o => o.setName('reus').setDescription('Menções @ dos réus, se já identificados'))
+      // A opção `reus` (menções @) saiu em 19/08/2026 junto com o campo do modal: o réu não fica no
+      // Discord, é referência nos autos por nome + RG. EXIGE `node deploy-commands.js` para o
+      // Discord parar de mostrar a opção antiga.
       .addStringOption(o => o.setName('medida').setDescription('Número da medida cautelar vinculada, se houver')))
     // Opções obrigatórias precisam vir ANTES das opcionais (regra do Discord), por isso os dois
     // nomes + réu_nome (obrigatórios) ficam agrupados antes dos @ do Discord (opcionais).
@@ -3560,7 +3573,7 @@ module.exports = {
         promotorId: interaction.options.getUser('promotor')?.id || null,
         crimesTexto: interaction.options.getString('crimes'),
         motivo: interaction.options.getString('motivo'),
-        reusTexto: interaction.options.getString('reus'),
+        // `reus` removido do comando — ver o comentário na definição da opção, acima.
         medidaNumero: interaction.options.getString('medida') || null,
       });
 
