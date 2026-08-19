@@ -148,6 +148,23 @@ const TIPOS = {
     tabela: 'processos',
     ativo: true, // FAIXA 5 (SPEC §11)
   },
+
+  // RAZÕES DE RECURSO — o recorrente (Advogado ou Promotor) entrega em mão do Desembargador.
+  //
+  // Antes as razões iam CRUAS no embed do canal da apelação, que tem o relator, o recorrente E a
+  // parte contrária dentro. Agora seguem o mesmo rito de todo teor: peça, selo, entrega em cena.
+  //
+  // `emissor` é 'Advogado' só para o rodapé do documento; quem PODE recorrer continua decidido
+  // por podeRecorrer (advogado da parte ou Promotor), como sempre foi.
+  razoes_recurso: {
+    rotulo: 'Razões de recurso',
+    titulo: 'RAZÕES DE RECURSO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Advogado',
+    destinatarios: ['Desembargador'],
+    tabela: 'apelacoes',
+    ativo: true,
+  },
 };
 
 const tipoAtivo = (chave) => !!(TIPOS[chave] && TIPOS[chave].ativo);
@@ -186,7 +203,30 @@ const EFEITOS_POS_CRIACAO = {
 // POR ISSO A CONDIÇÃO É "processo SEM juiz". Com juiz já designado, o caso já foi distribuído e
 // nada aqui tem o que fazer — é também a guarda de colisão: o segundo recebimento não reatribui.
 const EFEITOS_POS_RECEBIMENTO = {
-  denuncia_mp: (processo, _peca, recebedorId) => {
+  // O Desembargador recebeu as razões em cena: só a partir daqui ele pode julgar. Antes, os
+  // botões Manter/Reformar/Anular nasciam junto com o canal e ele decidia sem nunca ter
+  // recebido nada — o recurso tinha documento, mas não tinha entrega.
+  razoes_recurso: {
+    aplicar: (apelacao, _peca, recebedorId) => {
+    const rhLocal = require('./rh');
+    if (apelacao.razoesRecebidasEm) return null; // já liberado; segundo recebimento não repete
+    if (!rhLocal.cobreOPapel(recebedorId, 'Desembargador')) {
+      return { recusa: `ℹ️ Documento entregue. A instrução do recurso **${apelacao.numero}** não foi liberada porque só o Desembargador relator destrava o julgamento.` };
+    }
+      return {
+        campos: { razoesRecebidasEm: new Date().toISOString(), ...require('./atosPorCargo').carimboDeExecucao(recebedorId) },
+        aviso: `⚖️ Razões recebidas. O recurso **${apelacao.numero}** está liberado para julgamento — os botões **Manter / Reformar / Anular** já estão ativos no canal.`,
+      };
+    },
+    // Reposta os botões de julgamento, agora destravados. Antes eles nasciam com o canal e o
+    // relator decidia sem ter recebido nada.
+    aoAplicar: async (interaction, apelacao) => {
+      await require('../commands/processo').repostarBotoesApelacao(interaction.guild, apelacao.numero).catch(() => {});
+    },
+  },
+
+  denuncia_mp: {
+    aplicar: (processo, _peca, recebedorId) => {
     const rh = require('./rh');
     const acumulo = require('./acumuloDePapeis');
 
@@ -217,15 +257,29 @@ const EFEITOS_POS_RECEBIMENTO = {
       return { recusa: `⚠️ **Você é parte neste processo e não pode julgá-lo.** O documento está entregue, mas outro Juiz precisa recebê-lo para o caso seguir.` };
     }
 
-    return {
-      campos: {
-        juiz: recebedorId,
-        juizDesde: new Date().toISOString(),
-        status: 'Instrução',
-        distribuidoPorRecebimento: true,
-      },
-      aviso: `⚖️ Você recebeu a denúncia e passa a ser o **Juiz responsável** pelo processo **${processo.numero}**, que segue para instrução.`,
-    };
+      return {
+        campos: {
+          juiz: recebedorId,
+          juizDesde: new Date().toISOString(),
+          status: 'Instrução',
+          distribuidoPorRecebimento: true,
+        },
+        aviso: `⚖️ Você recebeu a denúncia e passa a ser o **Juiz responsável** pelo processo **${processo.numero}**, que segue para instrução.`,
+      };
+    },
+    aoAplicar: async (interaction, processo, peca) => {
+      const processoCmd = require('../commands/processo');
+      const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+      await require('./canais').adicionarMembro(canal, interaction.user.id).catch(() => {});
+      await processoCmd.repostarPainel(interaction.guild, processo.numero).catch(() => {});
+      await andamentos.registrar(interaction.guild, processo.numero, {
+        tipo: 'juiz_designado',
+        titulo: '⚖️ Juiz designado pelo recebimento da denúncia',
+        detalhe: `<@${interaction.user.id}> recebeu a denúncia em cena e assumiu o processo, que segue para instrução.`,
+        executorId: interaction.user.id,
+        metadata: { peca: peca.numero, juiz: interaction.user.id },
+      }).catch(() => {});
+    },
   },
 };
 
@@ -234,7 +288,7 @@ const EFEITOS_POS_RECEBIMENTO = {
 function aplicarEfeitoDoRecebimento(tipoChave, processo, peca, recebedorId) {
   const efeito = EFEITOS_POS_RECEBIMENTO[tipoChave];
   if (!efeito || !processo) return null;
-  const r = efeito(processo, peca, recebedorId);
+  const r = efeito.aplicar(processo, peca, recebedorId);
   if (!r || !r.campos) return r || null;
   const cfg = TIPOS[tipoChave];
   db.atualizar(cfg.tabela, processo.numero, r.campos);
@@ -529,40 +583,8 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   });
   if (!r.ok) return interaction.editReply({ content: `Não consegui criar a peça: ${r.razao}` });
   const peca = r.peca;
+  const { paginas, entregue } = await finalizarPeca(interaction, peca, processo, cfg, tipoChave);
 
-  // O PNG vai para o EMISSOR, não para o canal: o canal do processo é compartilhado com o
-  // destinatário, e postar ali entregaria o teor antes da cena (SPEC §6.1). Arquivo único —
-  // a URL fica guardada e é ela que será liberada no recebimento, sem gerar segunda cópia (§3.7).
-  // O teor sai pela camada, não do registro: renderizar é um ponto de saída como qualquer outro, e
-  // quem acabou de escrever a peça é o autor — a permissão é conferida do mesmo jeito.
-  const acesso = pecas.paraRenderizacao(peca.numero, interaction.user.id, { ehStaff: permissoes.isAdmin(interaction) });
-  const renderizados = acesso.ok
-    ? await renderizar(interaction.guild, { ...acesso.peca, qualificacao: peca.qualificacao, assinante: peca.assinante, codigoArquivo: peca.codigoArquivo }, cfg).catch(err => {
-      console.error(`[peca] falha ao renderizar ${peca.numero}:`, err.message);
-      return null;
-    })
-    : null;
-
-  let entregue = false;
-  if (renderizados) {
-    entregue = await enviarAoEmissor(interaction, peca, renderizados).catch(() => false);
-    // Registra METADADO da entrega, nunca a URL do anexo: URL do CDN do Discord é link assinado e
-    // expira em 24h. O original é o registro no banco; o PNG se regera do texto quando precisar.
-    if (entregue) pecas.registrarEnvio(peca.numero, { totalPaginas: renderizados[0].paginas.length });
-  }
-  const paginas = renderizados;
-
-  await postarNoCanal(interaction, peca, processo, cfg);
-  await andamentos.registrar(interaction.guild, numeroProcesso, {
-    tipo: 'peca_emitida',
-    // Título genérico por tipo: descritivo demais entregaria o teor sem abrir o documento (SPEC §10).
-    titulo: `📄 ${cfg.rotulo} — ${peca.numero}`,
-    detalhe: peca.gated
-      ? 'Aguardando entrega pessoal. O teor fica restrito ao emissor até o recebimento.'
-      : 'Documento disponível às partes.',
-    executorId: interaction.user.id,
-    metadata: { peca: peca.numero, tipo: tipoChave, modo: peca.modoEntrega },
-  }).catch(() => {});
 
   // Rascunho consumido: a peça existe, e deixar o texto em memória permitiria reenviar o mesmo
   // conteúdo como uma segunda peça por engano.
@@ -635,6 +657,83 @@ function qualificacao(processo, processoTabela = 'processos') {
 
 // Um token por destinatário significa um PNG por destinatário — cada um precisa receber o selo que
 // é dele, senão o token do outro destravaria a peça errada.
+// ---------------------------------------------------------------------------
+// TUDO O QUE ACONTECE DEPOIS DE pecas.gerar
+// ---------------------------------------------------------------------------
+// `pecas.gerar` só INSERE o registro. Sozinho ele não rende PNG, não manda nada a ninguém e — o
+// que mais dói — não posta o card com o botão **Entregar agora**, sem o qual a entrega em cena é
+// literalmente inalcançável.
+//
+// EXTRAÍDO EM 19/08/2026 porque a SENTENÇA chamava `pecas.gerar` direto e parava aí: a peça
+// nascia, o juiz recebia um card dizendo "use Entregar agora" e o botão não existia em lugar
+// nenhum. O documento existia no banco e não havia como entregá-lo.
+//
+// Quem cria peça chama ISTO, nunca `pecas.gerar` sozinho.
+async function finalizarPeca(interaction, peca, processo, cfg, tipoChave) {
+  // O PNG vai para o EMISSOR, não para o canal: o canal do processo é compartilhado com o
+  // destinatário, e postar ali entregaria o teor antes da cena (SPEC §6.1). Arquivo único —
+  // a URL fica guardada e é ela que será liberada no recebimento, sem gerar segunda cópia (§3.7).
+  // O teor sai pela camada, não do registro: renderizar é um ponto de saída como qualquer outro, e
+  // quem acabou de escrever a peça é o autor — a permissão é conferida do mesmo jeito.
+  const acesso = pecas.paraRenderizacao(peca.numero, interaction.user.id, { ehStaff: permissoes.isAdmin(interaction) });
+  const renderizados = acesso.ok
+    ? await renderizar(interaction.guild, { ...acesso.peca, qualificacao: peca.qualificacao, assinante: peca.assinante, codigoArquivo: peca.codigoArquivo }, cfg).catch(err => {
+      console.error(`[peca] falha ao renderizar ${peca.numero}:`, err.message);
+      return null;
+    })
+    : null;
+
+  let entregue = false;
+  if (renderizados) {
+    entregue = await enviarAoEmissor(interaction, peca, renderizados).catch(() => false);
+    // Registra METADADO da entrega, nunca a URL do anexo: URL do CDN do Discord é link assinado e
+    // expira em 24h. O original é o registro no banco; o PNG se regera do texto quando precisar.
+    if (entregue) pecas.registrarEnvio(peca.numero, { totalPaginas: renderizados[0].paginas.length });
+  }
+
+  await postarNoCanal(interaction, peca, processo, cfg);
+  await andamentos.registrar(interaction.guild, peca.processoNumero, {
+    tipo: 'peca_emitida',
+    // Título genérico por tipo: descritivo demais entregaria o teor sem abrir o documento (SPEC §10).
+    titulo: `📄 ${cfg.rotulo} — ${peca.numero}`,
+    detalhe: peca.gated
+      ? 'Aguardando entrega pessoal. O teor fica restrito ao emissor até o recebimento.'
+      : 'Documento disponível às partes.',
+    executorId: interaction.user.id,
+    metadata: { peca: peca.numero, tipo: tipoChave, modo: peca.modoEntrega },
+  }).catch(() => {});
+
+  return { paginas: renderizados, entregue };
+}
+
+// PORTA DE ENTRADA para atos que JÁ TÊM o próprio texto — sentença e razões de recurso nascem de
+// modal próprio, com fluxo de revisão-IA próprio, e não passam pelo rascunho por trechos do
+// `criarPeca`. Daqui para a frente é o mesmo caminho de sempre: mesmo selo, mesma janela, mesmo
+// botão de entrega. Sem isto, cada ato desses reinventaria a entrega — e o primeiro já reinventou
+// pela metade.
+//
+// Devolve { ok, peca, paginas, entregue } ou { ok:false, razao }.
+async function emitirAtoComoPeca(interaction, { tipo, processoNumero, texto, destinatarios, assinante }) {
+  const cfg = TIPOS[tipo];
+  if (!cfg) return { ok: false, razao: `tipo de peça desconhecido: ${tipo}` };
+  if (!destinatarios || !destinatarios.length) return { ok: false, razao: 'sem destinatário para a entrega' };
+
+  const processo = db.buscarPorNumero(cfg.tabela, processoNumero);
+  if (!processo) return { ok: false, razao: 'processo não encontrado' };
+
+  const r = pecas.gerar({
+    processoTabela: cfg.tabela, processoNumero, tipo,
+    autorId: interaction.user.id, autorPapel: cfg.emissor, texto,
+    qualificacao: qualificacao(processo, cfg.tabela),
+    assinante: assinante || await nomeExibicao(interaction.guild, interaction.user.id),
+    destinatarios,
+  });
+  if (!r.ok) return r;
+
+  const { paginas, entregue } = await finalizarPeca(interaction, r.peca, processo, cfg, tipo);
+  return { ok: true, peca: r.peca, paginas, entregue };
+}
+
 async function renderizar(guild, peca, cfg) {
   const porDestinatario = [];
   for (const dest of peca.destinatarios) {
@@ -881,21 +980,14 @@ async function abrirRecebimento(interaction, numeroPeca) {
           await msg.reply({ content: efeito.recusa }).catch(() => {});
         } else if (efeito && efeito.campos) {
           await msg.reply({ content: efeito.aviso }).catch(() => {});
-          const proc = db.buscarPorNumero(meta.processoTabela, meta.processoNumero);
-          // Lazy require: commands/processo.js importa utils/pecas, e o require no topo fecharia o
-          // ciclo. Mesmo padrão já usado em `require('./estado')` mais abaixo neste arquivo.
-          const processoCmd = require('../commands/processo');
-          await require('./canais').adicionarMembro(
-            await interaction.guild.channels.fetch(proc.canalId).catch(() => null), interaction.user.id,
-          ).catch(() => {});
-          await processoCmd.repostarPainel(interaction.guild, proc.numero).catch(() => {});
-          await andamentos.registrar(interaction.guild, meta.processoNumero, {
-            tipo: 'juiz_designado',
-            titulo: '⚖️ Juiz designado pelo recebimento da denúncia',
-            detalhe: `<@${interaction.user.id}> recebeu a denúncia em cena e assumiu o processo, que segue para instrução.`,
-            executorId: interaction.user.id,
-            metadata: { peca: numeroPeca, juiz: interaction.user.id },
-          }).catch(() => {});
+          // O que acontece DEPOIS é do efeito, não daqui: cada elo mexe numa tabela diferente e tem
+          // a própria narrativa. Deixar isso no coletor obrigaria a reescrevê-lo a cada elo novo.
+          const efeitoCfg = EFEITOS_POS_RECEBIMENTO[meta.tipo];
+          if (efeitoCfg && efeitoCfg.aoAplicar) {
+            await efeitoCfg.aoAplicar(
+              interaction, db.buscarPorNumero(meta.processoTabela, meta.processoNumero), { numero: numeroPeca },
+            ).catch(err => console.error(`[pecas] pós-efeito de ${numeroPeca}:`, err.message));
+          }
         }
       } catch (e) {
         console.error(`[pecas] efeito do recebimento de ${numeroPeca} falhou (entrega segue válida):`, e.message);
@@ -1177,4 +1269,5 @@ module.exports = {
   verificarValvulaEEncerramento, publicarRelatorioSemanal, unidadeDoProcesso,
   qualificacao, // exportada para teste: e ela que classifica o rito no cabecalho do documento
   aplicarEfeitoDoRecebimento, EFEITOS_POS_RECEBIMENTO, // elo "documento entregue -> proxima etapa"
+  finalizarPeca, emitirAtoComoPeca, // pipeline de emissao reusado por sentenca e recurso
 };

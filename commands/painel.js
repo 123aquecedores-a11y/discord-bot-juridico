@@ -914,6 +914,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'concluirinstrucao') return processoCmd.concluirInstrucaoNovamente(interaction, extra);
     if (acao === 'regdepoimento') return processoCmd.abrirSelectTestemunha(interaction, extra);
     if (acao === 'continuarsentencapenal') return processoCmd.continuarSentencaPenal(interaction, extra);
+    if (acao === 'absolvertodos') return processoCmd.absolverTodos(interaction, extra);
     if (acao === 'pularsentencapenal') return processoCmd.pularSentencaPenal(interaction, extra);
   }
 

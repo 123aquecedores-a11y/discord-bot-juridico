@@ -27,6 +27,7 @@ const ROTULOS = {
   sentenca:              { titulo: 'SENTENÇA',                                 orgao: 'PODER JUDICIÁRIO' },
   peticao_administrativa: { titulo: 'PETIÇÃO',                                 orgao: 'PODER JUDICIÁRIO' },
   peticao_inicial_civel: { titulo: 'PETIÇÃO INICIAL',                          orgao: 'PODER JUDICIÁRIO' },
+  razoes_recurso:        { titulo: 'RAZÕES DE RECURSO',                       orgao: 'PODER JUDICIÁRIO' },
 };
 
 // Fallback declarado: tipo desconhecido não pode quebrar a renderização de um documento que já

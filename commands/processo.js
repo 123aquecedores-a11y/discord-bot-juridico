@@ -72,11 +72,23 @@ function descreverReu(p) {
   return '*A identificar*';
 }
 
+// Como citar o réu de uma habilitação: menção quando ele tem conta, nome+RG quando não tem.
+// Personagem de RP sem Discord é o caso NORMAL neste bot, não a exceção.
+function refDoReu(h) {
+  if (h.reuId) return `<@${h.reuId}>`;
+  const nome = h.reuNome || 'réu não identificado';
+  return h.reuRg ? `**${nome}** (RG ${h.reuRg})` : `**${nome}**`;
+}
+
 function embedProcesso(p) {
   const crimesTxt = truncar((p.crimes || []).map(c => `• ${crimeLabel(c)} — pena: ${penaTexto(c)}${c.fianca_sugerida ? ` | fiança ref.: ${c.fianca_sugerida}` : ''}`).join('\n') || '—');
   const reusTxt = descreverReu(p);
   const aprovadas = (p.habilitacoes || []).filter(h => h.status === 'Aprovado');
-  const advogadosTxt = aprovadas.length ? aprovadas.map(h => `<@${h.advogadoId}> (defende <@${h.reuId}>)`).join('\n') : '—';
+  // Réu pode ser só nome+RG (personagem sem conta de Discord): era daqui que saía o `<@null>`.
+  // A forma correta já existia em decidirHabilitacao — aqui estava faltando.
+  const advogadosTxt = aprovadas.length
+    ? aprovadas.map(h => `<@${h.advogadoId}> (defende ${refDoReu(h)})`).join('\n')
+    : '—';
 
   const embed = new EmbedBuilder()
     .setTitle(`📁 Processo ${p.numero} (${p.tipo})`)
@@ -101,7 +113,24 @@ function embedProcesso(p) {
   }
   if (p.revelia) embed.addFields({ name: 'Revelia', value: 'Decretada', inline: true });
   if (p.resultado) embed.addFields({ name: 'Resultado', value: p.resultado, inline: true });
-  if (p.pena) embed.addFields({ name: 'Pena', value: p.pena, inline: true });
+  // PENA POR CRIME, não um blob só. `pena` era texto livre com todas as penas juntas e `regime` um
+  // campo separado ao lado; no card saía "Pena: <tudo junto>" e "Regime inicial: 58", porque nada
+  // amarrava cada pena ao seu crime — e um número solto num campo rotulado "Regime" não diz nada.
+  const porCrime = Array.isArray(p.sentencaPorCrime) ? p.sentencaPorCrime : [];
+  if (porCrime.length) {
+    embed.addFields({
+      name: 'Julgamento por crime',
+      value: truncar(porCrime.map(sc => {
+        const art = sc.codigo_artigo ? ` (Art. ${sc.codigo_artigo})` : '';
+        const marca = sc.resultado === 'Condenado' ? '⚖️' : '✅';
+        const pena = sc.resultado === 'Condenado' ? ` — pena: ${sc.pena || 'não fixada'}` : '';
+        return `${marca} ${sc.nome}${art}: **${sc.resultado}**${pena}`;
+      }).join('\n')),
+    });
+  } else if (p.pena) {
+    // Sentença anterior à pena por crime: mostra o blob como sempre mostrou, sem reescrever o passado.
+    embed.addFields({ name: 'Pena', value: p.pena, inline: true });
+  }
   if (p.regime) embed.addFields({ name: 'Regime inicial', value: p.regime, inline: true });
   if (p.sentenca) embed.addFields({ name: 'Sentença', value: truncar(p.sentenca) });
   if (p.apelacaoNumero) embed.addFields({ name: 'Recurso', value: p.apelacaoNumero, inline: true });
@@ -3294,6 +3323,10 @@ async function criarApelacao(interaction, numero, modo) {
   });
   db.atualizar('processos', numero, { apelacaoNumero: numeroApelacao });
 
+  // O TEOR DAS RAZÕES NÃO VAI MAIS NO EMBED. O canal da apelação tem o relator, o recorrente E a
+  // parte contrária dentro: publicar as razões ali entregava o teor a todo mundo no instante da
+  // interposição, que é exatamente o que a entrega em cena existe para impedir. O embed fica com
+  // METADADO; o teor vira peça, com selo, igual ao resto.
   const embed = new EmbedBuilder()
     .setTitle(`⚖️ Apelação ${numeroApelacao}`)
     .setColor(0x8e44ad)
@@ -3301,17 +3334,22 @@ async function criarApelacao(interaction, numero, modo) {
       { name: 'Processo original', value: numero, inline: true },
       { name: 'Recorrente', value: `<@${recorrenteId}>`, inline: true },
       { name: 'Parte contrária', value: parteContrariaId ? `<@${parteContrariaId}>` : '—', inline: true },
-      { name: 'Razões do recurso', value: truncar(razoes) },
     );
-  const botoes = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`painel:acao:apelacao:manter:${numeroApelacao}`).setLabel('Manter').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`painel:acao:apelacao:reformar:${numeroApelacao}`).setLabel('Reformar').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`painel:acao:apelacao:anular:${numeroApelacao}`).setLabel('Anular').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`painel:acao:apelacao:arquivarmanual:${numeroApelacao}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
-    // Troca de relator sem sair do ticket (Parte 2) — gate no clique.
-    responsaveis.botaoSupervisaoTicket('apelacoes', numeroApelacao),
-  );
-  await canal.send({ content: `<@${desembargadorId}>`, embeds: [embed], components: [botoes] });
+  await canal.send({ content: `<@${desembargadorId}>`, embeds: [embed], components: botoesApelacao(db.buscarPorNumero('apelacoes', numeroApelacao)) });
+
+  // Razões como PEÇA, pelo mesmo pipeline de sempre: PNG para o recorrente, card com "Entregar
+  // agora" no canal, e o julgamento só destrava quando o Desembargador receber em cena
+  // (EFEITOS_POS_RECEBIMENTO.razoes_recurso). Em processo aberto/legado a peça nasce sem selo e o
+  // relator já pode decidir — o rito não muda no meio (SPEC §11.2).
+  const emissaoRazoes = await require('../utils/emissaoPeca').emitirAtoComoPeca(interaction, {
+    tipo: 'razoes_recurso', processoNumero: numeroApelacao, texto: razoes,
+    destinatarios: [{ papel: 'Desembargador' }],
+  }).catch(err => { console.error('Falha ao emitir as razões do recurso:', err.message); return { ok: false, razao: err.message }; });
+  if (!emissaoRazoes.ok) {
+    await canal.send({
+      content: `⚠️ O recurso está protocolado, mas a peça das razões não pôde ser gerada (${emissaoRazoes.razao || 'motivo desconhecido'}). O texto está salvo nos autos — peça à staff para reemitir antes do julgamento.`,
+    }).catch(() => {});
+  }
 
   // Resumo do caso pela IA "cartório" pro Desembargador relator (best-effort) — explica os autos,
   // a sentença recorrida e as razões, pra ele se situar rápido. Fallback gracioso se a IA off.
@@ -3338,6 +3376,48 @@ async function criarApelacao(interaction, numero, modo) {
   return interaction.editReply({ content: `Recurso ${numeroApelacao} aberto em ${canal}.` });
 }
 
+// Botões do canal da apelação. Manter/Reformar/Anular só nascem depois que o relator RECEBEU as
+// razões em cena — antes disso ele decidiria sem ter recebido nada, e a entrega seria decorativa.
+// Arquivar e Supervisão ficam sempre: são administrativos, não julgam.
+//
+// Peça não gated (processo aberto/legado) libera na hora: lá não há cena a esperar.
+function botoesApelacao(apelacao) {
+  const numeroApelacao = apelacao.numero;
+  const liberado = !!apelacao.razoesRecebidasEm || !aguardandoEntregaDasRazoes(apelacao);
+  const linha = new ActionRowBuilder();
+  if (liberado) {
+    linha.addComponents(
+      new ButtonBuilder().setCustomId(`painel:acao:apelacao:manter:${numeroApelacao}`).setLabel('Manter').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`painel:acao:apelacao:reformar:${numeroApelacao}`).setLabel('Reformar').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`painel:acao:apelacao:anular:${numeroApelacao}`).setLabel('Anular').setStyle(ButtonStyle.Danger),
+    );
+  }
+  linha.addComponents(
+    new ButtonBuilder().setCustomId(`painel:acao:apelacao:arquivarmanual:${numeroApelacao}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
+    // Troca de relator sem sair do ticket (Parte 2) — gate no clique.
+    responsaveis.botaoSupervisaoTicket('apelacoes', numeroApelacao),
+  );
+  return [linha];
+}
+
+// Há peça de razões GATED ainda não recebida? A consulta é da camada de peças (invariante A1:
+// só utils/pecas.js toca a tabela `pecas`) — aqui fica só o nome que faz sentido no recurso.
+function aguardandoEntregaDasRazoes(apelacao) {
+  return require('../utils/pecas').entregaPendente('apelacoes', apelacao.numero, 'razoes_recurso');
+}
+
+// Reposta os botões quando o relator recebe as razões (chamado pelo efeito pós-recebimento).
+async function repostarBotoesApelacao(guild, numeroApelacao) {
+  const apelacao = db.buscarPorNumero('apelacoes', numeroApelacao);
+  if (!apelacao || !apelacao.canalId) return;
+  const canal = await guild.channels.fetch(apelacao.canalId).catch(() => null);
+  if (!canal) return;
+  await canal.send({
+    content: `📥 Razões recebidas em cena por <@${apelacao.desembargadorId}>. O julgamento está liberado.`,
+    components: botoesApelacao(apelacao),
+  }).catch(() => {});
+}
+
 async function validarDecisaoApelacao(interaction, numeroApelacao) {
   const apelacao = db.buscarPorNumero('apelacoes', numeroApelacao);
   if (!apelacao) {
@@ -3346,6 +3426,15 @@ async function validarDecisaoApelacao(interaction, numeroApelacao) {
   }
   if (!podeAtuarNoCaso(interaction, apelacao, 'desembargadorId')) {
     await interaction.reply({ content: `Só um(a) Desembargador(a) pode decidi-la. Responsável registrado: <@${apelacao.desembargadorId}>.`, ephemeral: true });
+    return null;
+  }
+  // TRAVA DE ENTREGA — defesa em profundidade. Os botões só nascem depois do recebimento, mas
+  // botão já postado continua clicável no Discord, e a checagem que vale é a do clique.
+  if (aguardandoEntregaDasRazoes(apelacao)) {
+    await interaction.reply({
+      content: `📄 As razões do recurso **${numeroApelacao}** ainda não foram recebidas em cena. Clique em **Receber** quando estiver com o recorrente e cole a captura do documento — o julgamento destrava aí.`,
+      ephemeral: true,
+    });
     return null;
   }
   if (apelacao.status !== 'Aguardando decisão') {
@@ -3576,10 +3665,35 @@ async function salvarSentencaPorCrime(interaction, numero) {
   const rotulos = labelsDe(atenuantesSelecionadas);
   const texto = rotulos.length ? `${textoDigitado}\n\nAtenuada em razão de: ${rotulos.join(', ')}.` : textoDigitado;
 
+  // PENA POR CRIME. O modal pré-preenche uma linha por crime condenado no formato "Rótulo: ", e é
+  // essa linha que o Juiz completa. Guardar só o blob era o que produzia "Pena: <tudo>" no card e
+  // deixava impossível dizer qual pena era de qual crime.
+  //
+  // O parse é TOLERANTE de propósito: casa a linha pelo nome do crime, e o que não casar continua
+  // no blob `pena`, que segue gravado. Sentença é ato consumado — não pode falhar porque o Juiz
+  // reescreveu o rótulo ou trocou a ordem das linhas.
+  const penaPorCrimeId = {};
+  if (penas) {
+    for (const linha of penas.split('\n')) {
+      const sep = linha.indexOf(':');
+      if (sep < 0) continue;
+      const rotulo = linha.slice(0, sep).trim().toLowerCase();
+      const valor = linha.slice(sep + 1).trim();
+      if (!valor) continue;
+      const crime = crimes.find(c => condenadosIds.includes(c.id)
+        && (crimeLabel(c).toLowerCase() === rotulo || (c.nome || '').toLowerCase() === rotulo));
+      if (crime) penaPorCrimeId[crime.id] = valor;
+    }
+  }
+
   const sentencaPorCrime = crimes.map(c => ({
     crimeId: c.id, nome: c.nome, codigo_artigo: c.codigo_artigo,
     resultado: condenadosIds.includes(c.id) ? 'Condenado' : 'Absolvido',
+    // Só o crime CONDENADO carrega pena. Absolvido com pena seria contradição nos autos.
+    pena: condenadosIds.includes(c.id) ? (penaPorCrimeId[c.id] || null) : null,
   }));
+  // Absolvição TOTAL (nenhum crime condenado) → o processo é Absolvido. Basta um condenado para o
+  // resultado agregado ser Condenado — a absolvição parcial fica visível crime a crime, acima.
   const resultado = temCondenacao ? 'Condenado' : 'Absolvido';
 
   rascunhoSentenca.limpar(interaction.user.id, numero);
@@ -3672,18 +3786,25 @@ async function executarSentenca(interaction, numero, modo) {
       .map(h => ({ papel: 'Advogado', habilitacaoId: h.id }));
     // Sem defesa habilitada não há a quem entregar. A peça não é criada (seria órfã, pendente até a
     // válvula sem dono) e o ato segue no caminho aberto — mesmo critério do arquivamento do MP.
+    // PIPELINE COMPLETO, não `pecas.gerar` cru. `gerar` só INSERE o registro: não rende PNG, não
+    // manda nada ao Juiz e — o que quebrava tudo — não posta o card com o botão **Entregar agora**.
+    // A sentença nascia no banco, o card mandava usar um botão que não existia em lugar nenhum, e
+    // a entrega em cena ficava inalcançável. `emitirAtoComoPeca` é o mesmo caminho que toda peça
+    // já percorria; a sentença é que estava fora dele.
+    let emissao = { ok: false };
     if (habilitados.length) {
-      require('../utils/pecas').gerar({
-        processoTabela: 'processos', processoNumero: numero, tipo: 'sentenca',
-        autorId: interaction.user.id, autorPapel: 'Juiz', texto,
-        assinante: nomeAssinante, destinatarios: habilitados,
-      });
+      emissao = await require('../utils/emissaoPeca').emitirAtoComoPeca(interaction, {
+        tipo: 'sentenca', processoNumero: numero, texto,
+        destinatarios: habilitados, assinante: nomeAssinante,
+      }).catch(err => { console.error('Falha ao emitir a peça da sentença:', err.message); return { ok: false, razao: err.message }; });
     }
+    const avisoEmissao = !habilitados.length
+      ? '⚠️ Não há defesa habilitada neste processo — a sentença foi lavrada sem peça de entrega.'
+      : (emissao.ok
+        ? `🔒 O teor fica restrito até a entrega pessoal a cada advogado. O PNG foi para a sua DM — use **Entregar agora** no canal do processo quando estiver em cena.${emissao.paginas ? '' : '\n⚠️ O PNG não pôde ser renderizado agora; o texto está salvo e a staff pode reemitir a imagem.'}`
+        : `⚠️ A sentença está lavrada nos autos, mas a peça de entrega falhou (${emissao.razao || 'motivo desconhecido'}). Peça à staff para reemitir — nada do julgamento se perdeu.`);
     await interaction.editReply({
-      content: `⚖️ **Sentença proferida — ${numero}** (${resultado}).\n`
-        + (habilitados.length
-          ? '🔒 O teor fica restrito até a entrega pessoal a cada advogado. Use **Entregar agora** no canal do processo quando estiver em cena.'
-          : '⚠️ Não há defesa habilitada neste processo — a sentença foi lavrada sem peça de entrega.'),
+      content: `⚖️ **Sentença proferida — ${numero}** (${resultado}).\n${avisoEmissao}`,
       embeds: [embedProcesso(processo)], components: [botaoRecorrer(numero)],
     });
   } else {
@@ -3869,7 +3990,22 @@ module.exports = {
           .setMinValues(0).setMaxValues(crimesPenais.length)
           .addOptions(crimesPenais.map(c => ({ label: crimeLabel(c).slice(0, 100), value: c.id }))),
       );
-      return interaction.reply({ content: '⚖️ **Veredicto por crime** — marque os crimes em que o réu foi **condenado**; os que ficarem em branco serão **absolvidos**. Em seguida você preenche a pena de cada um e a fundamentação.', components: [row], ephemeral: true });
+      // ABSOLVIÇÃO PRECISA DE PORTA PRÓPRIA. A regra "não marcado = absolvido" sempre esteve certa
+      // no código, mas absolver em TUDO exigia enviar o select vazio — que na prática ninguém
+      // consegue fazer, porque o menu só dispara quando alguma opção é escolhida. Resultado: o
+      // fluxo desembocava sempre em condenação, e a absolvição total virou inalcançável.
+      //
+      // O botão é a porta que faltava. Ele leva ao MESMO caminho (veredicto vazio → modal só de
+      // fundamentação), sem duplicar nada.
+      const rowAbsolver = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`painel:acao:processo:absolvertodos:${numero}`)
+          .setLabel('✅ Absolver em TODOS os crimes').setStyle(ButtonStyle.Success),
+      );
+      return interaction.reply({
+        content: '⚖️ **Veredicto por crime** — marque os crimes em que o réu foi **condenado**; os que ficarem em branco serão **absolvidos**. Em seguida você preenche a pena de cada um e a fundamentação.\n'
+          + 'Se a absolvição for total, use o botão abaixo.',
+        components: [row, rowAbsolver], ephemeral: true,
+      });
     }
 
     const opcoes = processo.tipo === 'Penal'
@@ -3922,6 +4058,19 @@ module.exports = {
     }
     const { embeds, components } = montarPainelSentencaPenal(processo, [], condenados);
     return interaction.update({ content: null, embeds, components });
+  },
+
+  // Absolvição em todos os crimes — a porta explícita que faltava. Cai no MESMO caminho do
+  // veredicto vazio (modal só de fundamentação, sem pena nem regime), sem lógica paralela.
+  async absolverTodos(interaction, numero) {
+    const processo = db.buscarPorNumero('processos', numero);
+    if (!processo) return interaction.update({ content: 'Processo não encontrado.', embeds: [], components: [] });
+    if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+      return interaction.reply({ content: `Só o Juiz sorteado para este processo pode julgá-lo — no caso, <@${processo.juiz}>.`, ephemeral: true });
+    }
+    rascunhoVeredicto.set(chaveDecisao(interaction.user.id, numero), []);
+    rascunhoSentenca.limpar(interaction.user.id, numero);
+    return interaction.showModal(modalSentencaPorCrime(numero, processo, []));
   },
 
   // "Continuar para sentença" — mantém as atenuantes marcadas e abre o modal de sentença por crime.
@@ -4028,6 +4177,7 @@ module.exports = {
   decidirPeticao,
   abrirModalAnexarProva,
   salvarProva, ehParteDoRegistro, botaoAnexarProva, botaoRolProvas,
+  repostarBotoesApelacao, botoesApelacao, aguardandoEntregaDasRazoes, refDoReu,
   verRolProvas,
   abrirGerenciar,
   tratarGerenciar,
