@@ -357,7 +357,19 @@ console.log('\n12) BLOCO E — a SENTENÇA está no catálogo e o teor não vaza
   ok(emissao.tipoAtivo('sentenca'), '12a: sentença está no catálogo e ativa');
   ok(emissao.TIPOS.sentenca.destinatarios.includes('Advogado'),
     '12b: destinatário é o ADVOGADO de cada parte — um token por habilitação (SPEC §11.3)');
-  ok(!emissao.TIPOS.acordao, '12c: acórdão ficou FORA de propósito — emissor mora em `apelacoes` e destinatários em `processos`');
+  // 12c — REVERTIDO EM 19/08/2026. O acórdão estava fora do catálogo porque o emissor mora em
+  // `apelacoes` e os destinatários (as habilitações) moram em `processos`: não havia como resolver
+  // quem recebe. O inventário de anexos (testes-anexos-em-canal.js) achou o vazamento que isso
+  // deixava — teor e PNG do acórdão iam ao canal do processo original, onde as partes estão.
+  //
+  // A saída foi ancorar a PEÇA no processo original, não na apelação: `processoNumero` é o do
+  // processo, e por isso as habilitações resolvem normalmente. O obstáculo era de endereçamento,
+  // não de regra.
+  ok(emissao.tipoAtivo('acordao'), '12c: acórdão ENTROU no catálogo (o teor não podia ir cru ao canal)');
+  ok(emissao.TIPOS.acordao.destinatarios.includes('Advogado'),
+    '12c-2: com destinatário Advogado, como a sentença');
+  ok(emissao.TIPOS.acordao.tabela === 'processos',
+    '12c-3: e ancorado em `processos` — é lá que vivem as habilitações que dizem quem recebe');
 
   // As três portas por onde a sentença vazava, todas condicionadas ao modo agora.
   const src = fs.readFileSync(path.join(__dirname, '..', 'commands', 'processo.js'), 'utf-8');

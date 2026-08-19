@@ -164,6 +164,21 @@ const TIPOS = {
   //
   // Destinatário é o REQUERENTE (o advogado que protocolou), não um papel de ticket: petição não
   // tem habilitações, e quem recebe a decisão é sempre quem pediu.
+  // ACÓRDÃO — a decisão do Desembargador, entregue às partes.
+  //
+  // Ia com teor E PNG direto para o canal do processo original, onde advogados e partes estão.
+  // Achado em 19/08/2026 pelo inventário de anexos: era a mesma classe da sentença, e tinha
+  // escapado de todas as varreduras por não estar em nenhum inventário.
+  acordao: {
+    rotulo: 'Acórdão',
+    titulo: 'ACÓRDÃO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Desembargador',
+    destinatarios: ['Advogado'],
+    tabela: 'processos',
+    ativo: true,
+  },
+
   decisao_peticao: {
     rotulo: 'Decisão',
     titulo: 'DECISÃO',
@@ -757,19 +772,24 @@ async function finalizarPeca(ctx, peca, processo, cfg, tipoChave) {
 // pela metade.
 //
 // Devolve { ok, peca, paginas, entregue } ou { ok:false, razao }.
-async function emitirAtoComoPeca(ctx, { tipo, processoNumero, texto, destinatarios, assinante }) {
+// `tabela` sobrepõe a do catálogo quando o MESMO ato existe em ritos diferentes. A manifestação
+// do MP é o caso: é o mesmo documento, com o mesmo destinatário (o Juiz), no processo penal e na
+// petição administrativa — só muda em que tabela o registro de origem vive. Um segundo tipo no
+// catálogo seria uma cópia esperando divergir do original.
+async function emitirAtoComoPeca(ctx, { tipo, processoNumero, texto, destinatarios, assinante, tabela = null }) {
   const ctxo = contextoDeEmissao(ctx);
   const cfg = TIPOS[tipo];
   if (!cfg) return { ok: false, razao: `tipo de peça desconhecido: ${tipo}` };
   if (!destinatarios || !destinatarios.length) return { ok: false, razao: 'sem destinatário para a entrega' };
 
-  const processo = db.buscarPorNumero(cfg.tabela, processoNumero);
-  if (!processo) return { ok: false, razao: 'processo não encontrado' };
+  const tabelaAlvo = tabela || cfg.tabela;
+  const processo = db.buscarPorNumero(tabelaAlvo, processoNumero);
+  if (!processo) return { ok: false, razao: 'registro de origem não encontrado' };
 
   const r = pecas.gerar({
-    processoTabela: cfg.tabela, processoNumero, tipo,
+    processoTabela: tabelaAlvo, processoNumero, tipo,
     autorId: ctxo.autorId, autorPapel: cfg.emissor, texto,
-    qualificacao: qualificacao(processo, cfg.tabela),
+    qualificacao: qualificacao(processo, tabelaAlvo),
     assinante: assinante || await nomeExibicao(ctxo.guild, ctxo.autorId),
     destinatarios,
   });

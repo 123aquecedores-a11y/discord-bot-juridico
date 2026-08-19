@@ -53,7 +53,9 @@ function embedMedida(medida) {
       { name: 'Tipo', value: medida.tipo, inline: true },
       { name: 'Status', value: medida.status, inline: true },
       { name: 'Alvo', value: truncar(medida.alvo), inline: true },
-      { name: 'Discord do alvo', value: medida.alvoDiscordId ? `<@${medida.alvoDiscordId}>` : 'Não identificado', inline: true },
+      // Identidade do alvo é NOME + RG (o Discord saiu em 19/08/2026 — alvo é personagem de RP e
+      // não tem conta). RG vazio é normal quando o alvo é um local, não uma pessoa.
+      { name: 'RG do alvo', value: medida.rgAlvo || '— (alvo é local, ou RG não informado)', inline: true },
       ...(medida.nomeAlvo ? [{ name: 'Nome civil do alvo', value: truncar(medida.nomeAlvo), inline: true }] : []),
       ...(medida.rgAlvo ? [{ name: 'RG do alvo', value: medida.rgAlvo, inline: true }] : []),
       { name: 'Motivo/Indícios', value: truncar(medida.motivo) },
@@ -621,10 +623,9 @@ module.exports = {
         TIPOS_MEDIDA.forEach(t => o.addChoices({ name: t, value: t }));
         return o;
       })
-      .addStringOption(o => o.setName('alvo').setDescription('Nome/local do alvo').setRequired(true))
+      .addStringOption(o => o.setName('alvo').setDescription('Nome do alvo (pessoa ou local)').setRequired(true))
       .addStringOption(o => o.setName('motivo').setDescription('Motivo/indícios que fundamentam o pedido').setRequired(true))
-      .addStringOption(o => o.setName('alvo_rg').setDescription('RG do alvo (identidade civil, se for pessoa)'))
-      .addUserOption(o => o.setName('alvo_discord').setDescription('Discord do alvo (opcional, se tiver conta)'))
+      .addStringOption(o => o.setName('alvo_rg').setDescription('RG do alvo — deixe vazio se o alvo for um local'))
       .addUserOption(o => o.setName('promotor').setDescription('Promotor responsável por analisar')))
     .addSubcommand(sub => sub.setName('ver').setDescription('Ver detalhes de uma medida')
       .addStringOption(o => o.setName('numero').setDescription('Número da medida').setRequired(true).setAutocomplete(true)))
@@ -653,7 +654,6 @@ module.exports = {
         promotorId: interaction.options.getUser('promotor')?.id || null,
         tipo: interaction.options.getString('tipo'),
         alvo: interaction.options.getString('alvo'),
-        alvoDiscordId: interaction.options.getUser('alvo_discord')?.id || null,
         rgAlvo: interaction.options.getString('alvo_rg') || null,
         motivo: interaction.options.getString('motivo'),
       });
@@ -1065,7 +1065,8 @@ module.exports = {
     // (é investigativa) e não aparece na lista de membros pra selecionar.
     const campoReus = new TextInputBuilder().setCustomId('reus').setLabel('Menções @ dos réus, se já identificados')
       .setStyle(TextInputStyle.Short).setRequired(false);
-    if (medida.alvoDiscordId) campoReus.setValue(`<@${medida.alvoDiscordId}>`);
+    // Antes pré-preenchia com a menção do alvo; sem Discord do alvo, o que serve é o nome.
+    if (medida.alvo) campoReus.setValue(String(medida.alvo).slice(0, 100));
 
     modal.addComponents(
       new ActionRowBuilder().addComponents(campoMotivo),
