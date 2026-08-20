@@ -216,17 +216,52 @@ async function criarPendenciaMedidaDireta({ guild, processo, tipoRotulo, justifi
     canalId: processo.canalId, processoVinculado: processo.numero,
   });
 
+  // ENTREGA IN-GAME DO REQUERIMENTO (19/08/2026). Antes, a JUSTIFICATIVA do MP ia crua no embed
+  // deste canal — que tem o advogado dentro — junto com os botões de decidir. Duas coisas erradas:
+  // o teor do pedido era público no instante da solicitação, e o Juiz decidia sem ter recebido
+  // nada, o que fazia da entrega em cena um enfeite.
+  //
+  // Agora o requerimento vira PEÇA entregue ao Juiz, pelo mesmo pipeline da manifestação do MP. Os
+  // botões de decisão só nascem quando ele recebe (EFEITOS_POS_RECEBIMENTO.solicitacao_medida).
+  const gated = require('../utils/pecas').modoDoProcesso(processo) === 'ingame';
+  let emissao = { ok: false };
+  if (gated) {
+    emissao = await require('../utils/emissaoPeca').emitirAtoComoPeca(
+      { guild, autorId: promotorId },
+      {
+        tipo: 'solicitacao_medida', processoNumero: numero, tabela: 'medidas',
+        texto: `Medida requerida: ${tipoRotulo}\nAlvo: ${alvoTexto}\n\n${justificativa}`,
+        destinatarios: [{ papel: 'Juiz' }],
+      },
+    ).catch(err => { console.error('Falha ao emitir a peça do requerimento de medida:', err.message); return { ok: false, razao: err.message }; });
+  }
+
   const canal = await guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) {
-    const embed = new EmbedBuilder()
-      .setTitle(`📋 Solicitação de medida — ${tipoRotulo}`)
-      .setColor(0xe67e22)
-      .addFields(
-        { name: 'Solicitado por', value: `<@${promotorId}>`, inline: true },
-        { name: 'Alvo', value: truncar(alvoTexto), inline: true },
-        { name: 'Justificativa', value: truncar(justificativa) },
-      );
-    await canal.send({ content: `<@${processo.juiz}>`, embeds: [embed], components: [botoesAnaliseDireta(numero)] });
+    if (gated && emissao.ok) {
+      // Só METADADO: o que foi pedido e contra quem. A fundamentação sai pelo selo, e os botões
+      // de decidir aparecem quando o Juiz receber.
+      const embed = new EmbedBuilder()
+        .setTitle(`📋 Requerimento de medida — ${tipoRotulo}`)
+        .setColor(0xe67e22)
+        .addFields(
+          { name: 'Requerido por', value: `<@${promotorId}>`, inline: true },
+          { name: 'Alvo', value: truncar(alvoTexto), inline: true },
+        )
+        .setFooter({ text: 'A fundamentação do requerimento fica restrita até a entrega pessoal ao Juízo.' });
+      await canal.send({ content: `<@${processo.juiz}> — há requerimento a receber em cena.`, embeds: [embed] });
+    } else {
+      // Modo aberto/legado (ou falha na emissão): caminho de sempre, com os botões já disponíveis.
+      const embed = new EmbedBuilder()
+        .setTitle(`📋 Solicitação de medida — ${tipoRotulo}`)
+        .setColor(0xe67e22)
+        .addFields(
+          { name: 'Solicitado por', value: `<@${promotorId}>`, inline: true },
+          { name: 'Alvo', value: truncar(alvoTexto), inline: true },
+          { name: 'Justificativa', value: truncar(justificativa) },
+        );
+      await canal.send({ content: `<@${processo.juiz}>`, embeds: [embed], components: [botoesAnaliseDireta(numero)] });
+    }
   }
 
   await auditoria.registrar(guild, { acao: `Medida solicitada direto no processo — ${tipoRotulo}`, executorId: promotorId, referencia: `${numero} (Processo ${processo.numero})` });
@@ -275,18 +310,73 @@ async function deferirMedidaDireta(interaction, numero) {
   const processo = db.buscarPorNumero('processos', medida.processoVinculado);
   if (!processo) return interaction.reply({ content: 'Processo vinculado não encontrado.', ephemeral: true });
 
-  db.atualizar('medidas', numero, { status: 'Deferida', decisaoJuizEm: new Date().toISOString(), ...atosPorCargo.carimboDeExecucao(interaction.user.id) });
-  if (interaction.message) await interaction.message.edit({ components: [] }).catch(() => {});
+  // A FUNDAMENTAÇÃO DO MANDADO É DO JUIZ, NÃO DO MP (bug corrigido em 19/08/2026).
+  //
+  // Aqui saía `teor: medida.motivo` — a justificativa que o PROMOTOR escreveu ao requerer. O
+  // mandado é ato do Juízo: quem o fundamenta é quem o assina. O texto do MP continua gravado na
+  // medida (fundamentacaoPromotor), que é o lugar dele.
+  //
+  // Deferir agora ABRE O RASCUNHO por trechos para o Juiz escrever a própria decisão; a emissão dos
+  // mandados acontece quando ele clica em "Enviar" (ver o finalizador registrado abaixo). Nada é
+  // gravado como Deferida antes disso — decisão sem fundamentação não é decisão.
+  return require('../utils/emissaoPeca').abrirEmissao(interaction, 'fundamentacao_medida', numero);
+}
+
+// FINALIZADOR do rascunho da fundamentação: é o "Enviar" do painel de trechos que consuma a decisão.
+//
+// Reusa o componente inteiro do MP (modal, painel, "adicionar mais texto", TTL de 2h) e troca só o
+// desfecho: em vez de virar peça entregue com selo, o texto vira o TEOR dos mandados. O registro do
+// finalizador vive aqui, junto da regra, e não dentro de emissaoPeca — quem sabe o que fazer com a
+// fundamentação de uma medida é este módulo.
+async function emitirMandadosDaMedida(interaction, tipoChave, numero) {
+  const emissaoPeca = require('../utils/emissaoPeca');
+  const medida = db.buscarPorNumero('medidas', numero);
+  if (!medida) return interaction.reply({ content: 'Medida não encontrada.', ephemeral: true }).catch(() => {});
+  if (!podeAtuarNoCaso(interaction, medida, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode decidir. Responsável registrado: <@${medida.juiz}>.`, ephemeral: true }).catch(() => {});
+  }
+  const jaDecidida = atosPorCargo.bloqueioPorStatusDecidido(medida, ['Aprovada - aguardando juiz'], 'A decisão desta medida');
+  if (jaDecidida) return interaction.reply({ content: jaDecidida, ephemeral: true }).catch(() => {});
+
+  const fundamentacaoJuiz = emissaoPeca.textoDoRascunho(
+    emissaoPeca.lerRascunho(interaction.user.id, tipoChave, numero),
+  );
+  if (!fundamentacaoJuiz.trim()) {
+    return interaction.reply({ content: 'Não há texto na fundamentação — o rascunho pode ter expirado. Comece de novo.', ephemeral: true }).catch(() => {});
+  }
+
+  const processo = db.buscarPorNumero('processos', medida.processoVinculado);
+  if (!processo) return interaction.reply({ content: 'Processo vinculado não encontrado.', ephemeral: true }).catch(() => {});
+
+  await interaction.deferReply({ ephemeral: true });
+  emissaoPeca.limparRascunho(interaction.user.id, tipoChave, numero);
+
+  db.atualizar('medidas', numero, {
+    status: 'Deferida', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString(),
+    ...atosPorCargo.carimboDeExecucao(interaction.user.id),
+  });
 
   const resultadoMandado = await mandadoCmd.emitirMandadoNoProcesso({
-    guild: interaction.guild, processo, tipoRotulo: medida.tipo, teor: medida.motivo, emitidoPorId: interaction.user.id,
+    guild: interaction.guild, processo, tipoRotulo: medida.tipo,
+    teor: fundamentacaoJuiz, emitidoPorId: interaction.user.id,
     destinatario: { nome: medida.alvo, discordId: medida.alvoDiscordId },
   });
 
   await auditoria.registrar(interaction.guild, { acao: 'Medida deferida — mandado emitido', executorId: interaction.user.id, referencia: `${numero} → Mandado ${resultadoMandado.numero}` });
-  // reply (não followUp) — diferente de cumprirMandado/anexarIndicios, aqui não passou por
-  // aguardarAnexoPDF, então a interação ainda não foi reconhecida nenhuma vez até aqui.
-  return interaction.reply({ content: `Medida ${numero} deferida. Mandado ${resultadoMandado.numero} emitido no processo ${processo.numero}.`, ephemeral: true });
+  return interaction.editReply({ content: `Medida ${numero} deferida com a sua fundamentação. Mandado ${resultadoMandado.numero} emitido no processo ${processo.numero}.` });
+}
+
+// Reposta os botões de decisão quando o Juiz recebe o requerimento em cena — antes disso eles não
+// existem, para que a entrega não seja decorativa.
+async function repostarBotoesDecisaoMedida(guild, numero) {
+  const medida = db.buscarPorNumero('medidas', numero);
+  if (!medida || !medida.canalId) return;
+  const canal = await guild.channels.fetch(medida.canalId).catch(() => null);
+  if (!canal) return;
+  await canal.send({
+    content: `📥 Requerimento recebido em cena por <@${medida.juiz}>. A decisão está liberada.`,
+    components: [botoesAnaliseDireta(numero)],
+  }).catch(() => {});
 }
 
 async function indeferirMedidaDireta(interaction, numero) {
@@ -613,7 +703,12 @@ async function emitirMandadoDaMedida(interaction, medida, fundamentacaoJuiz, { r
   return { numeroMandado, postado: true };
 }
 
+// Registrado no load: o "Enviar" do rascunho de `fundamentacao_medida` emite os mandados em vez
+// de criar peça. Ver FINALIZADORES em utils/emissaoPeca.js.
+require('../utils/emissaoPeca').registrarFinalizador('fundamentacao_medida', emitirMandadosDaMedida);
+
 module.exports = {
+  repostarBotoesDecisaoMedida, emitirMandadosDaMedida,
   data: new SlashCommandBuilder()
     .setName('medida')
     .setDescription('Pedidos de medida cautelar (fase de inquérito, antes de processo formal)')
@@ -970,18 +1065,17 @@ module.exports = {
       return interaction.reply({ content: 'Este mandado não tem Delegado responsável definido — só a Staff pode registrar o cumprimento.', ephemeral: true });
     }
 
-    // aguardarAnexoPDF já consome a resposta inicial da interação (reply pedindo o PDF) — não
-    // dá pra também chamar interaction.update() na mesma interação depois; o botão se apaga
-    // editando a mensagem original diretamente.
-    const coletado = await coletarAnexoPdf(interaction, {
-      numero, tipo: 'cumprimento_mandado',
-      protocolo: medida?.codigoExterno || mandado.medidaNumero || mandado.processoVinculado,
-    });
-    if (!coletado) return; // coletarAnexoPdf já avisou o motivo (tempo esgotado ou não é PDF)
-    const { anexo, documento: documentoCumprimento } = coletado;
-    if (medida?.codigoExterno) dossie.registrarDocumento(medida.codigoExterno, documentoCumprimento.id);
-
-    db.atualizar('mandados', numero, { status: 'Cumprido', cumpridoPor: interaction.user.id });
+    // CUMPRIR É SÓ MARCAR (decisão do operador, 19/08/2026).
+    //
+    // Exigia-se um PDF de auto de cumprimento antes de marcar. Isso vinha do desenho antigo, em que
+    // o documento era a prova do ato. Com a diligência acontecendo IN-GAME, o auto em PDF é papel
+    // que ninguém tem: o Delegado cumpre em cena e volta para registrar. Exigir o anexo transformava
+    // o registro numa barreira, e mandado cumprido ficava eternamente "Emitido" porque ninguém tinha
+    // o que anexar.
+    //
+    // Quem quiser juntar documento do cumprimento usa "Anexar prova", que é o lugar certo disso.
+    await interaction.deferReply({ ephemeral: true });
+    db.atualizar('mandados', numero, { status: 'Cumprido', cumpridoPor: interaction.user.id, cumpridoEm: new Date().toISOString() });
     // NÍVEL 2 — é AQUI que o mandado publica no Diário (no cumprimento, não no deferimento). Efeito
     // automático por natureza; blindado. O alvo já foi alcançado, então publicar não vaza mais nada.
     await diarioAtos.publicarAto(interaction.guild, 'mandadoCumprido', db.buscarPorNumero('mandados', numero));
@@ -989,15 +1083,14 @@ module.exports = {
     const componentesArquivar = mandado.medidaNumero
       ? [new ActionRowBuilder().addComponents(botaoArquivarManual(mandado.medidaNumero))]
       : [];
-    // IA "cartório" faz a análise estruturada do auto de cumprimento (best-effort).
-    const embedAnalise = await analiseDocumento.gerarAnaliseEmbed({ tipoDocumento: 'cumprimento_mandado', pdfUrl: anexo.url });
-    await interaction.followUp({ content: `📎 Mandado ${numero} cumprido por <@${interaction.user.id}> — PDF juntado aos autos.`, embeds: embedAnalise ? [embedAnalise] : [], components: componentesArquivar });
+    // Sem PDF, não há o que a IA de cartório analise — o registro do ato é o próprio ato.
+    await interaction.editReply({ content: `✅ Mandado ${numero} cumprido por <@${interaction.user.id}>.`, components: componentesArquivar });
     if (mandado.processoVinculado) {
       await andamentos.registrar(interaction.guild, mandado.processoVinculado, {
         tipo: 'mandado_cumprido', titulo: `✅ Mandado cumprido`,
         // Link da mensagem, não do anexo: a URL do CDN expira em 24h (ver utils/anexos.js).
-        detalhe: `Mandado ${numero} cumprido por <@${interaction.user.id}> — ${anexos.rotuloComLink(anexo)} juntado aos autos.`,
-        executorId: interaction.user.id, anexoUrl: anexo.url, metadata: { mandadoNumero: numero },
+        detalhe: `Mandado ${numero} cumprido em diligência por <@${interaction.user.id}>.`,
+        executorId: interaction.user.id, metadata: { mandadoNumero: numero },
       });
       // Aqui sim o followUp acima foi postado no canal do processo (mandado novo sempre nasce
       // lá) — pode repostar o painel com segurança.

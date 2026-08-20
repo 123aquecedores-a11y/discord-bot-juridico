@@ -169,6 +169,62 @@ const TIPOS = {
   // Ia com teor E PNG direto para o canal do processo original, onde advogados e partes estão.
   // Achado em 19/08/2026 pelo inventário de anexos: era a mesma classe da sentença, e tinha
   // escapado de todas as varreduras por não estar em nenhum inventário.
+  // REQUERIMENTO DE MEDIDA CAUTELAR — o MP pede, o Juiz recebe em cena.
+  //
+  // Antes a justificativa do MP ia CRUA no embed do canal do processo (que tem o advogado
+  // dentro) junto com os botões de decidir. O Juiz decidia sem nunca ter recebido nada, e a
+  // fundamentação do pedido era pública no instante da solicitação.
+  solicitacao_medida: {
+    rotulo: 'Requerimento de medida',
+    titulo: 'REQUERIMENTO DE MEDIDA CAUTELAR',
+    orgao: 'MINISTÉRIO PÚBLICO',
+    emissor: 'Promotor',
+    destinatarios: ['Juiz'],
+    tabela: 'medidas',
+    ativo: true,
+  },
+
+  // FUNDAMENTAÇÃO DO JUÍZO para emitir mandado. NÃO vira peça — vira o teor do próprio
+  // mandado. Está aqui só para reusar o rascunho por trechos (ver FINALIZADORES): o Juiz monta
+  // a decisão em partes, e o desfecho é a emissão dos mandados, não uma entrega com selo.
+  //
+  // `destinatarios: []` é declaração, não descuido: não há a quem entregar este texto.
+  // FUNDAMENTAÇÃO DA SENTENÇA e do MANDADO DIRETO. Como a da medida: não viram peça por si —
+  // são o CORPO de um ato que já tem pipeline próprio. Existem para que o Juiz monte a decisão
+  // em trechos, com o mesmo painel do MP, em vez de caber tudo num campo de 4.000 caracteres.
+  fundamentacao_sentenca: {
+    rotulo: 'Fundamentação da sentença',
+    titulo: 'SENTENÇA',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Juiz',
+    destinatarios: [],
+    tabela: 'processos',
+    ativo: true,
+    semPeca: true,
+  },
+
+  fundamentacao_mandado: {
+    rotulo: 'Fundamentação do mandado',
+    titulo: 'MANDADO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Juiz',
+    destinatarios: [],
+    tabela: 'processos',
+    ativo: true,
+    semPeca: true,
+  },
+
+  fundamentacao_medida: {
+    rotulo: 'Fundamentação do Juízo',
+    titulo: 'DECISÃO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Juiz',
+    destinatarios: [],
+    tabela: 'medidas',
+    ativo: true,
+    semPeca: true,
+  },
+
   acordao: {
     rotulo: 'Acórdão',
     titulo: 'ACÓRDÃO',
@@ -239,6 +295,25 @@ const EFEITOS_POS_RECEBIMENTO = {
   // O Desembargador recebeu as razões em cena: só a partir daqui ele pode julgar. Antes, os
   // botões Manter/Reformar/Anular nasciam junto com o canal e ele decidia sem nunca ter
   // recebido nada — o recurso tinha documento, mas não tinha entrega.
+  // O Juiz recebeu o requerimento do MP em cena: só a partir daqui ele decide. Antes, os botões
+  // nasciam junto com o pedido e ele deferia sem ter recebido nada.
+  solicitacao_medida: {
+    aplicar: (medida, _peca, recebedorId) => {
+      const rhLocal = require('./rh');
+      if (medida.requerimentoRecebidoEm) return null;
+      if (!rhLocal.cobreOPapel(recebedorId, 'Juiz')) {
+        return { recusa: `ℹ️ Documento entregue. A decisão da medida **${medida.numero}** não foi liberada porque só o Juiz destrava o julgamento do requerimento.` };
+      }
+      return {
+        campos: { requerimentoRecebidoEm: new Date().toISOString(), ...require('./atosPorCargo').carimboDeExecucao(recebedorId) },
+        aviso: `⚖️ Requerimento recebido. A medida **${medida.numero}** está liberada para decisão — os botões já estão no canal.`,
+      };
+    },
+    aoAplicar: async (interaction, medida) => {
+      await require('../commands/medida').repostarBotoesDecisaoMedida(interaction.guild, medida.numero).catch(() => {});
+    },
+  },
+
   razoes_recurso: {
     aplicar: (apelacao, _peca, recebedorId) => {
     const rhLocal = require('./rh');
@@ -363,6 +438,27 @@ const chaveRascunho = (userId, tipo, numero) => `${userId}:${tipo}:${numero}`;
 // Ler RENOVA o prazo. O RascunhoTTL só marca a expiração no set, então reescrever a entrada a cada
 // leitura é o que transforma as 2h em "2h de inatividade" em vez de "2h desde o primeiro trecho" —
 // que era o comportamento que deixaria alguém perder o texto no meio da terceira parte.
+// Consome o rascunho: quem finaliza precisa apagá-lo, senão o texto fica em memória e um segundo
+// clique em "Enviar" reemite o mesmo conteúdo.
+function limparRascunho(userId, tipo, numero) {
+  rascunhos.delete(chaveRascunho(userId, tipo, numero));
+}
+
+// SEMEAR o rascunho com um texto que veio de outro lugar — tipicamente o primeiro trecho, digitado
+// num modal antes de o painel existir. É o que permite a uma decisão do Juiz começar como sempre
+// começou (um modal) e SÓ ENTÃO ganhar o "adicionar mais texto": ele escreve o primeiro bloco no
+// modal, e daí em diante usa o mesmo painel do MP.
+function semearRascunho(userId, tipo, numero, texto) {
+  rascunhos.set(chaveRascunho(userId, tipo, numero), { trechos: [String(texto || '')].filter(Boolean) });
+}
+
+// O painel de trechos, montado para quem não passou por `abrirEmissao`. Mesmo componente, mesmos
+// botões, mesmo roteador — só o ponto de entrada é outro.
+function painelDeRascunho(userId, tipoChave, numero) {
+  const cfg = TIPOS[tipoChave];
+  return painelRascunho(tipoChave, numero, lerRascunho(userId, tipoChave, numero), cfg);
+}
+
 function lerRascunho(userId, tipo, numero) {
   const chave = chaveRascunho(userId, tipo, numero);
   const atual = rascunhos.get(chave);
@@ -1158,6 +1254,21 @@ async function executarDestravarSelo(interaction, chave) {
 // ---------------------------------------------------------------------------
 // Router — prefixo `peca:`, no mesmo padrão do `edital:` (ver index.js)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// FINALIZADORES — o mesmo rascunho, finais diferentes
+// ---------------------------------------------------------------------------
+// O componente de rascunho por trechos (modal → painel → "adicionar mais texto" → enviar) foi
+// escrito acoplado a `criarPeca`: escrever em partes e virar peça eram a mesma coisa.
+//
+// Nem toda decisão do Juiz termina em peça. A fundamentação que ele escreve para EMITIR MANDADO,
+// por exemplo, vira o teor do próprio mandado — não um documento entregue com selo. Duplicar a UI
+// do rascunho para esses casos seria a segunda cópia que depois diverge da primeira.
+//
+// Aqui o final é injetável: quem tem um desfecho próprio registra o seu; quem não registra cai no
+// `criarPeca` de sempre. Tudo antes do botão "Enviar" é idêntico nos dois caminhos.
+const FINALIZADORES = new Map();
+function registrarFinalizador(tipoChave, fn) { FINALIZADORES.set(tipoChave, fn); }
+
 async function router(interaction) {
   const partes = interaction.customId.split(':');
   const acao = partes[1];
@@ -1175,7 +1286,12 @@ async function router(interaction) {
     case 'add': return abrirModalTrecho(interaction, partes[2], partes.slice(3).join(':'));
     case 'ver': return verRascunho(interaction, partes[2], partes.slice(3).join(':'));
     case 'undo': return desfazerTrecho(interaction, partes[2], partes.slice(3).join(':'));
-    case 'enviar': return criarPeca(interaction, partes[2], partes.slice(3).join(':'));
+    case 'enviar': {
+      const tipoChave = partes[2];
+      const alvo = partes.slice(3).join(':');
+      const finalizar = FINALIZADORES.get(tipoChave) || criarPeca;
+      return finalizar(interaction, tipoChave, alvo);
+    }
     case 'entregar': return entregarAgora(interaction, partes.slice(2).join(':'));
     case 'encerrar': return encerrarEntrega(interaction, partes.slice(2).join(':'));
     case 'receber': return abrirRecebimento(interaction, partes.slice(2).join(':'));
@@ -1336,4 +1452,6 @@ module.exports = {
   qualificacao, // exportada para teste: e ela que classifica o rito no cabecalho do documento
   aplicarEfeitoDoRecebimento, EFEITOS_POS_RECEBIMENTO, // elo "documento entregue -> proxima etapa"
   finalizarPeca, emitirAtoComoPeca, // pipeline de emissao reusado por sentenca e recurso
+  registrarFinalizador, lerRascunho, textoDoRascunho, limparRascunho, // rascunho por trechos, reusavel
+  semearRascunho, painelDeRascunho, MAX_TRECHOS,
 };

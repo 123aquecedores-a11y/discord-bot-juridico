@@ -3850,6 +3850,40 @@ async function salvarSentencaPorCrime(interaction, numero) {
   rascunhoVeredicto.delete(chaveDecisao(interaction.user.id, numero));
 
   rascunhoDecisao.set(chaveDecisao(interaction.user.id, numero), { texto, pena: penas, regime, resultado, sentencaPorCrime });
+
+  // FUNDAMENTAÇÃO EM TRECHOS (19/08/2026). O campo do modal tem teto de 4.000 caracteres, que é do
+  // Discord e não da sentença — fundamentação de caso complexo não cabe, e o Juiz era obrigado a
+  // resumir. Agora o que ele escreveu no modal vira o PRIMEIRO trecho, e daí em diante ele usa o
+  // MESMO painel que o MP já usa na denúncia: "adicionar mais texto", "ver texto", "apagar último".
+  //
+  // O documento final é um só, paginado — não vira uma sentença por trecho.
+  //
+  // As penas e o regime continuam no modal, estruturados: eles não são texto corrido e não têm por
+  // que ser montados em partes.
+  const emissaoPeca = require('../utils/emissaoPeca');
+  emissaoPeca.semearRascunho(interaction.user.id, 'fundamentacao_sentenca', numero, texto);
+  return interaction.reply({
+    ...emissaoPeca.painelDeRascunho(interaction.user.id, 'fundamentacao_sentenca', numero),
+    ephemeral: true,
+  });
+}
+
+// FINALIZADOR do rascunho da sentença: o "Enviar" do painel de trechos consuma o julgamento.
+// Junta os trechos num texto só e devolve ao pipeline que já existia (revisão-IA opcional →
+// executarSentenca), sem duplicar nada dele.
+async function finalizarSentencaPorTrechos(interaction, tipoChave, numero) {
+  const emissaoPeca = require('../utils/emissaoPeca');
+  const chave = chaveDecisao(interaction.user.id, numero);
+  const d = rascunhoDecisao.get(chave);
+  if (!d) return interaction.reply({ content: 'A prévia da sentença expirou. Refaça pelo botão "Julgar".', ephemeral: true }).catch(() => {});
+
+  const texto = emissaoPeca.textoDoRascunho(emissaoPeca.lerRascunho(interaction.user.id, tipoChave, numero));
+  if (!texto.trim()) {
+    return interaction.reply({ content: 'Não há texto na fundamentação — o rascunho pode ter expirado. Refaça pelo botão "Julgar".', ephemeral: true }).catch(() => {});
+  }
+  emissaoPeca.limparRascunho(interaction.user.id, tipoChave, numero);
+  rascunhoDecisao.set(chave, { ...d, texto });
+
   if (preferencias.revisaoAutomaticaLigada(interaction.user.id)) return executarSentenca(interaction, numero, 'auto');
   return interaction.reply(revisaoIA.telaEscolha('sentenca', { extra: numero, titulo: 'Fundamentos da sentença', texto }));
 }
@@ -4015,7 +4049,12 @@ async function executarSentenca(interaction, numero, modo) {
   await postarOuAtualizarCapaPublica(interaction.guild, numero);
 }
 
+// Registrados no load: o "Enviar" do painel de trechos de cada decisão do Juiz. Ver FINALIZADORES
+// em utils/emissaoPeca.js — mesmo rascunho, desfechos diferentes.
+require('../utils/emissaoPeca').registrarFinalizador('fundamentacao_sentenca', finalizarSentencaPorTrechos);
+
 module.exports = {
+  finalizarSentencaPorTrechos,
   data: new SlashCommandBuilder()
     .setName('processo')
     .setDescription('Gerencia processos penais e civis')

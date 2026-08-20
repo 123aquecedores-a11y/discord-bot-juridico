@@ -50,8 +50,12 @@ console.log('1) O MODAL do painel — os três campos padrão');
     '1f: e a FUNDAMENTAÇÃO, com o nome usado no resto do bot');
 
   ok(!/alvo_discord/.test(bloco), '1g: o campo "Discord do alvo" saiu do modal');
-  ok(bloco.split('new ActionRowBuilder()').length - 1 === 3,
-    '1h: exatamente três campos — nem sobrou o antigo, nem faltou um novo');
+  // TRÊS campos base + UM condicional: o nome livre nasce só quando o tipo é "Outra". Fixar em
+    // três reprovaria a correção do "Mandado Outro"; não checar nada deixaria voltar o campo de
+    // Discord. O que importa é: os três estão lá, e o do Discord não.
+  const linhas = bloco.split('new ActionRowBuilder()').length - 1;
+  ok(linhas === 3 || linhas === 4, '1h: três campos base, mais o nome livre condicional', `${linhas} linhas`);
+  ok(/setCustomId\('tipo_livre'\)/.test(bloco), '1i: e o nome livre existe para o tipo "Outra"');
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +65,9 @@ console.log('\n2) O SUBMIT grava o que o modal coleta');
   const src = LER('commands', 'painel.js');
   const i = src.indexOf("modulo === 'medida' && acao === 'solicitar'");
   ok(i > 0, '2z: o submit foi localizado (scan não vazio)');
-  const bloco = src.slice(i, i + 900);
+  // Janela larga o bastante: o bloco cresceu com o tipo livre, e uma janela curta cortaria a
+  // leitura da fundamentação — falha que seria do teste, não do código.
+  const bloco = src.slice(i, i + 1600);
 
   ok(/getTextInputValue\('alvo'\)/.test(bloco), '2a: lê o nome do alvo');
   ok(/rgAlvo: \(interaction\.fields\.getTextInputValue\('alvo_rg'\)/.test(bloco), '2b: lê o RG');

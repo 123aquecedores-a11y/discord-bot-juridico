@@ -110,7 +110,11 @@ console.log('\n2) Modo ABERTO não ganha selo (o inverso também é regressão)'
 console.log('\n3) RÓTULOS: fonte única, sem catálogo paralelo divergindo');
 {
   // O catálogo do servidor tinha 2 de 7 tipos; os outros 5 viravam "DOCUMENTO" sem unidade.
-  const ativos = Object.keys(emissao.TIPOS).filter(t => emissao.tipoAtivo(t));
+  // `semPeca` fica de fora, e a razão é a mesma que justifica a regra: o rótulo existe para o
+  // documento não sair como "DOCUMENTO" genérico. Um tipo que NUNCA vira peça nunca é renderizado —
+  // ele usa o rascunho por trechos e termina em outro ato (a fundamentação do Juízo vira o teor do
+  // mandado). Exigir rótulo dele seria exigir nome para uma página que não existe.
+  const ativos = Object.keys(emissao.TIPOS).filter(t => emissao.tipoAtivo(t) && !emissao.TIPOS[t].semPeca);
   ok(ativos.length >= 7, `3a: há ${ativos.length} tipos ativos no catálogo de emissão`, `achou ${ativos.length}`);
 
   const semRotulo = ativos.filter(t => !catalogo.ROTULOS[t]);
