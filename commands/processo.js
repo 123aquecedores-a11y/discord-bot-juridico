@@ -397,7 +397,14 @@ async function executarParecerMp(interaction, numero, modo) {
   try { require('../utils/pecas').fecharJanelasDoProcesso('processos', numero); } catch (e) { console.error('[pecas] fechar janelas no arquivamento:', e.message); }
   if (canal) {
     await canais.arquivarCanal(canal);
-    await canal.send({ content: `<@${processo.delegado}>`, components: [botaoPedirRevisao(numero)] });
+    // Sem Delegado (processo aberto pelo próprio MP) não há a quem oferecer a revisão do
+    // arquivamento — pedir revisão é ato DELE. Postar assim mesmo produziria `<@null>` e um
+    // botão que ninguém pode clicar.
+    if (processo.delegado) {
+      await canal.send({ content: `<@${processo.delegado}>`, components: [botaoPedirRevisao(numero)] });
+    } else {
+      await canal.send({ content: '📦 Arquivado pelo Ministério Público. Este processo não teve inquérito policial, então não há pedido de revisão a oferecer — a Supervisão pode reabrir se for o caso.' });
+    }
   }
   await auditoria.registrar(interaction.guild, { acao: 'Processo arquivado (MP)', executorId: interaction.user.id, referencia: `Processo ${numero}` });
   // NÍVEL 1 — arquivamento de inquérito publica no Diário na hora (efeito automático por natureza).
@@ -875,7 +882,14 @@ function botaoDecretarRevelia(numero) {
   );
 }
 
-async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, motivo, reusTexto, reuNome = null, reuRg = null, medidaNumero, atoMpNumero }) {
+// `semDelegado` — o MP abre o processo por conta própria, sem inquérito policial por trás
+// (20/08/2026). Nem toda cidade tem Delegado ativo, e onde não tem o penal ficava travado na porta.
+//
+// NÃO é o mesmo que "delegadoId nulo": sem esta flag, o acúmulo faz o próprio promotor ocupar os
+// dois papéis (regra de 19/08/2026, que existe para o caso em que ele ABRE fazendo as vezes de
+// delegado). Aqui o campo fica genuinamente VAZIO — não há polícia neste caso, e fingir que há
+// produziria um responsável por diligência que não existe.
+async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, motivo, reusTexto, reuNome = null, reuRg = null, medidaNumero, atoMpNumero, semDelegado = false }) {
   const crimesEscolhidos = resolverCrimes(crimesTexto);
   if (crimesEscolhidos.length === 0) return { erro: 'Nenhum crime válido informado. Use os IDs mostrados em `/crime buscar`.' };
 
@@ -884,11 +898,13 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
   // ACÚMULO DELEGADO + PROMOTOR (regra do operador, 19/08/2026): se quem abre é Promotor e não há
   // delegado separado, ele ocupa os dois papéis — não faz sentido sortear um promotor para o caso
   // que o próprio promotor acabou de abrir, nem travar esperando um delegado que não existe.
-  const acumulo = acumuloDePapeis.resolverDelegadoEPromotor({
-    aberturaPorId: delegadoId || promotorId || null,
-    delegadoId,
-    promotorInformado: promotorId,
-  });
+  const acumulo = semDelegado
+    ? { delegado: null, promotor: promotorId || null, acumulou: false }
+    : acumuloDePapeis.resolverDelegadoEPromotor({
+      aberturaPorId: delegadoId || promotorId || null,
+      delegadoId,
+      promotorInformado: promotorId,
+    });
   let delegadoFinal = acumulo.delegado;
   let promotorFinal = acumulo.promotor;
 

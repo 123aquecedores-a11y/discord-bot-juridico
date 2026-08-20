@@ -1061,8 +1061,23 @@ module.exports = {
       if (interaction.user.id !== responsavelCumprimento && !isSuperStaff(interaction)) {
         return interaction.reply({ content: `Só o Delegado responsável por este mandado pode cumpri-lo — no caso, <@${responsavelCumprimento}>.`, ephemeral: true });
       }
-    } else if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
-      return interaction.reply({ content: 'Este mandado não tem Delegado responsável definido — só a Staff pode registrar o cumprimento.', ephemeral: true });
+    } else {
+      // SEM DELEGADO no caso (processo aberto pelo próprio MP, ou delegado que saiu do quadro):
+      // antes só SuperStaff podia registrar, e o mandado ficava eternamente "Emitido" esperando
+      // alguém da administração aparecer. Quem responde pelo caso — Juiz ou Promotor — pode
+      // registrar que a diligência foi cumprida.
+      //
+      // Continua NÃO sendo qualquer um: sem responsável e sem cargo, a checagem recusa.
+      const podeSemDelegado = isAdmin(interaction) || isSuperStaff(interaction)
+        || interaction.user.id === medida?.juiz || interaction.user.id === processoDoMandado?.juiz
+        || interaction.user.id === medida?.promotor || interaction.user.id === processoDoMandado?.promotor
+        || rh.cobreOPapel(interaction.user.id, 'Juiz') || rh.cobreOPapel(interaction.user.id, 'Promotor');
+      if (!podeSemDelegado) {
+        return interaction.reply({
+          content: 'Este mandado não tem Delegado responsável. Sem ele, quem registra o cumprimento é o **Juiz** ou o **Promotor** do caso (ou a Staff).',
+          ephemeral: true,
+        });
+      }
     }
 
     // CUMPRIR É SÓ MARCAR (decisão do operador, 19/08/2026).
