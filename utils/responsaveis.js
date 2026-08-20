@@ -148,9 +148,23 @@ async function motivoInvalidez(guild, papel, id) {
 }
 
 // Sorteio do substituto por papel (Juiz balanceia carga; os outros é sorteio simples).
+// O sorteio tenta primeiro o cargo EXATO e só então a chefia que o cobre (rh.COBERTURA:
+// Desembargador cobre Juiz, Procurador cobre Promotor). A ordem importa: com um Juiz disponível,
+// o caso não deve ir para o Desembargador só porque o sorteio olhou os dois de uma vez — a
+// cobertura é rede de plantão, não distribuição normal.
+//
+// Sem isso, um caso de Juiz sem nenhum Juiz ativo virava pendência mesmo havendo Desembargador
+// apto a assumir, e a mesma pessoa que `cobreOPapel` autoriza a AGIR não podia RECEBER o caso.
 function sortearParaPapel(papel, excluirIds) {
-  if (papel === 'Juiz') return rh.sortearJuiz({ excluirIds });
-  return rh.sortearPorCargo(papel, { excluirIds });
+  const exato = papel === 'Juiz' ? rh.sortearJuiz({ excluirIds }) : rh.sortearPorCargo(papel, { excluirIds });
+  if (exato) return exato;
+
+  const cobrem = (rh.COBERTURA[papel] || []).filter(c => c !== papel);
+  for (const cargo of cobrem) {
+    const suplente = rh.sortearPorCargo(cargo, { excluirIds });
+    if (suplente) return suplente;
+  }
+  return null;
 }
 
 // Sorteia um substituto e VALIDA que ele ainda está no servidor (o pool vem do rh, então o cargo já
@@ -260,6 +274,10 @@ async function aplicarTroca(guild, { tabela, numero, papel, novoId, textoAndamen
 const MOTIVOS_REATRIBUICAO = {
   ausente: 'responsável ausente do servidor',
   semcargo: 'responsável sem o cargo (reconciliação automática)',
+  // Demissão pelo /rh: diferente de 'semcargo' de propósito. Ali a pessoa está no servidor e
+  // ainda consegue agir, então esvaziar o caso pioraria; aqui ela SAIU do quadro por ato
+  // deliberado da Staff, e manter o nome dela nos autos seria atribuição falsa.
+  demitido: 'desligamento do quadro',
 };
 
 // Reatribuição AUTOMÁTICA (Parte 3) — sorteia um substituto VÁLIDO e efetiva. Nunca em silêncio.

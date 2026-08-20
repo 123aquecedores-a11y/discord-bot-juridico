@@ -10,6 +10,7 @@ const db = require('../database/db');
 const { truncar } = require('../utils/texto');
 const carteirinha = require('../utils/carteirinha');
 const diario = require('../utils/diarioOficial');
+const responsaveis = require('../utils/responsaveis');
 
 // Título que vai na frente do apelido quando o cargo é aprovado (ex: "Juiz Fulano").
 // Desembargador abrevia pra caber no limite de 32 caracteres do apelido do Discord.
@@ -73,7 +74,25 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
   try {
     await diario.publicarNoDiario(guild, 'nomeacao', { userId: usuarioId, cargo, nome: nomePersonagem, porQuemId: executorId });
   } catch (e) { console.error('[rh] publicação de nomeação no Diário falhou (ignorado):', e.message); }
-  return { apelidoOk, carteira };
+  // CICLO FECHADO (19/08/2026): demitido → sem ninguém → aguardando designação → contratado →
+  // o caso vai para ele sozinho. Sem isto, o caso ficava esperando a varredura periódica passar,
+  // e a Staff tinha de designar na mão justamente no momento em que acabara de resolver a falta.
+  //
+  // Só magistratura/MP: são os papéis que o bot sorteia. Advogado entra por habilitação, que é
+  // ato da parte — ninguém é designado advogado de um caso.
+  let assumidos = [];
+  if (rh.CARGOS_MAGISTRATURA.includes(cargo)) {
+    assumidos = await responsaveis.recuperarPendencias(guild).catch(err => {
+      console.error('[rh] falha ao designar pendências para o contratado:', err.message);
+      return [];
+    });
+    if (assumidos.length) {
+      console.log(`♻️ [rh] Contratação de ${usuarioId} (${cargo}): ${assumidos.length} caso(s) que aguardavam designação foram atribuídos — `
+        + assumidos.map(a => `${a.numero}/${a.papel}→${a.novoId}`).join(', ') + '.');
+    }
+  }
+
+  return { apelidoOk, carteira, assumidos };
 }
 
 // Contratação via PAINEL (Staff) com captura de nome + RG num modal — o painel é o caminho
@@ -122,6 +141,25 @@ async function contratarViaModal(interaction, usuarioId, cargo) {
   return interaction.editReply({ embeds: [embed] });
 }
 
+// Resumo do que aconteceu com os CASOS, para a Staff ver na hora se sobrou algo sem responsável.
+// Demissão que reatribui em silêncio é a mesma coisa que demissão que não reatribui: em nenhum
+// dos dois casos quem clicou sabe se pode ir embora tranquilo.
+function resumoDaDemissao(saiu) {
+  const lista = saiu.reatribuidos || [];
+  if (!lista.length) return '📋 Nenhum caso aberto estava sob responsabilidade dele.';
+  const ok = lista.filter(t => t.resultado === 'reatribuido');
+  const pend = lista.filter(t => t.resultado === 'pendencia_sem_substituto');
+  const habs = lista.filter(t => t.numero && t.aindaTemDefesa !== undefined);
+  const linhas = [];
+  if (ok.length) linhas.push(`♻️ ${ok.length} caso(s) redistribuído(s): ${ok.map(t => `**${t.numero}** → <@${t.novoId}>`).join(', ')}`);
+  if (pend.length) linhas.push(`📌 ${pend.length} caso(s) **aguardando designação** (não há ninguém do cargo): ${pend.map(t => `**${t.numero}**`).join(', ')}`);
+  if (habs.length) {
+    const semDefesa = habs.filter(t => !t.aindaTemDefesa);
+    linhas.push(`⚖️ ${habs.length} habilitação(ões) revogada(s)${semDefesa.length ? `; ${semDefesa.length} processo(s) sem defesa: ${semDefesa.map(t => `**${t.numero}**`).join(', ')}` : ''}`);
+  }
+  return linhas.join('\n');
+}
+
 async function demitirComRole(guild, usuarioId, executorId = null) {
   const registro = rh.getCargo(usuarioId);
   rh.demitir(usuarioId);
@@ -135,7 +173,88 @@ async function demitirComRole(guild, usuarioId, executorId = null) {
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: demissão', executorId, referencia: `<@${usuarioId}>${registro ? ` (era ${registro.cargo})` : ''}` });
   }
-  return registro;
+
+  // O CASO NÃO PODE FICAR SEM DONO (19/08/2026). Antes, a demissão só mexia no quadro; os casos
+  // dela ficavam parados até a varredura periódica passar — e a varredura ABORTA quando muitos
+  // aparecem de uma vez, por ser sintoma de RH zerado. Foi o que aconteceu com 8 casos de um
+  // promotor desligado: ninguém assumiu, e o aviso se repetia a cada boot.
+  //
+  // Agora a redistribuição é EVENTO: acontece no ato da demissão, um caso por vez, com quem saiu já
+  // fora do quadro. A varredura fica como rede de segurança, com a trava de massa intacta.
+  // Continua devolvendo NULL quando não havia cargo — quem chama distingue "demitido" de "não tinha
+  // cargo" por esse valor, e transformar isso num objeto sempre-truthy faria o painel dizer que
+  // removeu alguém que nunca esteve no quadro.
+  if (!registro) return null;
+  const reatribuidos = await redistribuirCasosDe(guild, usuarioId, registro.cargo);
+  return { ...registro, reatribuidos };
+}
+
+// Redistribui, no ato da demissão, tudo em que a pessoa era responsável.
+//
+// MAGISTRATURA/MP re-sorteia (respeitando a cobertura: Desembargador cobre Juiz, Procurador cobre
+// Promotor). Sem ninguém disponível, o caso vira "aguardando designação" — explicitamente sem
+// responsável, nunca um nome fantasma nos autos.
+//
+// ADVOGADO é outra coisa: ele é PARTE, não órgão. Não se sorteia advogado para alguém — as
+// habilitações dele caem e o processo volta a precisar de defesa.
+async function redistribuirCasosDe(guild, usuarioId, cargo) {
+  if (cargo === 'Advogado') return derrubarHabilitacoesDe(guild, usuarioId);
+
+  if (!rh.CARGOS_MAGISTRATURA.includes(cargo)) return []; // Delegado e afins: nada a re-sortear
+
+  const tratados = await responsaveis.tratarResponsavelInvalido(guild, usuarioId, 'demitido').catch(err => {
+    console.error('[rh] falha ao redistribuir casos do demitido:', err.stack || err.message);
+    return [];
+  });
+
+  const reatribuidos = tratados.filter(t => t.resultado === 'reatribuido');
+  const pendentes = tratados.filter(t => t.resultado === 'pendencia_sem_substituto');
+  if (tratados.length) {
+    console.log(`♻️ [rh] Demissão de ${usuarioId} (${cargo}): ${tratados.length} caso(s) tratado(s) — `
+      + `${reatribuidos.length} redistribuído(s)${reatribuidos.length ? ` (${reatribuidos.map(t => `${t.numero}→${t.novoId}`).join(', ')})` : ''}`
+      + `${pendentes.length ? `; ${pendentes.length} sem substituto, aguardando designação (${pendentes.map(t => t.numero).join(', ')})` : ''}.`);
+  }
+  return tratados;
+}
+
+// Advogado demitido: as habilitações dele caem e o processo volta a precisar de defesa.
+//
+// A habilitação não é APAGADA — vira 'Revogada'. Ato praticado não some dos autos; o que muda é
+// que ela deixa de dar acesso (podeVerTeor e os gates leem status === 'Aprovado').
+async function derrubarHabilitacoesDe(guild, usuarioId) {
+  const tratados = [];
+  for (const processo of db.todos('processos')) {
+    const habs = processo.habilitacoes || [];
+    if (!habs.some(h => h.advogadoId === usuarioId && h.status === 'Aprovado')) continue;
+
+    const atualizadas = habs.map(h => (h.advogadoId === usuarioId && h.status === 'Aprovado')
+      ? { ...h, status: 'Revogada', revogadaEm: new Date().toISOString(), revogadaPorDemissao: true }
+      : h);
+    const aindaTemDefesa = atualizadas.some(h => h.status === 'Aprovado');
+    db.atualizar('processos', processo.numero, {
+      habilitacoes: atualizadas,
+      // Só marca "precisa de defesa" se o processo ficou SEM nenhum advogado — litisconsórcio com
+      // outro defensor habilitado segue defendido.
+      ...(aindaTemDefesa ? {} : { aguardandoDefesa: true, aguardandoDefesaDesde: new Date().toISOString() }),
+    });
+    tratados.push({ numero: processo.numero, aindaTemDefesa });
+
+    const canal = processo.canalId ? await guild.channels.fetch(processo.canalId).catch(() => null) : null;
+    if (canal) {
+      await canal.permissionOverwrites.delete(usuarioId).catch(() => {});
+      await canal.send({
+        content: `⚠️ <@${usuarioId}> deixou o quadro de advogados — a habilitação dele neste processo foi **revogada**.\n`
+          + (aindaTemDefesa
+            ? 'O processo segue com os demais advogados habilitados.'
+            : '📌 O processo está **sem defesa constituída**: é preciso habilitar novo advogado (ou nomear defensor dativo).'),
+      }).catch(() => {});
+    }
+  }
+  if (tratados.length) {
+    console.log(`♻️ [rh] Demissão de advogado ${usuarioId}: ${tratados.length} habilitação(ões) revogada(s) — `
+      + `${tratados.filter(t => !t.aindaTemDefesa).length} processo(s) sem defesa.`);
+  }
+  return tratados;
 }
 
 // ---- Auto-atendimento de contratação (Parte 7) ----
@@ -504,8 +623,14 @@ module.exports = {
 
     if (sub === 'demitir') {
       const usuario = interaction.options.getUser('usuario');
-      await demitirComRole(interaction.guild, usuario.id, interaction.user.id);
-      return interaction.reply({ content: `${usuario} foi removido do cargo jurídico.` });
+      // Defer: a redistribuição percorre os tickets abertos e posta nos canais — passa dos 3s.
+      await interaction.deferReply();
+      const saiu = await demitirComRole(interaction.guild, usuario.id, interaction.user.id);
+      if (!saiu) return interaction.editReply({ content: `${usuario} não tinha cargo jurídico ativo.` });
+      // Diz o que aconteceu com os CASOS, não só com o cargo: era isso que faltava para a Staff
+      // saber se sobrou algo aguardando designação.
+      return interaction.editReply({ content: `${usuario} foi removido do cargo jurídico.
+${resumoDaDemissao(saiu)}` });
     }
 
     if (sub === 'licenca') {
@@ -534,7 +659,7 @@ module.exports = {
   },
 
   contratarComRole,
-  demitirComRole,
+  demitirComRole, resumoDaDemissao, redistribuirCasosDe, derrubarHabilitacoesDe,
   modalContratarStaff,
   contratarViaModal,
   selectCargoDesejado,
