@@ -322,6 +322,12 @@ function submenuMp(interaction) {
     // Os customId são os MESMOS do outro menu, de propósito: é atalho para a ação que já existe,
     // não um segundo caminho com regra própria (dois caminhos para a mesma coisa foi um dos
     // achados da auditoria de ontem).
+    // ABRIR PENAL PELO MP (20/08/2026). Nem toda cidade tem Delegado ativo, e onde não tem o
+    // penal ficava travado na porta: só o Delegado abria. O processo nasce SEM delegado e o
+    // promotor vai direto escrever a denúncia — não há inquérito para ele decidir se aceita.
+    linha(
+      botaoSe(pode, 'painel:acao:mp:penal', '⚖️ Abrir processo penal', ButtonStyle.Success),
+    ),
     linha(
       botaoSe(pode, 'painel:acao:medida:solicitar', '🔒 Solicitar medida cautelar', ButtonStyle.Secondary),
       botaoSe(pode && podeEmitirOficio(interaction), 'painel:menu:oficio', '✉️ Ofício', ButtonStyle.Secondary),
@@ -417,10 +423,12 @@ async function minhasPendencias(interaction) {
 
 // ---- Modais ----
 
-function abrirModalProcessoPenal(interaction) {
+// `customId` decide só QUEM vai receber o submit — o formulário é o mesmo nos dois caminhos
+// (Delegado abrindo inquérito, MP abrindo direto). Um segundo modal seria a mesma tela duas vezes.
+function abrirModalProcessoPenal(interaction, customId = 'painel:modal:processo:penal') {
   // Frente 7: réu segue identidade nome+RG (@ opcional), como no cível. Réu com Discord vai em
   // "Menções @"; réu sem Discord entra por nome+RG. Nenhum é obrigatório (pode identificar depois).
-  const modal = new ModalBuilder().setCustomId('painel:modal:processo:penal').setTitle('Abrir processo penal');
+  const modal = new ModalBuilder().setCustomId(customId).setTitle('Abrir processo penal');
   modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('motivo').setLabel('Descrição objetiva dos fatos').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(4000)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reu_nome').setLabel('Nome do réu (se não tiver Discord)').setStyle(TextInputStyle.Short).setRequired(false)),
@@ -455,6 +463,7 @@ async function finalizarProcessoPenal(interaction) {
       reuRg: rascunho.dados.reuRg,
       medidaNumero: rascunho.dados.medidaNumero,
       atoMpNumero: rascunho.dados.atoMpNumero,
+      semDelegado: !!rascunho.dados.semDelegado,
     });
 
     if (resultado.erro) return interaction.editReply({ content: resultado.erro, embeds: [], components: [] });
@@ -470,6 +479,27 @@ async function finalizarProcessoPenal(interaction) {
       const ato = db.buscarPorNumero('atosMp', rascunho.dados.atoMpNumero);
       const canalAto = ato?.canalId && await interaction.guild.channels.fetch(ato.canalId).catch(() => null);
       if (canalAto) await canalAto.send({ content: `Processo ${resultado.numero} aberto a partir deste ato: ${resultado.canal}` });
+    }
+
+    // ABERTO PELO MP: vai DIRETO para a denúncia. Não há inquérito para ele decidir se aceita —
+    // ele mesmo abriu o caso, a decisão de denunciar já está tomada. Mandá-lo ao menu
+    // "oferecer / arquivar" seria perguntar o que ele acabou de responder.
+    //
+    // O botão leva ao MESMO `processo:oferecer` do fluxo do Delegado — a denúncia segue o caminho
+    // normal daí em diante (peça, selo, entrega ao Juiz). Um botão, e não a abertura automática do
+    // formulário, porque esta interação já foi reconhecida (deferUpdate acima) e o Discord não
+    // aceita abrir modal depois disso.
+    if (rascunho.dados.semDelegado) {
+      // editReply, e NÃO respostaSumindo: aquela apaga a mensagem em 45 segundos e levaria o botão
+      // da denúncia junto. Aqui a mensagem É a porta do próximo passo — precisa ficar.
+      return interaction.editReply({
+        content: `⚖️ Processo penal **${resultado.numero}** aberto em ${resultado.canal}, sem inquérito policial.\n`
+          + 'Escreva a denúncia agora — ela segue o caminho de sempre: vira peça com selo e é entregue ao Juiz em cena.',
+        embeds: [],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`processo:oferecer:${resultado.numero}`).setLabel('📝 Escrever denúncia').setStyle(ButtonStyle.Success),
+        )],
+      });
     }
 
     return respostaSumindo(interaction, { content: `Processo penal ${resultado.numero} aberto em ${resultado.canal}.`, embeds: [], components: [] });
@@ -1040,6 +1070,8 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (!ministerioPublico.ehMembroDoMP(interaction)) {
       return interaction.reply({ content: 'Só Promotor ou Procurador — são atribuições exclusivas do Ministério Público (art. 129 da Constituição Federal).', ephemeral: true });
     }
+    // Mesmo formulário do Delegado — só o destino do submit muda (ver abrirModalProcessoPenal).
+    if (acao === 'penal') return abrirModalProcessoPenal(interaction, 'painel:modal:mp:penal');
     if (acao === 'requisicao') return abrirModalRequisicaoMp(interaction);
     if (acao === 'recomendacao') return abrirModalRecomendacaoMp(interaction);
     if (acao === 'inqueritocivil') return abrirModalInqueritoCivil(interaction);
@@ -1389,6 +1421,24 @@ async function tratarModal(interaction, modulo, acao, extra) {
         promotorId: null,
         motivo: interaction.fields.getTextInputValue('motivo'),
         // `reus` saiu do modal (ver abrirModalPenal) — o réu é nome + RG nos autos, não menção.
+        reuNome: interaction.fields.getTextInputValue('reu_nome') || null,
+        reuRg: interaction.fields.getTextInputValue('reu_rg') || null,
+        medidaNumero: interaction.fields.getTextInputValue('medida') || null,
+      },
+    });
+    return crimePicker.mostrarPainel(interaction, { novaMensagem: true });
+  }
+
+  if (modulo === 'mp' && acao === 'penal') {
+    // MESMO rascunho e MESMO seletor de crimes do caminho do Delegado. O que muda é só o que
+    // vai gravado: quem abre é o Promotor, e o processo nasce sem delegado.
+    rascunhoCrimes.iniciar(interaction.user.id, {
+      tipo: 'penal-mp-direto',
+      dados: {
+        delegadoId: null,
+        promotorId: interaction.user.id,
+        semDelegado: true,
+        motivo: interaction.fields.getTextInputValue('motivo'),
         reuNome: interaction.fields.getTextInputValue('reu_nome') || null,
         reuRg: interaction.fields.getTextInputValue('reu_rg') || null,
         medidaNumero: interaction.fields.getTextInputValue('medida') || null,
