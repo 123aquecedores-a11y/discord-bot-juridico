@@ -52,7 +52,11 @@ const INVENTARIO = {
   },
 
   // ---- urgência: decisão explícita do operador em 18/08/2026 ----
-  'Mandado-${numeroMandado}.png': {
+  // Nome com sufixo de folha desde 20/08/2026: o mandado passou a ser renderizado pelo gerador
+  // PAGINADO (gerarPecaPNG), então um mandado longo vira várias folhas — antes saía como uma tira
+  // comprida de página única. Vale para os DOIS caminhos: o direto (Juiz emite no processo) e o do
+  // referendo (Juiz defere a medida), que é o mais longo por juntar as duas fundamentações.
+  'Mandado-${numeroMandado}${fl}.png': {
     arquivo: 'commands/mandado.js|commands/medida.js', permitido: 'URGENCIA',
     razao: 'mandado FORA do gate — cumprimento não pode esperar cena (decisão do operador)',
   },

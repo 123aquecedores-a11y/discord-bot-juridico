@@ -6,6 +6,9 @@ const { proximoNumero } = require('../utils/numeracao');
 const { isSuperStaff, isAdmin , podeAtuarNoCaso, recusaDoCaso } = require('../utils/permissoes');
 const documentos = require('../utils/documentos');
 const documentoPng = require('../services/gerarDocumentoPNG');
+// PAGINADO para o documento do mandado; `documentoPng` fica só por `nomeExibicao`. Ver a nota em
+// emitirMandadoNoProcesso: página única transformava mandado longo em tira comprida.
+const { gerarPecaPNG } = require('../services/gerarPecaPNG');
 const diario = require('../utils/diarioOficial');
 const anexos = require('../utils/anexos');
 const { selectTipoMedidaCoercitiva, rotuloTipo, modalTipoDestinatario, indicesDeValores, valoresDeIndices } = require('../utils/tiposMedidaCoercitiva');
@@ -80,9 +83,17 @@ async function abrirSelectTipo(interaction, numero) {
   if (processo.tipo !== 'Penal') {
     return interaction.reply({ content: 'Mandado só se aplica a processo penal.', ephemeral: true });
   }
+  // UM MODELO SÓ (20/08/2026). O select era `multi: true` e saía um mandado POR tipo marcado, todos
+  // com a mesma fundamentação e o mesmo destinatário — na prática, o mesmo documento postado várias
+  // vezes com o título trocado. Não é assim que funciona no papel e não era útil no jogo.
+  //
+  // Quem precisa de um mandado que cubra mais de uma coisa escolhe "Outro" e NOMEIA: "Mandado de
+  // prisão, busca e apreensão". O nome é RÓTULO do documento — mesmo padrão do título livre da
+  // Manifestação do MP —, não uma lista que o bot interpreta.
   return interaction.reply({
-    content: 'Quais tipos de mandado? Pode marcar **mais de um** — sai um mandado para cada, com a mesma fundamentação e o mesmo destinatário.',
-    components: [selectTipoMedidaCoercitiva(`painel:select:mandado:tipo:${numero}`, { multi: true })],
+    content: 'Qual o modelo do mandado? Escolha **um**. Se precisar de um mandado que cubra mais de '
+      + 'uma providência, escolha **Outro** e dê o nome que ele deve ter.',
+    components: [selectTipoMedidaCoercitiva(`painel:select:mandado:tipo:${numero}`)],
     ephemeral: true,
   });
 }
@@ -106,18 +117,25 @@ async function processarSelecaoTipo(interaction, numero) {
 // chave carrega numero#indicesDeTipos#destinatarioRef (destinatarioRef é o id da parte, ex: "p2",
 // ou o literal "fora") — assim o handler final sabe exatamente quais campos ler do modal sem
 // precisar adivinhar, e nunca chama getTextInputValue num campo que não foi criado.
-function modalTeorMandado(chave, tipoValues, destinatarioRef) {
-  const titulo = tipoValues.length > 1 ? `Mandados (${tipoValues.length})` : `Mandado — ${rotuloTipo(tipoValues[0])}`;
+// `indices` continua sendo o índice do tipo (agora UM só) — ver a nota sobre o teto de 100
+// caracteres do customId em utils/tiposMedidaCoercitiva.js. `valoresDeIndices` devolve array;
+// pegamos o primeiro, e um índice vazio ou inválido já é filtrado lá.
+function modalTeorMandado(chave, tipoValue, destinatarioRef) {
   return modalTipoDestinatario({
-    customId: `painel:modal:mandado:emitir:${chave}`, titulo,
-    tipoValue: tipoValues, destinatarioRef, campoTeor: 'teor', labelTeor: 'Motivo / fundamentação',
+    customId: `painel:modal:mandado:emitir:${chave}`,
+    titulo: `Mandado — ${rotuloTipo(tipoValue)}`,
+    tipoValue, destinatarioRef, campoTeor: 'teor', labelTeor: 'Motivo / fundamentação',
   });
 }
 
 async function processarSelecaoDestinatario(interaction, chaveTipo) {
   const [numero, indices] = chaveTipo.split('#');
   const destinatarioRef = interaction.values[0];
-  return interaction.showModal(modalTeorMandado(`${numero}#${indices}#${destinatarioRef}`, valoresDeIndices(indices), destinatarioRef));
+  const tipoValue = valoresDeIndices(indices)[0];
+  if (!tipoValue) {
+    return interaction.reply({ content: 'Nenhum modelo de mandado foi selecionado — refaça a ação.', ephemeral: true });
+  }
+  return interaction.showModal(modalTeorMandado(`${numero}#${indices}#${destinatarioRef}`, tipoValue, destinatarioRef));
 }
 
 // Resolve nome/discordId do destinatário — se "fora do processo", cria a parte na hora (papel
@@ -142,10 +160,10 @@ async function emitirMandado(interaction, chave) {
     return interaction.reply({ content: `Só um(a) Juiz(a) pode emitir mandado. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
   }
 
-  const tipoValues = valoresDeIndices(indices);
-  if (!tipoValues.length) return interaction.reply({ content: 'Nenhum tipo de mandado foi selecionado — refaça a ação.', ephemeral: true });
-  // "Outro" pode vir junto com tipos da lista; o nome livre vale só para ele.
-  const tipoLivre = tipoValues.includes('outro') ? interaction.fields.getTextInputValue('tipoLivre') : null;
+  const tipoValue = valoresDeIndices(indices)[0];
+  if (!tipoValue) return interaction.reply({ content: 'Nenhum modelo de mandado foi selecionado — refaça a ação.', ephemeral: true });
+  // "Outro" é o modelo que o Juiz nomeia: o campo só existe no modal quando ele foi escolhido.
+  const tipoLivre = tipoValue === 'outro' ? interaction.fields.getTextInputValue('tipoLivre') : null;
   const teor = interaction.fields.getTextInputValue('teor');
   const destinatario = resolverDestinatario(interaction, numero, processo, destinatarioRef);
 
@@ -156,16 +174,17 @@ async function emitirMandado(interaction, chave) {
   // mandados no mesmo processo é legítimo e não depende de o anterior estar cumprido — o Juiz
   // pode expedir busca, prisão e condução do mesmo alvo, e reexpedir quando a diligência falha.
   //
-  // A guarda de colisão dos atos DECISÓRIOS continua onde faz sentido (sentença, referendo,
-  // deferimento): lá o segundo clique desfaz o primeiro. Aqui ele só acrescenta um mandado.
+  // Isso é diferente do que foi removido em 20/08: lá o bot expedia vários mandados de UM clique
+  // só, todos com o mesmo texto. Aqui cada mandado é um ato deliberado, com fundamentação própria.
+  //
   // FUNDAMENTAÇÃO EM TRECHOS (19/08/2026). O que o Juiz escreveu no modal vira o PRIMEIRO trecho;
   // daí em diante ele usa o MESMO painel do MP ("adicionar mais texto"). O teto de 4.000 caracteres
   // é do campo do Discord, não do mandado.
   //
-  // O estado da emissão (tipos e destinatário) fica guardado até o "Enviar" — sem isso o finalizador
-  // não saberia quais mandados expedir, já que ele nasce de um clique em outro componente.
+  // O estado da emissão (modelo e destinatário) fica guardado até o "Enviar" — sem isso o
+  // finalizador não saberia o que expedir, já que ele nasce de um clique em outro componente.
   const emissaoPeca = require('../utils/emissaoPeca');
-  pendentesDeFundamentacao.set(`${interaction.user.id}:${numero}`, { tipoValues, tipoLivre, destinatario });
+  pendentesDeFundamentacao.set(`${interaction.user.id}:${numero}`, { tipoValue, tipoLivre, destinatario });
   emissaoPeca.semearRascunho(interaction.user.id, 'fundamentacao_mandado', numero, teor);
   return interaction.reply({
     ...emissaoPeca.painelDeRascunho(interaction.user.id, 'fundamentacao_mandado', numero),
@@ -177,8 +196,14 @@ async function emitirMandado(interaction, chave) {
 // deste projeto: se o bot reinicia, o Juiz refaz — nada foi gravado nos autos ainda.
 const pendentesDeFundamentacao = new Map();
 
-// FINALIZADOR do rascunho do mandado: junta os trechos e expede.
-async function emitirMandadosComFundamentacao(interaction, tipoChave, numero) {
+// FINALIZADOR do rascunho do mandado: junta os trechos e expede UM mandado.
+//
+// Nome no singular desde 20/08/2026. Antes era `emitirMandadoComFundamentacao` e rodava um laço
+// sobre os tipos marcados, expedindo um documento por tipo — todos com a MESMA fundamentação e o
+// MESMO destinatário. Na prática o Juiz clicava uma vez e o canal recebia três mandados idênticos
+// de título trocado. O modelo virou único; quem precisa de um mandado abrangente usa "Outro" e o
+// nomeia.
+async function emitirMandadoComFundamentacao(interaction, tipoChave, numero) {
   const emissaoPeca = require('../utils/emissaoPeca');
   const pendente = pendentesDeFundamentacao.get(`${interaction.user.id}:${numero}`);
   if (!pendente) {
@@ -194,45 +219,30 @@ async function emitirMandadosComFundamentacao(interaction, tipoChave, numero) {
   if (!teor.trim()) {
     return interaction.reply({ content: 'Não há texto na fundamentação — refaça pelo botão "Emitir mandado".', ephemeral: true }).catch(() => {});
   }
-  const { tipoValues, tipoLivre, destinatario } = pendente;
+  const { tipoValue, tipoLivre, destinatario } = pendente;
   pendentesDeFundamentacao.delete(`${interaction.user.id}:${numero}`);
   emissaoPeca.limparRascunho(interaction.user.id, tipoChave, numero);
 
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
-  // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso. Com vários
-  // tipos são vários PNGs, então a margem importa ainda mais.
+  // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso.
   await interaction.deferReply({ ephemeral: true });
 
-  // UM MANDADO POR TIPO MARCADO. Cada um é um documento próprio, com número próprio — é assim que
-  // funciona no papel: busca e prisão são mandados distintos, cumpridos e baixados separadamente.
-  // O que eles compartilham é a fundamentação e o destinatário, que o Juiz escreveu uma vez só.
-  //
-  // Sequencial de propósito: `proximoNumero` lê e grava o contador, e em paralelo dois mandados
-  // sairiam com o mesmo número.
-  const emitidos = [];
-  const falhas = [];
-  for (const tipoValue of tipoValues) {
-    const tipoRotulo = rotuloTipo(tipoValue, tipoLivre);
-    try {
-      const r = await emitirMandadoNoProcesso({
-        guild: interaction.guild, processo: db.buscarPorNumero('processos', numero), tipoRotulo,
-        teor, emitidoPorId: interaction.user.id, destinatario,
-      });
-      emitidos.push(`**${r.numero}** — ${tipoRotulo}`);
-    } catch (err) {
-      // Um tipo que falha não pode levar os outros junto: cada mandado é um ato autônomo.
-      console.error(`Falha ao emitir mandado (${tipoRotulo}) no processo ${numero}:`, err.message);
-      falhas.push(`${tipoRotulo} (${err.message})`);
-    }
+  // UM MANDADO, UM DOCUMENTO, UM TEXTO. `rotuloTipo` resolve o nome: modelo da lista, ou o que o
+  // Juiz escreveu quando escolheu "Outro".
+  const tipoRotulo = rotuloTipo(tipoValue, tipoLivre);
+  try {
+    const r = await emitirMandadoNoProcesso({
+      guild: interaction.guild, processo: db.buscarPorNumero('processos', numero), tipoRotulo,
+      teor, emitidoPorId: interaction.user.id, destinatario,
+    });
+    return interaction.editReply({
+      content: `📜 Mandado **${r.numero}** — ${tipoRotulo} — emitido e juntado ao processo ${numero}.`
+        + (r.paginas > 1 ? ` O documento saiu em ${r.paginas} folhas.` : ''),
+    });
+  } catch (err) {
+    console.error(`Falha ao emitir mandado (${tipoRotulo}) no processo ${numero}:`, err.message);
+    return interaction.editReply({ content: `❌ O mandado não pôde ser emitido: ${err.message}` });
   }
-
-  if (!emitidos.length) {
-    return interaction.editReply({ content: `❌ Nenhum mandado pôde ser emitido: ${falhas.join('; ')}` });
-  }
-  return interaction.editReply({
-    content: `${emitidos.length > 1 ? `${emitidos.length} mandados emitidos` : 'Mandado emitido'} e juntado(s) ao processo ${numero}:\n${emitidos.join('\n')}`
-      + (falhas.length ? `\n\n⚠️ Não saiu: ${falhas.join('; ')}` : ''),
-  });
 }
 
 // Reaproveitada por commands/medida.js quando o Promotor solicita medida e o Juiz defere
@@ -250,21 +260,40 @@ async function emitirMandadoNoProcesso({ guild, processo, tipoRotulo, teor, emit
 
   // Assinatura = quem gerou o documento (quem clicou/emitiu), não o titular fixo do processo.
   const nomeAssinante = await documentoPng.nomeExibicao(guild, emitidoPorId);
-  const pngMandado = await documentoPng.gerarDocumentoPNG({
-    tipoDocumento: 'mandado_generico', orgaoEmissor: 'judiciario',
-    subunidade: 'Comarca de São Paulo — Vara Criminal',
-    tituloDocumento: `MANDADO DE ${tipoRotulo.toUpperCase()}`,
-    numeroProcesso: numeroMandado, dataEmissao: documentos.dataExtenso(),
-    destinatario: alvoTexto, corpoTexto: teor, nomeAssinante, cargoAssinante: 'Juiz de Direito',
+  // PAGINADO, pelo gerador DAS PEÇAS (20/08/2026). Era `gerarDocumentoPNG`, de página ÚNICA: com a
+  // fundamentação por trechos (até 12.000 caracteres) o mandado saía como uma TIRA COMPRIDA, uma
+  // folha esticada até caber o texto inteiro. `gerarPecaPNG` roda o `scriptPaginacao` dentro do
+  // Chromium — compara scrollHeight > clientHeight e abre folha nova —, então texto que excede a
+  // página vira MAIS PNGs, cada um em proporção A4.
+  //
+  // `gated: false`: o mandado NÃO é peça entregue em cena. É exclusão declarada por urgência
+  // (SPEC §11.1) — o cumprimento não espera cena —, e por isso vai sem selo, sem token e sem
+  // janela. O gerador é o mesmo; o que muda é só a flag.
+  const paginasMandado = await gerarPecaPNG({
+    gated: false, token: null, digitos: null, codigoArquivo: null,
+    numeroPeca: null, numeroProcesso: numeroMandado,
+    titulo: `MANDADO DE ${tipoRotulo.toUpperCase()}`,
+    orgao: 'PODER JUDICIÁRIO',
+    unidade: 'Comarca de São Paulo — Vara Criminal',
+    data: new Date().toLocaleDateString('pt-BR'),
+    qualificacao: null, texto: teor,
+    assinante: nomeAssinante, cargoAssinante: 'Juiz de Direito',
   }).catch(err => { console.error('Falha ao gerar PNG do mandado:', err.message); return null; });
 
   const canal = await guild.channels.fetch(processo.canalId).catch(() => null);
   let msgEnviada = null;
   if (canal) {
+    // Uma folha = um anexo. Nome em template ÚNICO, sem aninhar nem ternário no `name:` — a
+    // varredura de scripts/testes-anexos-em-canal.js identifica o ponto pelo literal, e as duas
+    // formas truncam a captura (aconteceu em 20/08 com `publicarAtoNoCanal`).
+    const folhas = (paginasMandado || []).map((buf, i) => {
+      const fl = (paginasMandado || []).length > 1 ? `-fl${i + 1}` : '';
+      return { attachment: buf, name: `Mandado-${numeroMandado}${fl}.png` };
+    });
     msgEnviada = await canal.send({
       content: documentos.textoMandadoDireto({ numero: numeroMandado, processoNumero: processo.numero, tipoRotulo, alvo: alvoTexto, teor, juizId: processo.juiz }),
       components: [botaoCumprir(numeroMandado)],
-      ...(pngMandado ? { files: [{ attachment: pngMandado, name: `Mandado-${numeroMandado}.png` }] } : {}),
+      ...(folhas.length ? { files: folhas } : {}),
     });
   }
 
@@ -294,14 +323,14 @@ async function emitirMandadoNoProcesso({ guild, processo, tipoRotulo, teor, emit
   // e mesmo lá só para os tipos da allow-list (prisão preventiva/temporária) — ver a política de
   // sigilo em utils/diarioAtos.js. Mandado não cumprido não publica nunca, em gatilho nenhum.
 
-  return { numero: numeroMandado };
+  return { numero: numeroMandado, paginas: (paginasMandado || []).length };
 }
 
 // Mandados nascem de duas formas: automaticamente quando um Juiz referenda uma medida
 // cautelar (commands/medida.js -> referendar), ou emitidos direto pelo Juiz de dentro de um
 // processo penal já aberto (acima). Consulta e listagem seguem valendo pros dois casos.
 // Registrado no load: o "Enviar" do painel de trechos expede os mandados.
-require('../utils/emissaoPeca').registrarFinalizador('fundamentacao_mandado', emitirMandadosComFundamentacao);
+require('../utils/emissaoPeca').registrarFinalizador('fundamentacao_mandado', emitirMandadoComFundamentacao);
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -341,6 +370,7 @@ module.exports = {
   processarSelecaoDestinatario,
   emitirMandado,
   emitirMandadoNoProcesso,
+  emitirMandadoComFundamentacao, // exportada para teste: e o FINALIZADOR do rascunho
 
   async autocomplete(interaction) {
     const foco = interaction.options.getFocused().toLowerCase();
