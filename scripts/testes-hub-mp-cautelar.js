@@ -258,18 +258,28 @@ console.log('\n5) O JUIZ GANHOU VOZ — arquivar com razões, e despachar nos au
   const arq = corpoDe(PROC, 'async function arquivarComRazoes', 5000);
   ok(arq.length > 300, '5z2: arquivarComRazoes foi localizada', `${arq.length} chars`);
   ok(/Não há razões escritas/.test(arq), '5e: sem razões, não arquiva');
-  ok(/andamentos\.registrar/.test(arq) && /razoes/.test(arq),
-    '5f: as razões vão para os autos — nunca em silêncio');
-  ok(arq.indexOf('andamentos.registrar') < arq.indexOf('arquivarManual'),
-    '5g: e são lavradas ANTES de o canal fechar (depois, o envio já está travado)');
+  // O ANDAMENTO agora sai por `publicarAtoNoCanal`, junto com o PNG e a postagem no canal — não
+  // mais por uma chamada solta a `andamentos.registrar`. Foi a correção do bug de 20/08 (tarde):
+  // `andamentos.registrar` NÃO posta no canal do processo, só grava no banco e espelha o título na
+  // auditoria. A resposta dizia "visível às partes" e não havia nada para ver.
+  ok(/publicarAtoNoCanal\(/.test(arq) && /razoes/.test(arq),
+    '5f: as razões vão para os autos E para o canal — nunca em silêncio');
+  ok(/tipo: 'processo_arquivado'/.test(arq), '5f2: lavradas como andamento próprio');
+  ok(arq.indexOf('publicarAtoNoCanal') < arq.indexOf('arquivarManual'),
+    '5g: e publicadas ANTES de o canal fechar (depois, o envio já está travado)');
   ok(/jaExecutado|bloqueioPorJaExecutado/.test(arq), '5h: com guarda de colisão contra duplo clique');
+  // O RECURSO: mesmo botão da sentença, na mensagem — o painel some em status terminal.
+  ok(/componentes: \[botaoRecorrer\(numero\)\]/.test(arq),
+    '5h2: e o arquivamento abre recurso ao Desembargador, pelo botão que já existia');
+  ok(/status: 'Arquivado sem julgamento de mérito'/.test(arq),
+    '5h3: gravando o status que libera o recurso');
 
-  // DESPACHO: sem PNG, sem selo, sem entrega — é o ponto do ato.
+  // DESPACHO: COM documento publicado, mas SEM selo e SEM entrega — publicado não é entregue.
   const desp = corpoDe(PROC, 'async function publicarDespacho', 4000);
   ok(recortado(desp, 4000), '5z3: publicarDespacho foi RECORTADA', `${desp.length} chars`);
-  ok(/andamentos\.registrar/.test(desp), '5i: o despacho vira andamento nos autos');
-  ok(!/gerarDocumentoPNG|gerarPecaPNG|files:|criarPeca|emitirAtoComoPeca/.test(desp),
-    '5j: SEM PNG, SEM peça, SEM selo, SEM entrega — como pedido');
+  ok(/publicarAtoNoCanal\(/.test(desp), '5i: o despacho vira andamento E documento no canal');
+  ok(!/criarPeca|emitirAtoComoPeca|pecas\.gerar/.test(desp),
+    '5j: sem virar peça — nada de selo, token ou janela de entrega');
   ok(emissao.TIPOS.despacho_juiz && emissao.TIPOS.despacho_juiz.semPeca === true,
     '5k: e o tipo é declarado semPeca no catálogo');
   ok(emissao.TIPOS.razoes_arquivamento && emissao.TIPOS.razoes_arquivamento.semPeca === true,

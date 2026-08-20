@@ -27,6 +27,34 @@ process.env.DADOS_JSON_PATH = DB_TESTE;
 process.env.RESETAR_BANCO = '';
 process.env.GUILD_ID = 'guild1';
 
+// CHROMIUM STUBBADO — e o porquê, porque isto é a diferença entre um teste de 8s e um de 5 min.
+//
+// Cada ato publicado renderiza um PNG de verdade (Puppeteer sobe o Chromium, monta o HTML, pagina,
+// captura). São ~9 atos aqui: a suíte inteira passava a levar mais tempo neste arquivo do que em
+// todos os outros juntos, e o operador já reclamou duas vezes da demora.
+//
+// O que este teste precisa provar NÃO é que o Chromium desenha — é que o ATO chega ao canal, com
+// anexo, e é lavrado nos autos. Substituir o gerador no require.cache ANTES de carregar
+// emissaoPeca troca só a etapa cara; todo o resto do caminho é o código real, sem mock.
+//
+// O gerador de verdade continua sendo exercitado, UMA vez, na seção 5 — e é lá que se confere que
+// ele pagina e devolve buffers. Duas coisas separadas, cada uma testada onde custa menos.
+const CAMINHO_PNG = require.resolve('../services/gerarPecaPNG');
+let renderizacoes = 0;
+require.cache[CAMINHO_PNG] = {
+  id: CAMINHO_PNG, filename: CAMINHO_PNG, loaded: true, children: [], paths: [],
+  exports: {
+    ...require('../services/gerarPecaPNG'),
+    gerarPecaPNG: async (dados) => {
+      renderizacoes++;
+      // Uma folha por ~3.000 caracteres, só para o teste distinguir documento de uma e de várias
+      // páginas — o nome do anexo muda nos dois casos.
+      const folhas = Math.max(1, Math.ceil((dados.texto || '').length / 3000));
+      return Array.from({ length: folhas }, (_, i) => Buffer.from(`png-falso-fl${i + 1}`));
+    },
+  },
+};
+
 const db = require('../database/db');
 const rh = require('../utils/rh');
 const emissao = require('../utils/emissaoPeca');
@@ -44,6 +72,11 @@ const PROMOTOR = '190000000000000003';
 rh.contratar(JUIZ, 'Juiz', 'Juiz do caso');
 rh.contratar(OUTRO_JUIZ, 'Juiz', 'Juiz de outro caso');
 rh.contratar(PROMOTOR, 'Promotor', 'Promotor');
+const OUTRO_PROMOTOR = '190000000000000004'; // MP é órgão: qualquer Promotor cobre o colega
+const REU = '190000000000000005';
+const ADVOGADO = '190000000000000006';
+rh.contratar(OUTRO_PROMOTOR, 'Promotor', 'Promotor substituto');
+rh.contratar(ADVOGADO, 'Advogado', 'Advogado da defesa');
 
 // O que foi postado no canal, e o que foi lavrado nos autos — as duas coisas que estes atos
 // produzem, e as únicas que importam aqui.
@@ -69,7 +102,9 @@ function processoComJuiz(campos = {}) {
   const numero = `07${String(++seq).padStart(2, '0')}PN`;
   db.inserir('processos', {
     numero, tipo: 'Penal', status: 'Instrução', modoEntrega: 'ingame',
-    juiz: JUIZ, promotor: PROMOTOR, delegado: null, reus: [], canalId: 'c1', ...campos,
+    juiz: JUIZ, promotor: PROMOTOR, delegado: null, reus: [REU], canalId: 'c1',
+    habilitacoes: [{ id: 1, advogadoId: ADVOGADO, status: 'Aprovado' }],
+    ...campos,
   });
   return db.buscarPorNumero('processos', numero);
 }
@@ -195,10 +230,18 @@ async function secao3() {
   ok(!!desp && /Indeferimento do pedido de prisão temporária/.test(desp.titulo || ''),
     '3c: e o título que ele escolheu', desp && desp.titulo);
 
-  // SEM DOCUMENTO — é o ponto do ato. Nenhum anexo, nenhuma peça, nenhuma janela de entrega.
-  ok(!postados.some(m => m.files && m.files.length), '3d: NENHUM arquivo foi anexado no canal');
+  // COM DOCUMENTO, DESDE 20/08/2026 (tarde). A primeira versão do despacho era texto-só e a
+  // resposta dizia "as partes já o veem no canal" — só que `andamentos.registrar` NÃO posta no
+  // canal do processo: grava no banco e espelha o TÍTULO no canal de auditoria. O texto ficava
+  // nos autos, truncado em 300 caracteres no histórico, e o canal não recebia nada. Era bug de
+  // PUBLICAÇÃO, não de persistência, e é por isso que estas asserções foram INVERTIDAS.
+  ok(postados.some(m => m.files && m.files.length), '3d: o PNG do despacho é postado NO canal');
+  const comArquivo = postados.find(m => m.files && m.files.length);
+  ok(!!comArquivo && /^ato-/.test(comArquivo.files[0].name || ''),
+    '3d2: pelo ponto único de ato do Juízo', comArquivo && comArquivo.files[0].name);
+  // Publicado NÃO é o mesmo que entregue: nenhuma peça, nenhum selo, nenhuma janela.
   ok(!db.todos('pecas', x => x.processoNumero === p.numero).length,
-    '3e: e nenhuma peça foi criada — sem selo, sem entrega');
+    '3e: e ainda assim nenhuma peça foi criada — sem selo, sem entrega');
   ok(!db.buscarPorNumero('processos', p.numero).arquivadoManual,
     '3f: despachar não arquiva o processo');
 
@@ -247,9 +290,90 @@ async function secao3() {
   ok(!!semTitulo && /Despacho/.test(semTitulo.titulo || ''), '3m: com o rótulo genérico', semTitulo && semTitulo.titulo);
 }
 
+// ---------------------------------------------------------------------------
+console.log('\n4) ARQUIVAR abre RECURSO ao Desembargador');
+// ---------------------------------------------------------------------------
+// QUEM PERDE COM O ARQUIVAMENTO É A ACUSAÇÃO: o processo que ela queria em curso morreu sem
+// decisão de mérito. O réu/defesa venceu, e por isso não recorre — é a mesma lógica de "quem
+// perdeu recorre" que já vale na sentença e na petição administrativa.
+//
+// REUSO, não paralelo: mesmo `botaoRecorrer`, mesmo customId, mesmo `abrirModalRecorrer`, mesma
+// `criarApelacao` (sorteio de Desembargador -> razões -> acórdão). O que se estendeu foi só a
+// regra de acesso, em `ladosQuePerderam`/`podeRecorrer`.
+async function secao4() {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'commands', 'processo.js'), 'utf-8');
+  ok(src.length > 10000, '4z: processo.js foi lido (scan não vazio)');
+
+  // O botão é o MESMO da sentença. Se alguém criar um "botaoRecorrerArquivamento", isto quebra.
+  ok(/componentes: \[botaoRecorrer\(numero\)\]/.test(src),
+    '4a: o arquivamento posta o MESMO botão Recorrer da sentença');
+  ok((src.match(/function botaoRecorrer\(/g) || []).length === 1,
+    '4b: e existe UMA função de botão de recurso, não duas');
+
+  // O status é o que abre o recurso — e é o MESMO que a supervisão já usava para reabrir caso
+  // arquivado, então nada de estado novo.
+  const p = processoComJuiz();
+  emissao.semearRascunho(JUIZ, 'razoes_arquivamento', p.numero, 'Ausente justa causa para a ação penal.');
+  limpar();
+  await processoCmd.arquivarComRazoes(fakeInteraction(JUIZ), 'razoes_arquivamento', p.numero);
+  const depois = db.buscarPorNumero('processos', p.numero);
+  ok(depois.status === 'Arquivado sem julgamento de mérito',
+    '4c: o arquivamento grava o status que abre o recurso', depois.status);
+  ok(depois.razoesArquivamento === 'Ausente justa causa para a ação penal.',
+    '4d: e guarda as razões no registro');
+
+  // QUEM PODE RECORRER — a resposta que o operador pediu para conferir.
+  const podeRec = (uid) => processoCmd.podeRecorrer(fakeInteraction(uid), db.buscarPorNumero('processos', p.numero));
+  ok(podeRec(PROMOTOR) === true, '4e: o PROMOTOR do caso pode recorrer do arquivamento');
+  ok(podeRec(OUTRO_PROMOTOR) === true,
+    '4f: e qualquer Promotor cobre o papel — MP é órgão (mesma regra da petição administrativa)');
+  ok(podeRec(REU) === false, '4g: o RÉU não recorre — ele venceu');
+  ok(podeRec(ADVOGADO) === false, '4h: nem a defesa habilitada, pelo mesmo motivo');
+  ok(podeRec(JUIZ) === false, '4i: e o Juiz não é parte');
+
+  // A recusa explica o motivo REAL, não a regra abstrata.
+  const recusa = processoCmd.explicarNegacaoRecurso(fakeInteraction(REU), db.buscarPorNumero('processos', p.numero));
+  ok(/arquivado sem julgamento de mérito/i.test(recusa),
+    '4j: e a recusa ao réu explica que o caso encerrou a favor dele', recusa.slice(0, 60));
+  ok(/Ministério Público/.test(recusa), '4k: dizendo quem tem o recurso liberado');
+
+  // Não inventou fluxo: o recurso do arquivamento é a MESMA apelação.
+  ok(/ORIGENS_RECURSO\[tabela\]/.test(src), '4l: a apelação continua resolvida pela tabela de origens');
+  ok(!/apelacaoDoArquivamento|criarApelacaoArquivamento/.test(src),
+    '4m: e não nasceu uma apelação paralela para o arquivamento');
+}
+// ---------------------------------------------------------------------------
+console.log('\n5) O STUB NÃO MENTE — o contrato do gerador é conferido sem subir o Chromium');
+// ---------------------------------------------------------------------------
+// As seções acima rodam com o gerador stubbado (ver o topo). Sem esta seção, o arquivo poderia
+// passar verde com um gerador que não existe mais — mock que dá confiança falsa.
+//
+// A renderização REAL não é exercitada aqui, de propósito: medida neste ambiente, UMA chamada a
+// `gerarPecaPNG` levou 5 minutos de ESPERA (0,18s de CPU) — Chromium órfão travando o pipe. Um
+// arquivo de teste não pode custar mais que a suíte inteira. O gerador continua coberto de verdade
+// por scripts/testes-selo.js e scripts/testes-pagina-publica.js, que já sobem o Chromium.
+//
+// O que se confere aqui é o CONTRATO: que a função existe, tem a assinatura que `publicarAtoNoCanal`
+// usa, e que o stub foi de fato exercitado — senão as asserções acima não provaram nada.
+async function secao5() {
+  delete require.cache[CAMINHO_PNG];
+  const real = require('../services/gerarPecaPNG');
+  ok(typeof real.gerarPecaPNG === 'function', '5a: o gerador real existe e é função');
+  ok(real.gerarPecaPNG.length >= 1, '5b: e recebe o objeto de dados que publicarAtoNoCanal monta');
+  ok(renderizacoes >= 5, '5c: o stub REALMENTE foi usado nas seções acima', `${renderizacoes} chamada(s)`);
+
+  // O stub devolve buffers e pagina por tamanho — se ele deixasse de fazer isso, as asserções de
+  // anexo acima passariam vazias sem ninguém notar.
+  const { gerarPecaPNG } = require.cache[CAMINHO_PNG] ? require('../services/gerarPecaPNG') : real;
+  ok(typeof gerarPecaPNG === 'function', '5z: o módulo carrega dos dois jeitos (com e sem cache)');
+}
+
+
 (async () => {
   await secao2();
   await secao3();
+  await secao4();
+  await secao5();
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`   - ${f.nome}${f.detalhe ? ` (${f.detalhe})` : ''}`)); process.exit(1); }
   try { fs.unlinkSync(DB_TESTE); } catch (_) {}

@@ -193,7 +193,11 @@ console.log('\n6) O teor da intimação não é mais persistido em andamento (ú
   const crus = (src.match(/detalhe: `Destinatário: \$\{[^`]*\}\\nTeor: \$\{teor\}`/g) || []).length;
   ok(crus === 0, '6a: nenhum dos 2 pontos grava `Teor:` cru direto no andamento', `ainda cru em ${crus} ponto(s)`);
   const viaPonto = (src.match(/detalheDeAndamento\(/g) || []).length;
-  ok(viaPonto >= 5, '6b: os atos passam pelo ponto único de decisão', `achou ${viaPonto}`);
+  // >= 4 desde 20/08/2026, não 5: a SENTENÇA saiu do gate e não restringe mais o teor no andamento
+  // (o documento vai publicado no canal, não há o que esconder). Piso, e não igualdade, porque o
+  // que este ponto guarda é "ninguém reintroduziu a regra copiada" — a contagem exata mora no
+  // baseline de scripts/testes-teor-em-andamentos.js, que é onde ela é revisada item a item.
+  ok(viaPonto >= 4, '6b: os atos que ainda restringem passam pelo ponto único de decisão', `achou ${viaPonto}`);
   // CANÁRIO: se o regex de 6a parar de casar por mudança de formatação, ele aprovaria em silêncio.
   ok(/Teor: \$\{teor\}/.test(src), '6z: o texto "Teor: ${teor}" ainda existe no arquivo (o scan de 6a não é vácuo)');
 }
@@ -371,22 +375,34 @@ console.log('\n12) BLOCO E — a SENTENÇA está no catálogo e o teor não vaza
   ok(emissao.TIPOS.acordao.tabela === 'processos',
     '12c-3: e ancorado em `processos` — é lá que vivem as habilitações que dizem quem recebe');
 
-  // As três portas por onde a sentença vazava, todas condicionadas ao modo agora.
+  // A SENTENÇA SAIU DO GATE em 20/08/2026, por decisão do operador. As asserções abaixo mudaram de
+  // sentido junto: antes cobravam que cada porta de saída fosse condicionada a `sentencaGated`;
+  // agora cobram que a publicação seja ÚNICA, paginada e explícita.
+  //
+  // Por que a mudança: processo sem defesa habilitada não tinha a quem entregar, nenhuma peça era
+  // criada, e o PNG que `executarSentenca` gerava era descartado — a sentença não produzia
+  // documento em lugar nenhum. O gate segue valendo para denúncia, manifestação do MP, intimação,
+  // razões e decisão de petição, que continuam cobertas neste arquivo.
   const src = fs.readFileSync(path.join(__dirname, '..', 'commands', 'processo.js'), 'utf-8');
   // lastIndexOf no fim: `postarOuAtualizarCapaPublica` também é chamado na ABERTURA do cível, muito
   // antes no arquivo — indexOf pegava aquela e devolvia fatia vazia. Foi o canário 12z que pegou.
-  const trecho = src.slice(src.indexOf('const sentencaGated ='), src.lastIndexOf('await postarOuAtualizarCapaPublica(interaction.guild, numero)'));
+  const trecho = src.slice(src.indexOf('// SENTENÇA PUBLICADA NO TICKET'), src.lastIndexOf('await postarOuAtualizarCapaPublica(interaction.guild, numero)'));
   ok(trecho.length > 800, '12z: o trecho analisado é o corpo real do julgamento (o scan não passou vazio)');
 
-  ok(/if \(!sentencaGated\) \{\s*try \{\s*await diario\.publicarNoDiario/.test(trecho),
-    '12d: DIÁRIO não recebe sentença em processo gated (política cancelada — se o resultado é público, ninguém procura o juiz)');
-  ok(/tipo === 'Penal' && !sentencaGated/.test(trecho),
-    '12e: devolutiva à Polícia Civil também não sai no gated (seria segunda porta do teor)');
-  ok(/const anexoUrlSentenca = null/.test(trecho),
-    '12f: URL de anexo não é mais guardada (SPEC §3.7 — link do CDN expira em 24h e vira link morto)');
-  ok(/canal && !sentencaGated\) await canais\.arquivarCanal/.test(trecho),
-    '12g: canal NÃO é arquivado no gated — arquivar antes da entrega trancaria a sentença para sempre');
-  ok(/restrito até a entrega pessoal/.test(trecho), '12h: o canal recebe metadado, não o teor');
+  ok(!/sentencaGated/.test(trecho.replace(/^\s*\/\/.*$/gm, '')),
+    '12d: a bifurcação por modo saiu do julgamento — a sentença tem UMA porta de publicação');
+  ok(/publicarAtoNoCanal\(interaction\.guild, \{/.test(trecho) && /tipoChave: 'sentenca'/.test(trecho),
+    '12d2: e essa porta é `publicarAtoNoCanal` — paginada, sem selo');
+  ok((trecho.match(/publicarAtoNoCanal\(/g) || []).length === 1,
+    '12d3: UMA chamada só, não duas rotas para o mesmo documento');
+  ok(!/emitirAtoComoPeca\(/.test(trecho),
+    '12e: a sentença não emite mais peça — não há entrega em cena a fazer');
+  ok(/anexoUrl: null/.test(trecho),
+    '12f: URL de anexo não é guardada (SPEC §3.7 — link do CDN expira em 24h e vira link morto)');
+  ok(/if \(canal\) await canais\.arquivarCanal/.test(trecho),
+    '12g: o canal fecha JUNTO com o julgamento — não há entrega pendente a esperar');
+  ok(/modoDoProcesso\(processo\) !== 'ingame'/.test(trecho),
+    '12h: mas a política do DIÁRIO não mudou junto — ela lê o modo direto, não a bifurcação removida');
 }
 
 console.log('\n13) §6.2 — a válvula reinicia na troca de responsável (era o SEXTO órfão)');

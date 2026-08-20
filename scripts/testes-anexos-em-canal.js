@@ -109,9 +109,30 @@ const INVENTARIO = {
   },
 
   // ---- caminho comum: só em processo aberto/legado, onde não há entrega a proteger ----
+  // A SENTENÇA saiu deste ponto em 20/08/2026: deixou de ser gated e passou a ser publicada por
+  // `emissaoPeca.publicarAtoNoCanal` (entrada 'ato-...' abaixo). Aqui sobrou só a decisão da
+  // PETIÇÃO administrativa, que continua bifurcando por modo.
   'Sentenca-${numero}.png': {
-    arquivo: 'commands/peticao.js|commands/processo.js', permitido: 'BIFURCADO',
+    arquivo: 'commands/peticao.js', permitido: 'BIFURCADO',
     razao: 'só no ramo aberto/legado — o ramo ingame emite peça (ver varredura E)',
+  },
+
+  // ATO DO JUÍZO PUBLICADO NOS AUTOS — porta única de `utils/emissaoPeca.publicarAtoNoCanal`.
+  // Serve três atos: SENTENÇA, DESPACHO e as RAZÕES DO ARQUIVAMENTO. Todos são decisão do Juiz que
+  // ENCERRA ou ORDENA, e todos são publicados de propósito, sem selo e sem entrega:
+  //
+  //   - sentença: gate REMOVIDO por decisão do operador em 20/08/2026. O desenho não fechava —
+  //     processo sem defesa habilitada não tinha a quem entregar, nenhuma peça era criada, e o PNG
+  //     gerado era descartado: a sentença não produzia documento em lugar nenhum;
+  //   - despacho e arquivamento: são a FALA do Juízo nos autos ("indefiro o pedido, porque..."),
+  //     e existem justamente para ser lidos pelas partes. Gatear exigiria cena para cada indefiro.
+  //
+  // NÃO É uma porta genérica: `publicarAtoNoCanal` só aceita tipo do catálogo, e os três acima são
+  // os únicos que a chamam. Um quarto ato entrando aqui passa por esta declaração.
+  'ato-${numeroProcesso}${folha}.png': {
+    arquivo: 'utils/emissaoPeca.js', permitido: 'PUBLICADO',
+    razao: 'ato do Juízo publicado nos autos (sentença, despacho, razões do arquivamento) — '
+      + 'decisão do operador em 20/08/2026; PNG paginado, sem selo, visível às partes no canal',
   },
   'Acordao-${numeroApelacao}.png': {
     arquivo: 'commands/processo.js', permitido: 'BIFURCADO',
@@ -180,7 +201,13 @@ console.log('\n2) TODA razão declarada é uma das aceitas');
   // carimbo. O conjunto de razões aceitas é uma decisão de política, e mudá-lo tem que doer.
   // INTERNO é a razão mais delicada da lista: ela afirma que NÃO HÁ parte no canal para proteger.
   // Por isso o bloco 5 abaixo confere essa afirmação no código, em vez de aceitá-la de palavra.
-  const ACEITAS = new Set(['GATED', 'AO_EMISSOR', 'URGENCIA', 'SEM_TEOR', 'PROVA', 'BIFURCADO', 'INTERNO']);
+  //
+  // PUBLICADO entrou em 20/08/2026, e é a segunda razão delicada: ela afirma que o ato É PARA SER
+  // LIDO pelas partes — a fala do Juízo nos autos (sentença, despacho, razões do arquivamento).
+  // Não é "escapou do gate", é "o operador decidiu que este ato não tem gate". Custa uma linha
+  // usá-la e por isso o bloco 6 confere que os pontos PUBLICADO são só os três decididos, e que
+  // saem pelo gerador PAGINADO — um ato publicado em folha única escorre para fora da página.
+  const ACEITAS = new Set(['GATED', 'AO_EMISSOR', 'URGENCIA', 'SEM_TEOR', 'PROVA', 'BIFURCADO', 'INTERNO', 'PUBLICADO']);
   const invalidas = Object.entries(INVENTARIO)
     .filter(([, v]) => !ACEITAS.has(v.permitido))
     .map(([k, v]) => `${k}=${v.permitido}`);
@@ -289,6 +316,48 @@ console.log('\n4) A MANIFESTAÇÃO DO MP na petição — o bug recorrente');
   ok(!/files:/.test(ramoGated), '4g: e não anexa PNG nenhum');
   ok(/🔒/.test(ramoGated), '4h: posta só metadado, dizendo que o teor está restrito');
 }
+
+// ---------------------------------------------------------------------------
+console.log('\n6) A razão PUBLICADO é conferida, não aceita de palavra');
+// ---------------------------------------------------------------------------
+// PUBLICADO afirma que o ato É PARA SER LIDO pelas partes. É a razão mais fácil de usar para abrir
+// um furo sem querer — bastaria alguém rotear um quarto ato por `publicarAtoNoCanal` e o teor sairia
+// no canal sem ninguém decidir isso. Este bloco confere as duas afirmações que a razão faz.
+{
+  const emi = fs.readFileSync(path.join(RAIZ, 'utils', 'emissaoPeca.js'), 'utf-8');
+  const proc = fs.readFileSync(path.join(RAIZ, 'commands', 'processo.js'), 'utf-8');
+  ok(emi.length > 10000 && proc.length > 10000, '6z: as fontes foram lidas (scan não vazio)');
+
+  // (1) PAGINADO. Um ato publicado em folha única escorre para fora da página — foi o bug do
+  // mandado, e a sentença por trechos chega a 12.000 caracteres.
+  const i = emi.indexOf('async function publicarAtoNoCanal');
+  ok(i > 0, '6z2: publicarAtoNoCanal foi localizada');
+  const resto = emi.slice(i);
+  const fim = resto.search(/\r?\n\}\r?\n/);
+  const corpo = resto.slice(0, fim < 0 ? resto.length : fim).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  ok(corpo.length > 400 && corpo.length < 4000, '6z3: o corpo foi RECORTADO', `${corpo.length} chars`);
+  ok(/gerarPecaPNG\(/.test(corpo), '6a: publica pelo gerador PAGINADO');
+  ok(!/gerarDocumentoPNG\(/.test(corpo), '6b: e não pelo de página única');
+  ok(/gated: false/.test(corpo), '6c: sem selo — é ato publicado, não peça entregue');
+  ok(!/registrarPaginasPublicas|abrirEntrega|pecas\.gerar\(/.test(corpo),
+    '6d: e sem criar peça nem janela de entrega');
+
+  // (2) SÓ OS TRÊS ATOS DECIDIDOS. Contagem, não presença: um quarto chamador aparece aqui.
+  const chamadas = [...proc.matchAll(/publicarAtoNoCanal\([^)]*?tipoChave: '?([a-z_]+)'?/gs)].map(m => m[1]);
+  const literais = [...proc.matchAll(/tipoChave: '([a-z_]+)'/g)].map(m => m[1]);
+  const usados = new Set([...chamadas, ...literais].filter(Boolean));
+  ok(usados.size > 0, '6z4: os chamadores foram identificados (scan não vazio)', [...usados].join(', '));
+  const PERMITIDOS_PUBLICADOS = new Set(['sentenca', 'despacho_juiz', 'razoes_arquivamento']);
+  const intrusos = [...usados].filter(t => !PERMITIDOS_PUBLICADOS.has(t));
+  ok(intrusos.length === 0,
+    '6e: só sentença, despacho e razões do arquivamento são publicados sem gate',
+    `intruso(s): ${intrusos.join(', ')}`);
+
+  // O total de chamadas também: `tipoChave` vindo de variável escaparia da lista acima.
+  const totalChamadas = (proc.match(/publicarAtoNoCanal\(/g) || []).length;
+  ok(totalChamadas === 3, '6f: e são exatamente 3 chamadas — nem uma a mais', `${totalChamadas}`);
+}
+
 
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
 if (falhas.length) {

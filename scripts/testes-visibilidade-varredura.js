@@ -356,9 +356,25 @@ console.log('\nE) DECISÕES DO JUIZ — o teor não pode ir cru para o canal da 
       rotulo: 'decisão da petição administrativa (deferir/indeferir)' },
     { arquivo: 'commands/peticao.js', funcao: 'finalizarDecisao', texto: 'textoIntimacao',
       rotulo: 'diligência da petição administrativa' },
-    { arquivo: 'commands/processo.js', funcao: 'executarSentenca', texto: 'textoSentenca',
-      rotulo: 'sentença do processo' },
   ];
+
+  // A SENTENÇA SAIU DESTE INVENTÁRIO em 20/08/2026, por decisão explícita do operador: ela deixou
+  // de ser gated e passou a ser PUBLICADA no canal do processo, com PNG paginado visível às partes
+  // no ato do julgamento.
+  //
+  // Dois motivos concretos levaram a isso. Primeiro, o desenho não fechava: processo sem defesa
+  // habilitada não tinha a quem entregar, então nenhuma peça era criada — e o PNG que
+  // `executarSentenca` gerava logo antes era DESCARTADO. A sentença não produzia documento em
+  // lugar nenhum, nem canal, nem DM. Segundo, o custo de encenação não se pagava no ato que
+  // ENCERRA o processo.
+  //
+  // O gate continua valendo para todo o resto: denúncia, manifestação do MP, intimação, razões de
+  // recurso, decisão de petição administrativa. Ele foi removido de UM ato, e está registrado aqui
+  // para que a ausência da sentença nesta lista seja uma decisão legível, e não um esquecimento.
+  //
+  // A guarda que sobrou no lugar: a seção abaixo confere que a sentença publica pelo gerador
+  // PAGINADO e por uma porta só. Se alguém reintroduzir a bifurcação por modo, recoloque a entrada.
+  const SENTENCA_SEM_GATE = { arquivo: 'commands/processo.js', funcao: 'executarSentenca' };
 
   // Recorta pela PRÓXIMA declaração, nunca por número fixo de caracteres: janela fixa já cortou
   // trecho no meio neste projeto e produziu falha que não era do código.
