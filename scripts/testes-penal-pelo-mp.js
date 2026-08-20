@@ -121,11 +121,13 @@ console.log('\n3) O CAMINHO DE PRODUÇÃO: botão no painel do MP → denúncia'
     '3e: e a flag chega em criarProcessoPenal');
 
   // Vai DIRETO para a denúncia: nada de perguntar "denunciar ou arquivar" a quem acabou de abrir.
-  // ERA `processo:oferecer` até 20/08/2026 — e essa asserção PASSAVA, porque só olhava se o botão
-  // existia, não para onde ele apontava. `processo:oferecer` cai em executarParecerMp, que despeja
-  // teor+PNG direto no canal. Agora ela cobra o DESTINO, que é o que importa.
-  ok(/painel:acao:processo:escreverdenuncia:\$\{resultado\.numero\}/.test(painel),
-    '3f: o promotor recebe o botão de escrever a denúncia na hora, apontado para o caminho GATED');
+  // A HISTÓRIA DESTA ASSERÇÃO, porque ela já falhou duas vezes de jeitos diferentes:
+  //   até 20/08 (manhã) apontava para `processo:oferecer` e a asserção PASSAVA, porque só olhava
+  //   se o botão existia — não para onde levava. `processo:oferecer` cai em executarParecerMp, que
+  //   despeja teor+PNG direto no canal. Depois virou `escreverdenuncia`, um handler próprio. Agora
+  //   é a PORTA ÚNICA do MP: o mesmo customId do hub, sem handler intermediário nenhum.
+  ok(/painel:acao:processo:manifestacaomp:\$\{resultado\.numero\}/.test(painel),
+    '3f: o botão leva à porta única do MP — a MESMA do hub, não um atalho próprio');
   ok(!/setCustomId\(`processo:oferecer:\$\{resultado\.numero\}`\)/.test(painel),
     '3f2: e NÃO para `processo:oferecer`, que pula a peça e o selo');
   ok(/📝 Escrever denúncia/.test(painel), '3g: com rótulo que diz o que fazer');
@@ -137,27 +139,30 @@ console.log('\n3) O CAMINHO DE PRODUÇÃO: botão no painel do MP → denúncia'
   const codigoSemDelegado = blocoSemDelegado.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   ok(/interaction\.editReply\(/.test(codigoSemDelegado) && !/respostaSumindo/.test(codigoSemDelegado),
     '3h: a mensagem NÃO some sozinha — respostaSumindo apagaria o botão em 45s');
-  // O botão reusa o gatilho que já existia; não nasceu um caminho paralelo de denúncia. O gatilho
-  // certo é o do HUB DO MP (opção "Oferecer denúncia"), que entra no gate — não o `processo:oferecer`.
-  ok(/if \(acao === 'escreverdenuncia'\) return processoCmd\.abrirDenunciaGated\(interaction, extra\)/.test(painel),
-    '3i: o botão é roteado, não é decorativo');
+
+  // SEM ATALHO PRÓPRIO. O botão reusa a rota que já existia; se um dia voltar a existir um handler
+  // só para este botão, ele volta a poder divergir do hub — que foi exatamente o defeito de ontem.
+  ok(/if \(acao === 'manifestacaomp'\) return processoCmd\.abrirManifestacaoMp\(interaction, extra\)/.test(painel),
+    '3i: o botão é roteado pela porta única, não por um handler dedicado');
+  ok(!/escreverdenuncia|abrirDenunciaGated/.test(painel),
+    '3i2: e o atalho intermediário foi removido de vez');
   const proc = LER('commands', 'processo.js');
-  ok(typeof processoCmd.abrirDenunciaGated === 'function', '3j: e o handler existe e é exportado');
-  const corpo = proc.slice(proc.indexOf('async function abrirDenunciaGated'));
+  ok(typeof processoCmd.abrirManifestacaoMp === 'function', '3j: e o handler existe e é exportado');
   // Fim da função = a primeira chave de fechamento na coluna zero. `\r?\n` e NÃO '\n}\n': o repo
   // roda em Windows e o git entrega os arquivos com CRLF — com a busca literal o corte não achava
   // nada, o corpo virava o arquivo inteiro e a asserção passava por acidente. Foi o canário
   // (3j-z) que pegou.
+  const corpo = proc.slice(proc.indexOf('async function abrirManifestacaoMp'));
   const fimCorpo = corpo.search(/\r?\n\}\r?\n/);
-  const corpoDenuncia = corpo.slice(0, fimCorpo < 0 ? corpo.length : fimCorpo)
+  const corpoPorta = corpo.slice(0, fimCorpo < 0 ? corpo.length : fimCorpo)
     .split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   // CANÁRIO com teto, não só piso: sem o teto, um corte que falha devolve o ARQUIVO INTEIRO e a
   // asserção seguinte passa porque `abrirEmissao` aparece em outro lugar qualquer do arquivo.
-  ok(fimCorpo > 0 && corpoDenuncia.length > 200 && corpoDenuncia.length < 2500,
-    '3j-z: o corpo foi RECORTADO (nem vazio, nem o arquivo todo)', `${corpoDenuncia.length} chars`);
-  ok(/abrirEmissao\(interaction, 'denuncia_mp', numero\)/.test(corpoDenuncia),
-    '3k: ele abre a MESMA emissão gated do hub do MP');
-  ok(!/executarParecerMp|confirmarParecerMp/.test(corpoDenuncia),
+  ok(fimCorpo > 0 && corpoPorta.length > 200 && corpoPorta.length < 2500,
+    '3j-z: o corpo foi RECORTADO (nem vazio, nem o arquivo todo)', `${corpoPorta.length} chars`);
+  ok(/abrirEmissao\(interaction, 'manifestacao_mp_gated', numero\)/.test(corpoPorta),
+    '3k: ele abre a emissão GATED — peça com selo, entregue em cena');
+  ok(!/executarParecerMp|confirmarParecerMp/.test(corpoPorta),
     '3l: e não passa perto do parecer que posta direto no canal');
 }
 

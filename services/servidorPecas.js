@@ -115,7 +115,10 @@ async function renderizarPagina(dados) {
     codigoArquivo: dados.codigoArquivo,
     numeroPeca: dados.pecaNumero,
     numeroProcesso: dados.processoNumero,
-    titulo: cfg.titulo,
+    // Título escolhido por quem escreveu tem precedência sobre o fixo do catálogo. As DUAS vias do
+    // arquivo único (esta página impressa no jogo e o PNG da DM) leem o mesmo campo — divergir aqui
+    // é o defeito que a SPEC §3.7 proíbe, e foi exatamente o que aconteceu com o selo em 18/08.
+    titulo: dados.tituloLivre || cfg.titulo,
     orgao: cfg.orgao,
     // A vara vem do PROCESSO, não do catálogo do ato — petição incidental roda em penal e em cível.
     unidade: catalogo.unidadeDoProcesso({ tipo: dados.processoTipo }),

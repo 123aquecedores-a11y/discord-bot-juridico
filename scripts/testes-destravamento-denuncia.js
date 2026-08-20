@@ -156,14 +156,14 @@ console.log('\n4) OUTRAS RECUSAS — sempre com explicação, nunca mudas');
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n5) ESCOPO — só a denúncia destrava, e só o elo pedido');
+console.log('\n5) ESCOPO — quem destrava, e com quais guardas');
 // ---------------------------------------------------------------------------
 {
   const p = processoPenal();
-  // Contestação, manifestação do MP, petição incidental: não estão neste elo. Fazer mais que o
-  // pedido é tão errado quanto fazer menos — cada elo da corrente é uma decisão à parte.
-  for (const tipo of ['contestacao', 'manifestacao_mp_gated', 'peticao_incidental', 'intimacao_juiz']) {
-    const r = emissao.aplicarEfeitoDoRecebimento(tipo, p, { numero: 'X-P1' }, JUIZ_A);
+  // Contestação, petição incidental, intimação: não estão neste elo. Fazer mais que o pedido é tão
+  // errado quanto fazer menos — cada elo da corrente é uma decisão à parte.
+  for (const tipo of ['contestacao', 'peticao_incidental', 'intimacao_juiz']) {
+    const r = emissao.aplicarEfeitoDoRecebimento(tipo, p, { numero: 'X-P1' }, JUIZ_A, 'processos');
     ok(r === null, `5-${tipo}: recebimento de "${tipo}" não mexe no processo (fora deste elo)`);
   }
   ok(db.buscarPorNumero('processos', p.numero).juiz === null,
@@ -171,13 +171,54 @@ console.log('\n5) ESCOPO — só a denúncia destrava, e só o elo pedido');
 
   // Lista FECHADA de elos, conferida item a item. Cada elo aqui foi uma decisão explícita do
   // operador; um tipo que apareça sem passar por essa decisão é o que este canário existe para
-  // pegar. Atualizado em 19/08/2026: +razoes_recurso (o recurso passou a exigir entrega).
+  // pegar.
+  //   +razoes_recurso (19/08/2026): o recurso passou a exigir entrega.
+  //   +solicitacao_medida (19/08/2026): o requerimento do MP é entregue em cena, e é o recebimento
+  //    que libera deferir/indeferir. Antes os botões nasciam com o pedido.
+  //   +manifestacao_mp_gated (20/08/2026): o MP virou porta ÚNICA — não há mais "tipo denúncia" a
+  //    emitir, então o elo que distribuía o processo teve de mudar de tipo junto, senão o penal
+  //    aberto pelo MP não ganhava Juiz por caminho nenhum (mapeamento de 20/08).
   const tiposComEfeito = Object.keys(emissao.EFEITOS_POS_RECEBIMENTO).sort();
-  // +solicitacao_medida em 19/08/2026: o requerimento do MP passou a ser entregue ao Juiz em cena,
-  // e é o recebimento que libera os botões de deferir/indeferir. Antes eles nasciam com o pedido.
-  ok(JSON.stringify(tiposComEfeito) === JSON.stringify(['denuncia_mp', 'razoes_recurso', 'solicitacao_medida']),
+  ok(JSON.stringify(tiposComEfeito) === JSON.stringify(['denuncia_mp', 'manifestacao_mp_gated', 'razoes_recurso', 'solicitacao_medida']),
     '5b: só os elos decididos têm efeito de recebimento — nenhum a mais',
     tiposComEfeito.join(', '));
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n5-bis) AS GUARDAS DA MANIFESTAÇÃO — escopo penal, e só a PRIMEIRA distribui');
+// ---------------------------------------------------------------------------
+{
+  // A manifestação do MP é o ato mais frequente do processo: ela vai e volta a instrução inteira.
+  // Se distribuísse toda vez, trocaria o Juiz do caso a cada documento. Estas guardas são a
+  // diferença entre "a primeira manifestação abre o processo" e "o MP escolhe o juiz quando quer".
+  const p = processoPenal();
+  const r1 = emissao.aplicarEfeitoDoRecebimento('manifestacao_mp_gated', p, { numero: 'M-P1' }, JUIZ_A, 'processos');
+  ok(!!r1 && r1.campos && r1.campos.juiz === JUIZ_A,
+    '5c: a PRIMEIRA manifestação num penal sem juiz distribui o processo a quem recebeu');
+  ok(r1.campos.status === 'Instrução', '5d: e o leva para instrução');
+
+  // IDEMPOTÊNCIA — é a guarda que o operador pediu por escrito.
+  const agora = db.buscarPorNumero('processos', p.numero);
+  const r2 = emissao.aplicarEfeitoDoRecebimento('manifestacao_mp_gated', agora, { numero: 'M-P2' }, JUIZ_B, 'processos');
+  ok(r2 === null, '5e: a SEGUNDA manifestação não reatribui — entrega e cala, sem recusa ruidosa');
+  ok(db.buscarPorNumero('processos', p.numero).juiz === JUIZ_A, '5f: o Juiz do caso continua sendo o primeiro');
+
+  // ESCOPO 1 — cível tem sorteio próprio; distribuir aqui atropelaria o fluxo dele.
+  const civel = processoPenal({ tipo: 'Cível', status: 'Aguardando defesa' });
+  const rc = emissao.aplicarEfeitoDoRecebimento('manifestacao_mp_gated', civel, { numero: 'C-P1' }, JUIZ_A, 'processos');
+  ok(rc === null, '5g: manifestação em processo CÍVEL não designa Juiz');
+  ok(db.buscarPorNumero('processos', civel.numero).juiz === null, '5h: e o cível segue sem juiz');
+
+  // ESCOPO 2 — a MESMA peça roda em petição administrativa (commands/peticao.js sobrepõe a tabela).
+  // Sem a guarda de tabela, o efeito gravaria juiz+Instrução num registro de `peticoes` — ou, pior,
+  // num processo de mesmo número.
+  db.inserir('peticoes', { numero: '0099TN', tipo: 'Porte de arma', status: 'Pendente', juiz: null, promotor: PROMOTOR, canalId: 'c9' });
+  const pet = db.buscarPorNumero('peticoes', '0099TN');
+  const rp = emissao.aplicarEfeitoDoRecebimento('manifestacao_mp_gated', pet, { numero: 'T-P1' }, JUIZ_A, 'peticoes');
+  ok(rp === null, '5i: manifestação em PETIÇÃO administrativa não designa Juiz');
+  ok(db.buscarPorNumero('peticoes', '0099TN').juiz === null, '5j: e a petição segue sem juiz');
+  ok(!/Instrução/.test(JSON.stringify(db.buscarPorNumero('peticoes', '0099TN'))),
+    '5k: nem ganhou status de processo penal');
 }
 
 // ---------------------------------------------------------------------------

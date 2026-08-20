@@ -481,10 +481,29 @@ const CATALOGO_ACOES = [
     quando: faseComJuiz,
     botao: (numero) => new ButtonBuilder().setCustomId(`painel:acao:processo:intimar:${numero}`).setLabel('Emitir intimação').setStyle(ButtonStyle.Primary),
   },
+  // ARQUIVAR agora passa por RAZÕES (20/08/2026). O customId mudou de propósito: o antigo
+  // `painel:acao:processo:arquivarmanual` arquivava em UM clique, sem modal e sem andamento — só
+  // auditoria. Quem lia os autos não descobria por que o caso fechou. Agora abre o rascunho por
+  // trechos (`razoes_arquivamento`) e o arquivamento é o desfecho dele.
+  //
+  // O handler genérico `arquivarmanual` de painel.js CONTINUA e continua roteado: medida, apelação,
+  // petição, ficha, ofício e certidão seguem arquivando por ele. O que mudou é só a porta do
+  // PROCESSO — e é ela que o finalizador chama no fim, sem duplicar a lógica de fechar canal.
   {
     id: 'arquivar_manual', grupo: 1, cargo: ['Juiz'],
     quando: faseComJuiz,
-    botao: (numero) => new ButtonBuilder().setCustomId(`painel:acao:processo:arquivarmanual:${numero}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
+    botao: (numero) => new ButtonBuilder().setCustomId(`painel:acao:processo:arquivarcomrazoes:${numero}`).setLabel('📦 Arquivar').setStyle(ButtonStyle.Secondary),
+  },
+  // MANIFESTAR-SE NOS AUTOS / DESPACHO (20/08/2026). O ato do Juiz que NÃO gera documento: ele diz
+  // o que decidiu, com as razões, e isso vira andamento visível às partes no canal.
+  //
+  // Por que faltava: as ferramentas do Juiz eram todas de PRODUZIR (sentença, mandado, intimação).
+  // Para NEGAR alguma coisa ele não tinha ferramenta nenhuma — simplesmente não emitia o mandado, e
+  // o pedido do MP ficava pendurado sem resposta. Negar em silêncio não é decidir.
+  {
+    id: 'despachar', grupo: 1, cargo: ['Juiz'],
+    quando: faseComJuiz,
+    botao: (numero) => new ButtonBuilder().setCustomId(`painel:acao:processo:despachar:${numero}`).setLabel('✍️ Manifestar-se nos autos').setStyle(ButtonStyle.Primary),
   },
 
   // ---- Destravar caso preso sem julgador (Frente 1): só aparece quando o processo está parado
@@ -615,7 +634,7 @@ const HUBS_PROCESSO = [
   {
     id: 'hubjuiz', label: '⚖️ Juiz', estilo: ButtonStyle.Primary,
     visivel: (p) => !!p.juiz,
-    acoes: ['julgar', 'intimar_reu', 'citar_reu_civil', 'emitir_intimacao', 'emitir_mandado', 'registrar_depoimento', 'parte_tardia', 'gerenciar_defesa', 'arquivar_manual', 'voltar_fase', 'gerenciar'],
+    acoes: ['julgar', 'despachar', 'intimar_reu', 'citar_reu_civil', 'emitir_intimacao', 'emitir_mandado', 'registrar_depoimento', 'parte_tardia', 'gerenciar_defesa', 'arquivar_manual', 'voltar_fase', 'gerenciar'],
   },
   {
     id: 'hubmp', label: '🏛️ Ministério Público', estilo: ButtonStyle.Primary,
@@ -3043,16 +3062,20 @@ async function voltarFase(interaction, chave) {
   await repostarPainel(interaction.guild, numero);
   return interaction.editReply({ content: `Fase revertida para **${alvo.para}**.` });
 }
-
-// ---- Manifestação do Ministério Público (prompt_manifestacao_mp) ----
-// Ponto ÚNICO de atuação do MP dentro do processo penal. NÃO duplica os fluxos: a denúncia vai ao
-// gate (abrirEmissao 'denuncia_mp'), o arquivamento reusa o modalParecerMp de sempre, e a
-// "Manifestação/Requerimento livre" é o ato com TEOR — manifestação junta direto aos autos;
-// requerimento vira pendência na fila do Juiz. Desde 20/08/2026 a MEDIDA CAUTELAR também entra por
-// aqui, como requerimento: o MP não tem mais botão próprio de "Solicitar medida", e quem expede o
-// mandado é o Juiz, pelo hub dele. Gate de entrada: membro do MP; cada handler roteado MANTÉM sua
-// trava de "dono do caso" (promotor do processo). Ciente de contexto: o botão vive no painel e
-// carrega o número.
+// ---- PORTA ÚNICA DO MINISTÉRIO PÚBLICO (20/08/2026) ----
+// Um clique, um fluxo, sem menu de atos.
+//
+// Antes havia um select "Ato do MP nesta fase" — oferecer denúncia / promover arquivamento /
+// requerer cautelar / manifestação livre — e cada opção caía num handler diferente, dois deles
+// FORA do gate (executarParecerMp despejava teor+PNG direto no canal). O select foi removido
+// porque a classificação que ele pedia não é do promotor: o que norteia o Juiz é o TEOR do
+// documento, e ele age com as ferramentas do processo penal que já existem. O promotor escreve e
+// NOMEIA o documento (título livre); o Juiz lê e decide.
+//
+// Tudo daqui sai como peça `manifestacao_mp_gated`: selada, entregue em cena, brasão do MP. E o
+// recebimento da PRIMEIRA delas num penal sem juiz distribui o processo (ver
+// EFEITOS_POS_RECEBIMENTO em utils/emissaoPeca.js) — é o elo que substituiu o sorteio automático
+// do oferecimento de denúncia.
 
 function ehMembroDoMp(interaction) {
   return isAdmin(interaction) || isSuperStaff(interaction) || temCargo(interaction, 'Promotor') || temCargo(interaction, 'Procurador');
@@ -3062,81 +3085,30 @@ function botaoManifestacaoMp(numero) {
   return new ButtonBuilder().setCustomId(`painel:acao:processo:manifestacaomp:${numero}`).setLabel('🏛️ Manifestação do MP').setStyle(ButtonStyle.Primary);
 }
 
+// Trava de dono do caso AQUI. Antes ela morava em `tratarManifestacaoMp`, que existia por causa do
+// select; sem o select, ela precisa estar na porta — senão qualquer membro do MP manifestaria em
+// processo de outro promotor.
 async function abrirManifestacaoMp(interaction, numero) {
   if (!ehMembroDoMp(interaction)) return interaction.reply({ content: 'Só Promotor/Procurador podem manifestar-se pelo Ministério Público.', ephemeral: true });
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (processo.tipo !== 'Penal') return interaction.reply({ content: 'A manifestação do MP é para processos penais.', ephemeral: true });
-  const opcoes = [];
-  if (!processo.juiz) {
-    opcoes.push({ label: 'Oferecer denúncia', value: 'oferecer', emoji: '⚖️' });
-    opcoes.push({ label: 'Promover arquivamento', value: 'arquivar', emoji: '📦' });
-  }
-  // "Requerer medida cautelar" (value 'medida' → medida.abrirSolicitarMedidaDireta) SAIU daqui em
-  // 20/08/2026: a cautelar passou a ser pedida pela opção abaixo, classificada como REQUERIMENTO —
-  // que já nasce com documento e vai à apreciação do Juiz, e é o Juiz quem expede o mandado.
-  opcoes.push({ label: 'Manifestação / Requerimento livre (c/ documento)', value: 'livre', emoji: '📝' });
-
-  const select = new StringSelectMenuBuilder().setCustomId(`painel:select:processo:manifestacaomp:${numero}`).setPlaceholder('Ato do MP nesta fase').addOptions(opcoes);
-  return interaction.reply({ content: '🏛️ **Manifestação do Ministério Público** — escolha o ato desta fase:', components: [new ActionRowBuilder().addComponents(select)], ephemeral: true });
-}
-
-async function tratarManifestacaoMp(interaction, numero) {
-  if (!ehMembroDoMp(interaction)) return interaction.reply({ content: 'Sem permissão.', ephemeral: true });
-  const processo = db.buscarPorNumero('processos', numero);
-  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  const escolha = interaction.values[0];
-
-  if (escolha === 'oferecer' || escolha === 'arquivar') {
-    // Reusa o modal/parecer existente (modalParecerMp → confirmarParecerMp → executarParecerMp),
-    // mantendo a trava de dono do caso (promotor do processo) — a decisão real segue no fluxo antigo.
-    if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
-      return interaction.reply({ content: `Só um(a) Promotor(a) pode oferecer/arquivar. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
-    }
-    // BLOCO D — a DENÚNCIA entra no gate; o arquivamento não. A diferença é o destinatário: a
-    // denúncia é dirigida ao Juiz (que a recebe em cena), enquanto o arquivamento é ato interno do
-    // MP que encerra o caso sem que haja a quem entregar. Gatear o arquivamento criaria peça sem
-    // destinatário, que ficaria pendente até a válvula sem nunca ter tido dono.
-    if (escolha === 'oferecer' && !ehLegado(processo)) {
-      return require('../utils/emissaoPeca').abrirEmissao(interaction, 'denuncia_mp', numero);
-    }
-    return interaction.showModal(modalParecerMp(numero, escolha));
-  }
-  // BLOCO D — a manifestação livre é o ato do MP que tem TEOR, e por isso é a que entra no gate.
-  // Bifurca por modo, como o `peticionar`: legado segue no modal antigo, processo novo vai para o
-  // formulário com selo. "oferecer/arquivar" continua no fluxo próprio de sempre.
-  if (escolha === 'livre' && !ehLegado(processo)) {
-    return require('../utils/emissaoPeca').abrirEmissao(interaction, 'manifestacao_mp_gated', numero);
-  }
-  if (escolha === 'livre') return interaction.showModal(modalManifestacaoLivre(numero));
-  return interaction.reply({ content: 'Opção inválida.', ephemeral: true });
-}
-
-// Porta DIRETA para a denúncia GATED. Usada pelo botão "📝 Escrever denúncia" que o painel do MP
-// devolve quando o PROMOTOR abre o processo penal sem delegado (commands/painel.js) — ali ele já
-// respondeu que vai denunciar, então mandá-lo ao menu "oferecer / arquivar" seria perguntar de
-// novo o que ele acabou de responder.
-//
-// Faz EXATAMENTE o que `tratarManifestacaoMp` faz na opção 'oferecer': mesmas travas (membro do
-// MP + dono do caso), mesma bifurcação por modo, mesmo destino. Não é um segundo fluxo — é o
-// mesmo, sem o menu na frente.
-//
-// ATENÇÃO: até 20/08/2026 esse botão apontava para `processo:oferecer`, que cai em
-// executarParecerMp e posta teor+PNG DIRETO no canal, sem peça, sem selo e sem entrega ao Juiz.
-// Além do vazamento, o elo EFEITOS_POS_RECEBIMENTO.denuncia_mp (o Juiz que recebe assume o
-// processo) nunca disparava. Não reaponte para lá.
-async function abrirDenunciaGated(interaction, numero) {
-  if (!ehMembroDoMp(interaction)) return interaction.reply({ content: 'Só Promotor/Procurador podem oferecer denúncia.', ephemeral: true });
-  const processo = db.buscarPorNumero('processos', numero);
-  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
-  if (processo.tipo !== 'Penal') return interaction.reply({ content: 'A denúncia é para processos penais.', ephemeral: true });
   if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
-    return interaction.reply({ content: `Só um(a) Promotor(a) pode oferecer denúncia. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
+    return interaction.reply({ content: `Só um(a) Promotor(a) pode manifestar-se pelo MP neste caso. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
   }
-  // Processo legado não tem selo: cai no parecer de sempre, igual ao hub faz.
-  if (ehLegado(processo)) return interaction.showModal(modalParecerMp(numero, 'oferecer'));
-  return require('../utils/emissaoPeca').abrirEmissao(interaction, 'denuncia_mp', numero);
+  // Processo legado não tem selo: segue no modal antigo, como todo o resto do caminho legado.
+  if (ehLegado(processo)) return interaction.showModal(modalManifestacaoLivre(numero));
+  return require('../utils/emissaoPeca').abrirEmissao(interaction, 'manifestacao_mp_gated', numero);
 }
+
+// COMPATIBILIDADE, não caminho paralelo. O select morreu, mas mensagens efêmeras já abertas no
+// cliente de alguém ainda podem ser respondidas — e um select sem rota devolve "interaction
+// failed" sem explicar nada. Qualquer escolha antiga cai na porta única, que é para onde todas
+// levariam hoje. Select pode abrir modal, então o fluxo segue normalmente daí.
+async function tratarManifestacaoMp(interaction, numero) {
+  return abrirManifestacaoMp(interaction, numero);
+}
+
 
 function modalManifestacaoLivre(numero) {
   const modal = new ModalBuilder().setCustomId(`painel:modal:processo:manifestacaomplivre:${numero}`).setTitle('Manifestação / Requerimento do MP');
@@ -4095,9 +4067,116 @@ async function executarSentenca(interaction, numero, modo) {
   await postarOuAtualizarCapaPublica(interaction.guild, numero);
 }
 
+
+// ---------------------------------------------------------------------------
+// ATOS DO JUIZ QUE FALAM NOS AUTOS (20/08/2026)
+// ---------------------------------------------------------------------------
+// Dois atos, um componente: o rascunho por trechos de utils/emissaoPeca.js, com FINALIZADOR
+// próprio. Nenhum dos dois vira peça — não há documento selado, não há entrega em cena. O que eles
+// produzem é ANDAMENTO nos autos, que é exatamente o que faltava ao Juiz.
+
+function podeDecidirNoProcesso(interaction, processo) {
+  return podeAtuarNoCaso(interaction, processo, 'juiz');
+}
+
+// ---- (a) ARQUIVAR COM RAZÕES ----
+// Substitui o arquivamento em um clique. `arquivarManual` (painel.js) continua sendo quem fecha o
+// canal — aqui só se acrescenta a exigência de dizer por quê, e a lavratura nos autos.
+async function abrirArquivarComRazoes(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeDecidirNoProcesso(interaction, processo)) {
+    return interaction.reply({ content: `Só o(a) Juiz(a) do caso pode arquivar. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
+  }
+  return require('../utils/emissaoPeca').abrirModalTrecho(interaction, 'razoes_arquivamento', numero);
+}
+
+async function arquivarComRazoes(interaction, tipoChave, numero) {
+  const emissaoPeca = require('../utils/emissaoPeca');
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true }).catch(() => {});
+  if (!podeDecidirNoProcesso(interaction, processo)) {
+    return interaction.reply({ content: `Só o(a) Juiz(a) do caso pode arquivar. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true }).catch(() => {});
+  }
+
+  const razoes = emissaoPeca.textoDoRascunho(emissaoPeca.lerRascunho(interaction.user.id, tipoChave, numero));
+  if (!razoes.trim()) {
+    return interaction.reply({ content: 'Não há razões escritas — o rascunho pode ter expirado. Comece de novo pelo botão "Arquivar".', ephemeral: true }).catch(() => {});
+  }
+  // GUARDA DE COLISÃO — dois cliques não arquivam duas vezes nem lavram dois andamentos.
+  const jaFeito = atosPorCargo.bloqueioPorJaExecutado(processo, ['arquivadoManual'], 'O arquivamento deste processo');
+  if (jaFeito) return interaction.reply({ content: jaFeito, ephemeral: true }).catch(() => {});
+
+  await interaction.deferReply({ ephemeral: true });
+  emissaoPeca.limparRascunho(interaction.user.id, tipoChave, numero);
+
+  // As RAZÕES entram nos autos ANTES de o canal fechar. Depois de `arquivarManual`, o canal está
+  // travado para envio — e um andamento que não conseguisse ser postado deixaria o arquivamento
+  // exatamente tão mudo quanto era antes.
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'processo_arquivado',
+    titulo: '📦 Processo arquivado pelo Juízo',
+    detalhe: `<@${interaction.user.id}> determinou o arquivamento do processo ${numero}.\n\n**Razões:**\n${razoes}`,
+    executorId: interaction.user.id,
+    metadata: { razoes },
+  }).catch((e) => console.error(`[processo] falha ao lavrar arquivamento de ${numero}:`, e.message));
+
+  const r = await require('./painel').arquivarManual(interaction, 'processo', numero, { jaRespondido: true });
+  if (r && r.erro) return interaction.editReply({ content: r.erro });
+  return interaction.editReply({ content: `📦 Processo **${numero}** arquivado. As razões estão lavradas nos autos e visíveis às partes.` });
+}
+
+// ---- (b) MANIFESTAR-SE NOS AUTOS / DESPACHO ----
+// SEM PNG, SEM SELO, SEM ENTREGA — de propósito. O despacho é o ato ordinatório do Juiz: ele diz o
+// que decidiu e por quê, e isso fica no histórico. Gatear um despacho exigiria cena para cada
+// "indefiro" — o custo de encenação existe para o documento que a parte precisa TER em mãos, não
+// para o Juiz responder um pedido.
+async function abrirDespacho(interaction, numero) {
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeDecidirNoProcesso(interaction, processo)) {
+    return interaction.reply({ content: `Só o(a) Juiz(a) do caso pode despachar nos autos. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true });
+  }
+  return require('../utils/emissaoPeca').abrirModalTrecho(interaction, 'despacho_juiz', numero);
+}
+
+async function publicarDespacho(interaction, tipoChave, numero) {
+  const emissaoPeca = require('../utils/emissaoPeca');
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true }).catch(() => {});
+  if (!podeDecidirNoProcesso(interaction, processo)) {
+    return interaction.reply({ content: `Só o(a) Juiz(a) do caso pode despachar nos autos. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true }).catch(() => {});
+  }
+
+  const rascunho = emissaoPeca.lerRascunho(interaction.user.id, tipoChave, numero);
+  const texto = emissaoPeca.textoDoRascunho(rascunho);
+  if (!texto.trim()) {
+    return interaction.reply({ content: 'Não há texto no despacho — o rascunho pode ter expirado. Comece de novo.', ephemeral: true }).catch(() => {});
+  }
+  // O Juiz nomeia o que está decidindo; sem nome, "Despacho" basta.
+  const assunto = (rascunho.tituloLivre || 'Despacho').slice(0, 80);
+
+  await interaction.deferReply({ ephemeral: true });
+  emissaoPeca.limparRascunho(interaction.user.id, tipoChave, numero);
+
+  // Nos autos E no canal. `andamentos.registrar` já posta no canal do processo — é o que torna o
+  // despacho visível às PARTES, que é o ponto do ato.
+  await andamentos.registrar(interaction.guild, numero, {
+    tipo: 'despacho_juiz',
+    titulo: `✍️ ${assunto}`,
+    detalhe: `Despacho de <@${interaction.user.id}> nos autos do processo ${numero}.\n\n${texto}`,
+    executorId: interaction.user.id,
+    metadata: { assunto },
+  }).catch((e) => console.error(`[processo] falha ao lavrar despacho em ${numero}:`, e.message));
+
+  await repostarPainel(interaction.guild, numero).catch(() => {});
+  return interaction.editReply({ content: `✍️ Despacho lavrado nos autos de **${numero}** — as partes já o veem no canal.` });
+}
 // Registrados no load: o "Enviar" do painel de trechos de cada decisão do Juiz. Ver FINALIZADORES
 // em utils/emissaoPeca.js — mesmo rascunho, desfechos diferentes.
 require('../utils/emissaoPeca').registrarFinalizador('fundamentacao_sentenca', finalizarSentencaPorTrechos);
+require('../utils/emissaoPeca').registrarFinalizador('razoes_arquivamento', arquivarComRazoes);
+require('../utils/emissaoPeca').registrarFinalizador('despacho_juiz', publicarDespacho);
 
 module.exports = {
   finalizarSentencaPorTrechos,
@@ -4429,8 +4508,11 @@ module.exports = {
   processarVoltarFaseEscolha,
   voltarFase,
   abrirManifestacaoMp,
+  abrirArquivarComRazoes,
+  arquivarComRazoes,   // exportadas para teste: sao os FINALIZADORES, chamados pelo router de pecas
+  publicarDespacho,
+  abrirDespacho,
   tratarManifestacaoMp,
-  abrirDenunciaGated,
   salvarManifestacaoLivre,
   decidirRequerimentoMp,
   salvarSentencaPorCrime,

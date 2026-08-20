@@ -98,8 +98,9 @@ const INVENTARIO = {
   // ---- órgãos apenas: não há parte no canal para proteger ----
   'Parecer-MP-${numero}.png': {
     arquivo: 'commands/processo.js', permitido: 'INTERNO',
-    razao: 'a bifurcação é UPSTREAM: oferecer+ingame vira peça denuncia_mp antes de chegar aqui; '
-      + 'o que sobra é arquivamento (encerra o caso, sem destinatário) e legado',
+    razao: 'ÓRFÃO desde 20/08/2026: com a porta única do MP nenhum painel chega a executarParecerMp — '
+      + 'oferecer_denuncia/arquivar_mp saíram dos hubs e o select "Ato do MP" foi removido. '
+      + 'O handler fica de pé só para pareceres já em curso (decisão do operador)',
   },
   'Decisao-Revisao-${numero}.png': {
     arquivo: 'utils/supervisao.js', permitido: 'INTERNO',
@@ -229,11 +230,29 @@ console.log('\n5) A razão INTERNO é conferida, não aceita de palavra');
   const sup = fs.readFileSync(path.join(RAIZ, 'utils', 'supervisao.js'), 'utf-8');
   ok(proc.length > 1000 && sup.length > 1000, '5z: as fontes foram lidas (scan não vazio)');
 
-  // Parecer do MP: a afirmação é que a bifurcação acontece ANTES, no menu. Se esse desvio sumir, o
-  // parecer volta a postar teor num processo que já pode ter advogado habilitado.
-  ok(/escolha === 'oferecer' && !ehLegado\(processo\)/.test(proc)
-    && /abrirEmissao\(interaction, 'denuncia_mp'/.test(proc),
-    '5a: a denúncia em processo ingame é desviada para a peça ANTES de chegar ao parecer');
+  // Parecer do MP: a afirmação agora é mais forte que "a bifurcação acontece antes". Desde
+  // 20/08/2026 NENHUM painel do MP chega ao parecer — a porta única desvia tudo para a peça gated,
+  // e as duas ações que montavam o customId do parecer não estão em hub nenhum. Se qualquer uma
+  // dessas três coisas voltar, o parecer volta a postar teor num canal com advogado habilitado.
+  const corpoAbrir = proc.slice(proc.indexOf('async function abrirManifestacaoMp'));
+  const fimAbrir = corpoAbrir.search(/\r?\n\}\r?\n/);
+  const blocoAbrir = corpoAbrir.slice(0, fimAbrir < 0 ? corpoAbrir.length : fimAbrir)
+    .split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  ok(blocoAbrir.length > 300 && blocoAbrir.length < 2500,
+    '5z2: o corpo de abrirManifestacaoMp foi RECORTADO (nem vazio, nem o arquivo todo)', `${blocoAbrir.length} chars`);
+  ok(/abrirEmissao\(interaction, 'manifestacao_mp_gated', numero\)/.test(blocoAbrir),
+    '5a: a porta única do MP vai para a PEÇA gated');
+  ok(!/modalParecerMp|executarParecerMp/.test(blocoAbrir),
+    '5a2: e não passa perto do parecer que anexa PNG no canal');
+  // As duas ações que montavam `processo:oferecer` / `processo:arquivar` continuam no catálogo mas
+  // fora de qualquer hub — `montarPainelAcoes` só renderiza HUBS_PROCESSO + ACOES_UNIVERSAIS_PAINEL.
+  const hubs = proc.slice(proc.indexOf('const HUBS_PROCESSO'), proc.indexOf('const ACOES_UNIVERSAIS_PAINEL'));
+  const universais = proc.slice(proc.indexOf('const ACOES_UNIVERSAIS_PAINEL'), proc.indexOf('const ACOES_UNIVERSAIS_PAINEL') + 300);
+  ok(hubs.length > 300, '5a3-z: o bloco dos hubs foi localizado (scan não vazio)');
+  ok(!/'oferecer_denuncia'/.test(hubs) && !/'oferecer_denuncia'/.test(universais),
+    '5a3: "Oferecer denúncia" não é renderizada por nenhum hub');
+  ok(!/'arquivar_mp'/.test(hubs) && !/'arquivar_mp'/.test(universais),
+    '5a4: "Promover arquivamento" também não');
 
   // Revisão de arquivamento: a afirmação é que roda no inquérito, decidida pelo Procurador.
   ok(/revisaoArquivamento/.test(proc) || /revisaoArquivamento/.test(sup),

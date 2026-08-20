@@ -132,7 +132,19 @@ console.log('\n3) Nenhum ato NOVO gravando andamento sem passar por esta revisã
   // entrega pessoal; se não puder, gate por `modoDoProcesso(processo) === 'ingame'`, como a
   // sentença faz. Depois atualize o número aqui e, se for teor, o inventário acima.
   const BASELINE = {
-    'commands/processo.js': 27, // +1 em 19/08/2026: 'citação cumprida' (cível) — REVISADO: o detalhe descreve o ATO (oficial cumpriu em cena), nunca o teor da peça
+    // +2 em 20/08/2026: 'processo_arquivado' e 'despacho_juiz'. REVISADOS, e são EXCEÇÃO
+    // DECLARADA pelo operador — os dois carregam TEOR de propósito:
+    //
+    //   - o arquivamento nunca mais é mudo: as RAZÕES do Juiz vão para os autos junto com o ato,
+    //     visíveis às partes. Arquivar em silêncio era o defeito que se estava corrigindo.
+    //   - o DESPACHO é o ato ordinatório do Juiz, e existe justamente para ser lido: "indefiro o
+    //     pedido de prisão temporária, porque...". Gatear um despacho exigiria cena para cada
+    //     "indefiro" — e o custo de encenação existe para o documento que a parte precisa TER em
+    //     mãos, não para o Juiz responder um pedido.
+    //
+    // A regra geral NÃO mudou: o teor da SENTENÇA, da denúncia e das peças do MP continua saindo
+    // só pela entrega gated com selo. O que entra aqui é a fala ordinatória do Juízo nos autos.
+    'commands/processo.js': 29,
     'commands/mandado.js': 1,
     'commands/medida.js': 2,
     'commands/oficio.js': 2,

@@ -165,6 +165,40 @@ console.log('\n3) Ferramenta de DEV não pode ser condição para o build de PRO
     `presentes: ${presentes.join(', ') || 'nenhum'}`);
 }
 
+// ---------------------------------------------------------------------------
+console.log('\n4) utils/emissaoPeca.js — o painel de rascunho está NO LIMITE de 5 botões');
+// ---------------------------------------------------------------------------
+// Este painel era escrito à mão com QUATRO botões fixos (enviar / adicionar / ver / apagar). Em
+// 20/08/2026 ganhou o quinto, condicional: "📎 Anexar documento", quando o ato aceita documento
+// (`cfg.documentoOpcional`). Cinco é EXATAMENTE o teto de uma ActionRow — o sexto estoura com
+// DiscordAPIError[50035], e discord.js não avisa.
+//
+// Contagem sobre a fonte, e não sobre o objeto, porque `painelRascunho` não é exportada e não faz
+// sentido exportá-la só para o teste. O que importa é o número de `new ButtonBuilder()` dentro do
+// corpo dela — que é como ela é escrita, à mão, exatamente o formato que este arquivo vigia.
+{
+  const src = fs.readFileSync(path.join(__dirname, '..', 'utils', 'emissaoPeca.js'), 'utf-8');
+  const i = src.indexOf('function painelRascunho');
+  ok(i > 0, '4z: painelRascunho foi localizada (scan não vazio)');
+  const resto = src.slice(i);
+  const fim = resto.search(/\r?\n\}\r?\n/);
+  const corpo = resto.slice(0, fim < 0 ? resto.length : fim);
+  ok(corpo.length > 400 && corpo.length < 4000,
+    '4z2: o corpo foi RECORTADO (nem vazio, nem o arquivo todo)', `${corpo.length} chars`);
+
+  const botoes = (corpo.match(/new ButtonBuilder\(\)/g) || []).length;
+  ok(botoes >= 4, '4z3: os botões foram contados (a contagem não passou vazia)', `${botoes}`);
+  ok(botoes <= 5,
+    '4a: o painel de rascunho cabe numa ActionRow — 5 é o teto do Discord',
+    `${botoes} botões: o próximo precisa de uma SEGUNDA linha, não de mais um push`);
+
+  // Uma linha só, e é isso que torna a contagem acima suficiente. Se um dia virar duas, esta
+  // asserção falha e obriga a rever o teste junto com o painel.
+  const linhas = (corpo.match(/new ActionRowBuilder\(\)/g) || []).length;
+  ok(linhas === 1, '4b: e é UMA ActionRow só', `${linhas}`);
+}
+
+
 try { fs.unlinkSync(DB_TESTE); } catch (_) {}
 try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
 console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);

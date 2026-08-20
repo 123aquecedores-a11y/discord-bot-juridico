@@ -66,12 +66,19 @@ const TIPOS = {
   },
   manifestacao_mp_gated: {
     rotulo: 'Manifestação do MP',
-    titulo: 'MANIFESTAÇÃO DO MINISTÉRIO PÚBLICO',
+    titulo: 'MANIFESTAÇÃO DO MINISTÉRIO PÚBLICO', // usado só quando o promotor não nomeia
     orgao: 'MINISTÉRIO PÚBLICO',
     emissor: 'Promotor',
     destinatarios: ['Juiz'],
     tabela: 'processos',
     ativo: true, // FAIXA 4 (SPEC §11)
+    // PORTA ÚNICA DO MP (20/08/2026). Todo ato do Ministério Público dentro do processo sai por
+    // aqui — denúncia, promoção de arquivamento, pedido de cautelar, manifestação simples. Não há
+    // menu de classificação e não há tipo por ato: quem nomeia o documento é o promotor
+    // (`tituloLivre`), e quem lê o teor e decide o que fazer é o Juiz, com as ferramentas do
+    // processo penal que já existem.
+    tituloLivre: true,
+    documentoOpcional: true,
   },
   contestacao: {
     rotulo: 'Contestação / defesa',
@@ -225,6 +232,36 @@ const TIPOS = {
     semPeca: true,
   },
 
+  // ---- Atos do JUIZ que usam o rascunho por trechos mas NÃO viram peça (semPeca) ----
+  // Os dois nasceram em 20/08/2026, do mesmo diagnóstico: o Juiz tinha como emitir documento
+  // selado, mas não tinha como DIZER algo nos autos. Arquivava em silêncio e negava um pedido
+  // simplesmente não emitindo o mandado — nos dois casos as partes ficavam sem saber o porquê.
+  razoes_arquivamento: {
+    rotulo: 'Razões do arquivamento',
+    titulo: 'DECISÃO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Juiz',
+    destinatarios: [],
+    tabela: 'processos',
+    ativo: true,
+    semPeca: true,
+  },
+  despacho_juiz: {
+    rotulo: 'Despacho / manifestação nos autos',
+    titulo: 'DESPACHO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Juiz',
+    destinatarios: [],
+    tabela: 'processos',
+    ativo: true,
+    semPeca: true,
+    // O despacho é o ato do Juiz que NÃO gera documento: sem PNG, sem selo, sem entrega. Ele vira
+    // andamento nos autos, visível às partes no canal. Por isso `tituloLivre` — o Juiz nomeia o que
+    // está decidindo ("Indeferimento do pedido de prisão temporária") — mas nenhum título fixo faz
+    // sentido aqui além do genérico.
+    tituloLivre: true,
+  },
+
   acordao: {
     rotulo: 'Acórdão',
     titulo: 'ACÓRDÃO',
@@ -348,74 +385,119 @@ const EFEITOS_POS_RECEBIMENTO = {
     },
   },
 
+  // ---------------------------------------------------------------------------
+  // DISTRIBUIÇÃO PELO RECEBIMENTO — regra única, dois tipos a usam
+  // ---------------------------------------------------------------------------
+  // `denuncia_mp` (histórico: peças já emitidas continuam funcionando) e `manifestacao_mp_gated`
+  // (a porta única do MP desde 20/08/2026) fazem A MESMA COISA quando recebidas num processo penal
+  // sem Juiz: quem recebe assume o caso e ele segue para instrução. Uma função só, chamada pelos
+  // dois — a alternativa era copiar quatro guardas e deixá-las divergir.
+  //
+  // NÃO É JUÍZO DE MÉRITO. É distribuição: o mesmo que `rh.sortearJuiz` já fazia, só que decidido
+  // por quem apareceu em cena em vez de por sorteio. Receber o PAPEL nunca foi receber a DENÚNCIA
+  // (teste 9 em scripts/testes-intimacao-gated.js trava essa separação).
   denuncia_mp: {
-    aplicar: (processo, _peca, recebedorId) => {
-    const rh = require('./rh');
-    const acumulo = require('./acumuloDePapeis');
+    aplicar: (processo, _peca, recebedorId, ctx) => distribuiPeloRecebimento(processo, recebedorId, ctx, 'a denúncia'),
+    aoAplicar: (interaction, processo, peca) => lavrarDistribuicao(interaction, processo, peca, 'a denúncia'),
+  },
 
-    // GUARDA DE COLISÃO — processo já distribuído não é redistribuído. Vale tanto para o segundo
-    // Juiz que recebe quanto para o caso em que o sorteio automático chegou primeiro.
-    if (processo.juiz) {
-      return processo.juiz === recebedorId
-        ? null
-        : { recusa: `ℹ️ O processo **${processo.numero}** já tem Juiz responsável: <@${processo.juiz}>. Você recebeu o documento e pode ler o teor, mas a titularidade não muda.` };
-    }
-
-    // Recebeu pelo papel de Juiz mas não tem o cargo (staff, supervisão): entrega o documento,
-    // não vira titular. Designar Juiz sem cargo de Juiz seria pior que o processo parado.
-    if (!rh.temCargo(recebedorId, 'Juiz') && !rh.temCargo(recebedorId, 'Desembargador')) {
-      return { recusa: `ℹ️ Documento entregue. A titularidade do processo **${processo.numero}** não foi atribuída a você porque o cargo de Juiz não consta no seu registro do **/rh** — outro Juiz precisa receber para assumir o caso.` };
-    }
-
-    // ACÚMULO PROIBIDO — quem acusa não julga. Alguém com cargo de Juiz E Promotor cobre o papel de
-    // destinatário "Juiz" e chega até aqui; se for o promotor DESTE caso, entregar o papel é certo,
-    // mas designá-lo juiz do próprio caso não. Mudo seria o pior: a pessoa acharia que destravou.
-    const conflito = acumulo.conflitoDePapeis({ Juiz: recebedorId, Promotor: processo.promotor })
-      || acumulo.conflitoDePapeis({ Juiz: recebedorId, Advogado: processo.advogadoId });
-    if (conflito) {
-      return { recusa: `⚠️ **Você é o Promotor deste caso e não pode ser o Juiz dele.** ${conflito}\n\nO documento está entregue e você pode ler o teor, mas **outro Juiz precisa recebê-lo** para o processo seguir para instrução.` };
-    }
-    // O réu do próprio processo julgando a si mesmo — mesma razão de rh.sortearJuiz excluí-lo.
-    if ((processo.reus || []).includes(recebedorId) || processo.autor === recebedorId) {
-      return { recusa: `⚠️ **Você é parte neste processo e não pode julgá-lo.** O documento está entregue, mas outro Juiz precisa recebê-lo para o caso seguir.` };
-    }
-
-      return {
-        campos: {
-          juiz: recebedorId,
-          juizDesde: new Date().toISOString(),
-          status: 'Instrução',
-          distribuidoPorRecebimento: true,
-        },
-        aviso: `⚖️ Você recebeu a denúncia e passa a ser o **Juiz responsável** pelo processo **${processo.numero}**, que segue para instrução.`,
-      };
+  // A PORTA ÚNICA DO MP. Todo ato do Ministério Público no processo sai por aqui, e o efeito é o
+  // mesmo — com DUAS guardas que o tipo antigo não precisava ter:
+  //
+  //   1. ESCOPO: só processo PENAL. `manifestacao_mp_gated` também é emitida em PETIÇÃO
+  //      administrativa (commands/peticao.js sobrepõe a tabela) e pode rodar em cível. Distribuir
+  //      juiz nesses ritos seria atropelar o fluxo deles, que já tem sorteio próprio.
+  //   2. IDEMPOTÊNCIA: só quando NÃO há juiz. A partir da segunda manifestação o processo já tem
+  //      titular, e `distribuiPeloRecebimento` devolve a recusa explicativa em vez de reatribuir.
+  //
+  // Efeito colateral desejado: a PRIMEIRA manifestação do MP num penal sem juiz é, na prática, a
+  // denúncia — e é ela que tira o processo de 'Aguardando decisão do MP'. Sem isso o processo
+  // aberto pelo MP não tinha NENHUM caminho para ganhar juiz (mapeamento de 20/08/2026).
+  manifestacao_mp_gated: {
+    aplicar: (registro, _peca, recebedorId, ctx) => {
+      if (ctx.tabela !== 'processos') return null; // petição administrativa: só entrega
+      if (registro.tipo !== 'Penal') return null;  // cível tem sorteio próprio
+      if (registro.juiz) return null;              // já distribuído: entrega sem reatribuir, e calado
+      return distribuiPeloRecebimento(registro, recebedorId, ctx, 'a manifestação do MP');
     },
-    aoAplicar: async (interaction, processo, peca) => {
-      const processoCmd = require('../commands/processo');
-      const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
-      await require('./canais').adicionarMembro(canal, interaction.user.id).catch(() => {});
-      await processoCmd.repostarPainel(interaction.guild, processo.numero).catch(() => {});
-      await andamentos.registrar(interaction.guild, processo.numero, {
-        tipo: 'juiz_designado',
-        titulo: '⚖️ Juiz designado pelo recebimento da denúncia',
-        detalhe: `<@${interaction.user.id}> recebeu a denúncia em cena e assumiu o processo, que segue para instrução.`,
-        executorId: interaction.user.id,
-        metadata: { peca: peca.numero, juiz: interaction.user.id },
-      }).catch(() => {});
-    },
+    aoAplicar: (interaction, processo, peca) => lavrarDistribuicao(interaction, processo, peca, 'a manifestação do MP'),
   },
 };
 
+// Quem recebeu em cena vira o titular — ou a razão pela qual não virou. Nunca fica mudo: cada
+// recusa diz o que aconteceu com o documento (entregue) e o que falta para o processo andar.
+function distribuiPeloRecebimento(processo, recebedorId, ctx, rotuloAto) {
+  const rh = require('./rh');
+  const acumulo = require('./acumuloDePapeis');
+
+  // GUARDA DE COLISÃO — processo já distribuído não é redistribuído. Vale tanto para o segundo
+  // Juiz que recebe quanto para o caso em que o sorteio automático chegou primeiro.
+  if (processo.juiz) {
+    return processo.juiz === recebedorId
+      ? null
+      : { recusa: `ℹ️ O processo **${processo.numero}** já tem Juiz responsável: <@${processo.juiz}>. Você recebeu o documento e pode ler o teor, mas a titularidade não muda.` };
+  }
+
+  // Recebeu pelo papel de Juiz mas não tem o cargo (staff, supervisão): entrega o documento,
+  // não vira titular. Designar Juiz sem cargo de Juiz seria pior que o processo parado.
+  if (!rh.temCargo(recebedorId, 'Juiz') && !rh.temCargo(recebedorId, 'Desembargador')) {
+    return { recusa: `ℹ️ Documento entregue. A titularidade do processo **${processo.numero}** não foi atribuída a você porque o cargo de Juiz não consta no seu registro do **/rh** — outro Juiz precisa receber para assumir o caso.` };
+  }
+
+  // ACÚMULO PROIBIDO — quem acusa não julga. Alguém com cargo de Juiz E Promotor cobre o papel de
+  // destinatário "Juiz" e chega até aqui; se for o promotor DESTE caso, entregar o papel é certo,
+  // mas designá-lo juiz do próprio caso não. Mudo seria o pior: a pessoa acharia que destravou.
+  const conflito = acumulo.conflitoDePapeis({ Juiz: recebedorId, Promotor: processo.promotor })
+    || acumulo.conflitoDePapeis({ Juiz: recebedorId, Advogado: processo.advogadoId });
+  if (conflito) {
+    return { recusa: `⚠️ **Você é o Promotor deste caso e não pode ser o Juiz dele.** ${conflito}\n\nO documento está entregue e você pode ler o teor, mas **outro Juiz precisa recebê-lo** para o processo seguir para instrução.` };
+  }
+  // O réu do próprio processo julgando a si mesmo — mesma razão de rh.sortearJuiz excluí-lo.
+  if ((processo.reus || []).includes(recebedorId) || processo.autor === recebedorId) {
+    return { recusa: `⚠️ **Você é parte neste processo e não pode julgá-lo.** O documento está entregue, mas outro Juiz precisa recebê-lo para o caso seguir.` };
+  }
+
+  return {
+    campos: {
+      juiz: recebedorId,
+      juizDesde: new Date().toISOString(),
+      status: 'Instrução',
+      distribuidoPorRecebimento: true,
+    },
+    aviso: `⚖️ Você recebeu ${rotuloAto} e passa a ser o **Juiz responsável** pelo processo **${processo.numero}**, que segue para instrução.`,
+  };
+}
+
+// Abre o canal ao novo titular, repõe o painel (agora com o hub do Juiz) e lavra o andamento.
+async function lavrarDistribuicao(interaction, processo, peca, rotuloAto) {
+  const processoCmd = require('../commands/processo');
+  const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
+  await require('./canais').adicionarMembro(canal, interaction.user.id).catch(() => {});
+  await processoCmd.repostarPainel(interaction.guild, processo.numero).catch(() => {});
+  await andamentos.registrar(interaction.guild, processo.numero, {
+    tipo: 'juiz_designado',
+    titulo: '⚖️ Juiz designado pelo recebimento',
+    detalhe: `<@${interaction.user.id}> recebeu ${rotuloAto} em cena e assumiu o processo, que segue para instrução.`,
+    executorId: interaction.user.id,
+    metadata: { peca: peca.numero, juiz: interaction.user.id },
+  }).catch(() => {});
+}
+
 // Devolve { campos, aviso } aplicado, { recusa } explicando por que não aplicou, ou null (nada a
 // fazer). Nunca lança: falha aqui não pode derrubar uma entrega que já foi lavrada nos autos.
-function aplicarEfeitoDoRecebimento(tipoChave, processo, peca, recebedorId) {
+//
+// `tabela` vem de quem chama (meta.processoTabela da PEÇA), não de TIPOS[tipo].tabela. A diferença
+// importa: `manifestacao_mp_gated` roda em `processos` E em `peticoes` (commands/peticao.js
+// sobrepõe a tabela na emissão), e gravar pela tabela do catálogo escreveria a petição dentro de
+// `processos` — atualizando um número que existe nas duas, ou nenhum.
+function aplicarEfeitoDoRecebimento(tipoChave, processo, peca, recebedorId, tabela = null) {
   const efeito = EFEITOS_POS_RECEBIMENTO[tipoChave];
   if (!efeito || !processo) return null;
-  const r = efeito.aplicar(processo, peca, recebedorId);
+  const alvo = tabela || TIPOS[tipoChave].tabela;
+  const r = efeito.aplicar(processo, peca, recebedorId, { tabela: alvo });
   if (!r || !r.campos) return r || null;
-  const cfg = TIPOS[tipoChave];
-  db.atualizar(cfg.tabela, processo.numero, r.campos);
-  console.log(`[pecas] ${peca.numero} (${tipoChave}) recebida por ${recebedorId}: processo ${processo.numero} → ${r.campos.status || 'campos atualizados'}.`);
+  db.atualizar(alvo, processo.numero, r.campos);
+  console.log(`[pecas] ${peca.numero} (${tipoChave}) recebida por ${recebedorId}: ${alvo}/${processo.numero} → ${r.campos.status || 'campos atualizados'}.`);
   return r;
 }
 
@@ -438,7 +520,10 @@ async function aplicarEfeitoNoProcesso(tipoChave, processo, peca) {
 // páginas, e sete impressões no jogo já é mais custo do que qualquer petição justifica.
 const MAX_TRECHOS = 3;
 const MAX_CHARS_TRECHO = 4000;
-
+// Teto do título livre: 80 é o que cabe no cabeçalho do PNG em UMA linha na fonte atual. Acima
+// disso o título quebra e empurra o corpo para baixo — e a paginação mede a altura do cabeçalho
+// como fixa, então a última linha da página sairia coberta pelo selo, sem erro nenhum aparecer.
+const MAX_CHARS_TITULO = 80;
 // Rascunho em memória com expiração — reaproveita o RascunhoTTL do fluxo de revisão in-flow, em vez
 // de inventar mecanismo.
 //
@@ -563,6 +648,26 @@ function abrirModalTrecho(interaction, tipoChave, numeroProcesso) {
   const modal = new ModalBuilder()
     .setCustomId(`peca:trecho:${tipoChave}:${numeroProcesso}`)
     .setTitle(`${cfg.rotulo} — trecho ${n}/${MAX_TRECHOS}`.slice(0, 45));
+
+  // NOMENCLATURA LIVRE, só no PRIMEIRO trecho (20/08/2026). O ato que admite `tituloLivre` é
+  // nomeado por quem o escreve: o promotor digita "Denúncia", "Pedido de prisão temporária",
+  // "Promoção de arquivamento". Vai como RÓTULO no cabeçalho do documento e nada mais — não
+  // aciona efeito, não roteia, nenhuma regra lê esse campo. Só no trecho 1 porque a continuação é
+  // do MESMO documento: repetir o campo convidaria a renomear no meio da escrita.
+  if (cfg.tituloLivre && n === 1) {
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('tituloLivre')
+          .setLabel('O que é este documento?')
+          .setPlaceholder('Ex.: Denúncia · Pedido de prisão temporária · Promoção de arquivamento')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(MAX_CHARS_TITULO),
+      ),
+    );
+  }
+
   modal.addComponents(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
@@ -591,6 +696,12 @@ async function receberTrecho(interaction, tipoChave, numeroProcesso) {
 
   const rascunho = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
   rascunho.trechos.push(interaction.fields.getTextInputValue('tese'));
+  // O título só existe no modal do primeiro trecho, então só há o que ler quando ele veio. Guardo
+  // no rascunho e não numa variável à parte: o rascunho JÁ é o estado que sobrevive entre os
+  // cliques, e um segundo lugar de estado seria um segundo lugar para esquecer de limpar.
+  if (cfg.tituloLivre && rascunho.trechos.length === 1) {
+    rascunho.tituloLivre = (interaction.fields.getTextInputValue('tituloLivre') || '').trim() || null;
+  }
   salvarRascunho(interaction.user.id, tipoChave, numeroProcesso, rascunho);
 
   return interaction.reply({ ...painelRascunho(tipoChave, numeroProcesso, rascunho, cfg), ephemeral: true });
@@ -602,26 +713,42 @@ function painelRascunho(tipoChave, numeroProcesso, rascunho, cfg) {
   const texto = textoDoRascunho(rascunho);
   const n = rascunho.trechos.length;
   const podeMais = n < MAX_TRECHOS;
+  const anexados = (rascunho.anexos || []).length;
 
   const embed = new EmbedBuilder()
     .setTitle(`✍️ ${cfg.rotulo} — rascunho`)
     .setColor(0x4A6FA5)
     .setDescription(
-      `${linhaCusto(texto)}\n\n`
+      // O título escolhido aparece no painel porque é ele que vai no cabeçalho do documento: quem
+      // escreveu "Denúncia" precisa ver isso antes de enviar, não descobrir no PNG.
+      (cfg.tituloLivre ? `📄 Documento: **${rascunho.tituloLivre || '(sem título)'}**\n` : '')
+      + `${linhaCusto(texto)}\n\n`
       + `Trecho${n > 1 ? 's' : ''} escrito${n > 1 ? 's' : ''}: **${n} de ${MAX_TRECHOS}**\n`
+      + (cfg.documentoOpcional
+        ? `Documento(s) anexado(s): **${anexados}** — opcional.\n`
+        : '')
       + (podeMais
         ? 'Você pode **enviar agora** ou **adicionar mais texto** — tudo vira uma peça só, paginada.'
         : `Você chegou ao limite de ${MAX_TRECHOS} trechos. Revise e envie, ou apague o último.`),
     )
     .setFooter({ text: 'O rascunho fica guardado por 2 horas sem atividade — o prazo renova a cada clique.' });
 
-  const linha = new ActionRowBuilder().addComponents(
+  const botoes = [
     new ButtonBuilder().setCustomId(`peca:enviar:${tipoChave}:${numeroProcesso}`).setLabel('Enviar peça').setEmoji('📄').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`peca:add:${tipoChave}:${numeroProcesso}`).setLabel('Adicionar mais texto').setEmoji('➕').setStyle(ButtonStyle.Primary).setDisabled(!podeMais),
     new ButtonBuilder().setCustomId(`peca:ver:${tipoChave}:${numeroProcesso}`).setLabel('Ver texto').setEmoji('👁️').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`peca:undo:${tipoChave}:${numeroProcesso}`).setLabel('Apagar último trecho').setEmoji('↩️').setStyle(ButtonStyle.Danger).setDisabled(n === 0),
-  );
-  return { embeds: [embed], components: [linha] };
+  ];
+  // O anexo é a MESMA janela de upload do resto do bot (anexoPdf.aguardarAnexos), num botão
+  // próprio porque `aguardarAnexos` responde à interação — não cabe dentro do "Enviar", que já
+  // faz deferReply antes do Chromium. O documento é PROVA juntada aos autos, não o teor da peça:
+  // o teor continua sendo o texto, e é dele que o PNG selado é gerado.
+  if (cfg.documentoOpcional) {
+    botoes.push(new ButtonBuilder().setCustomId(`peca:anexar:${tipoChave}:${numeroProcesso}`)
+      .setLabel(anexados ? `Anexar mais (${anexados})` : 'Anexar documento').setEmoji('📎').setStyle(ButtonStyle.Secondary));
+  }
+  // Cinco botões cabem numa linha; o teto do Discord é 5 por ActionRow (ver testes-limite-componentes).
+  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(botoes)] };
 }
 
 // Ver o acumulado antes de enviar. Sem isto, um erro no primeiro pedaço fica sem conserto — o
@@ -636,6 +763,54 @@ async function verRascunho(interaction, tipoChave, numeroProcesso) {
   await interaction.reply({ content: partes[0].slice(0, 1990), ephemeral: true });
   for (const p of partes.slice(1)) await interaction.followUp({ content: p.slice(0, 1990), ephemeral: true }).catch(() => {});
   return null;
+}
+
+// Janela de upload do documento OPCIONAL. Reusa `anexoPdf.aguardarAnexos` — a mesma janela do
+// resto do bot, não uma segunda — e `anexos.criarDocumento` para a juntada.
+//
+// O QUE ESTE DOCUMENTO É, e o que não é: é PROVA anexada aos autos, como qualquer outra. NÃO é o
+// teor da peça. O teor continua sendo o texto escrito nos trechos, e é só dele que o PNG selado é
+// gerado — anexar um arquivo não coloca conteúdo dentro do documento entregue em cena.
+//
+// `require` local: anexoPdf e anexos puxam a cadeia de canais/permissões, e emissaoPeca é
+// carregado no boot por index.js. Manter no topo criaria ciclo.
+async function anexarAoRascunho(interaction, tipoChave, numeroProcesso) {
+  const cfg = TIPOS[tipoChave];
+  if (!cfg || !cfg.documentoOpcional) {
+    return interaction.reply({ content: 'Este ato não aceita documento anexo.', ephemeral: true });
+  }
+  const processo = db.buscarPorNumero(cfg.tabela, numeroProcesso);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (!podeEmitir(interaction, cfg, processo)) {
+    return interaction.reply({ content: 'Você não ocupa o papel de emissor deste ato.', ephemeral: true });
+  }
+
+  const rascunho = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
+  if (!rascunho.trechos.length) {
+    return interaction.reply({ content: 'Escreva o texto antes de anexar — o rascunho pode ter expirado.', ephemeral: true });
+  }
+
+  const { aguardarAnexos } = require('./anexoPdf');
+  const resultado = await aguardarAnexos(interaction, {
+    timeoutMs: 60 * 1000, idleMs: 15 * 1000, silenciarVazio: true,
+    mensagem: '📎 Envie o(s) documento(s) como anexo neste canal (~60s). Se não houver documento, é só aguardar a janela fechar — o texto já basta.',
+  });
+  const novos = resultado ? resultado.arquivos : [];
+  // Lido de novo: a janela ficou aberta até 60s e o rascunho pode ter mudado (ou expirado) nesse vão.
+  const atual = lerRascunho(interaction.user.id, tipoChave, numeroProcesso);
+  if (!atual.trechos.length) {
+    return interaction.followUp({ content: '⚠️ O rascunho expirou enquanto a janela estava aberta — os arquivos não foram juntados. Comece de novo.', ephemeral: true }).catch(() => null);
+  }
+  atual.anexos = [...(atual.anexos || []), ...novos];
+  salvarRascunho(interaction.user.id, tipoChave, numeroProcesso, atual);
+
+  return interaction.followUp({
+    content: novos.length
+      ? `📎 ${novos.length} documento(s) juntado(s) ao rascunho. Eles vão aos autos quando você enviar a peça.`
+      : 'Nenhum documento enviado — o ato segue só com o texto.',
+    ...painelRascunho(tipoChave, numeroProcesso, atual, cfg),
+    ephemeral: true,
+  }).catch(() => null);
 }
 
 async function desfazerTrecho(interaction, tipoChave, numeroProcesso) {
@@ -723,12 +898,27 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
     autorId: interaction.user.id, autorPapel: cfg.emissor, texto,
     qualificacao: qualificacao(processo, cfg.tabela),
     assinante: await nomeExibicao(interaction.guild, interaction.user.id),
+    // Rótulo do documento quando o ato admite nomenclatura própria. Congelado junto com o resto,
+    // pelo mesmo motivo: o PNG tem que sair idêntico daqui a um ano, sem Discord.
+    tituloLivre: cfg.tituloLivre ? (rascunho.tituloLivre || null) : null,
     destinatarios,
   });
   if (!r.ok) return interaction.editReply({ content: `Não consegui criar a peça: ${r.razao}` });
   const peca = r.peca;
   const { paginas, entregue } = await finalizarPeca(interaction, peca, processo, cfg, tipoChave);
 
+
+  // JUNTADA DOS DOCUMENTOS OPCIONAIS. Depois de a peça existir, não antes: se a criação falhasse,
+  // ficariam documentos nos autos apontando para um ato que nunca nasceu. `atoOrigemId` é o número
+  // da PEÇA — é o que amarra o anexo ao documento selado que o Juiz vai receber em cena.
+  for (const a of (rascunho.anexos || [])) {
+    try {
+      require('./anexos').criarDocumento({
+        tipo: `anexo_${tipoChave}`, url: a.url, nomeArquivo: a.nomeArquivo,
+        autorId: interaction.user.id, atoOrigemId: peca.numero, protocoloVinculado: numeroProcesso,
+      });
+    } catch (e) { console.error(`[pecas] falha ao juntar anexo de ${peca.numero}:`, e.message); }
+  }
 
   // Rascunho consumido: a peça existe, e deixar o texto em memória permitiria reenviar o mesmo
   // conteúdo como uma segunda peça por engano.
@@ -922,7 +1112,7 @@ async function renderizar(guild, peca, cfg) {
         codigoArquivo: peca.codigoArquivo,
         numeroPeca: peca.numero,
         numeroProcesso: peca.processoNumero,
-        titulo: cfg.titulo,
+        titulo: peca.tituloLivre || cfg.titulo,
         orgao: cfg.orgao,
         // Do PROCESSO, não do catálogo — ver unidadeDoProcesso.
         unidade: unidadeDoProcesso(db.buscarPorNumero(peca.processoTabela || 'processos', peca.processoNumero)),
@@ -1152,7 +1342,7 @@ async function abrirRecebimento(interaction, numeroPeca) {
       // lavratura por causa do efeito seria trocar um problema por um pior.
       try {
         const processoAtual = db.buscarPorNumero(meta.processoTabela, meta.processoNumero);
-        const efeito = aplicarEfeitoDoRecebimento(meta.tipo, processoAtual, { numero: numeroPeca }, interaction.user.id);
+        const efeito = aplicarEfeitoDoRecebimento(meta.tipo, processoAtual, { numero: numeroPeca }, interaction.user.id, meta.processoTabela);
         if (efeito && efeito.recusa) {
           await msg.reply({ content: efeito.recusa }).catch(() => {});
         } else if (efeito && efeito.campos) {
@@ -1301,6 +1491,7 @@ async function router(interaction) {
     case 'add': return abrirModalTrecho(interaction, partes[2], partes.slice(3).join(':'));
     case 'ver': return verRascunho(interaction, partes[2], partes.slice(3).join(':'));
     case 'undo': return desfazerTrecho(interaction, partes[2], partes.slice(3).join(':'));
+    case 'anexar': return anexarAoRascunho(interaction, partes[2], partes.slice(3).join(':'));
     case 'enviar': {
       const tipoChave = partes[2];
       const alvo = partes.slice(3).join(':');
@@ -1461,7 +1652,7 @@ async function publicarRelatorioSemanal(guild, { agora = Date.now() } = {}) {
 
 module.exports = {
   router, TIPOS, tipoAtivo, abrirEmissao, criarPeca, entregarAgora, encerrarEntrega,
-  receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho, abrirRecebimento,
+  receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho, abrirRecebimento, anexarAoRascunho,
   estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA, TTL_RASCUNHO_MS,
   verificarValvulaEEncerramento, publicarRelatorioSemanal, unidadeDoProcesso,
   qualificacao, // exportada para teste: e ela que classifica o rito no cabecalho do documento
