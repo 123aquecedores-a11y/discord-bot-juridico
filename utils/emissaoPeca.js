@@ -304,9 +304,24 @@ const EFEITOS_POS_RECEBIMENTO = {
       if (!rhLocal.cobreOPapel(recebedorId, 'Juiz')) {
         return { recusa: `ℹ️ Documento entregue. A decisão da medida **${medida.numero}** não foi liberada porque só o Juiz destrava o julgamento do requerimento.` };
       }
+
+      // MEDIDA AVULSA (requerida pelo MP fora de um processo) nasce SEM juiz: não há processo de
+      // onde herdá-lo, e sortear um na criação escolheria alguém que talvez nem esteja em cena.
+      //
+      // Quem RECEBE em mão assume — exatamente o mecanismo da denúncia (denuncia_mp, acima). É o que
+      // faz "qualquer Juiz disponível pode assumir" funcionar sem fila nova: a peça é dirigida ao
+      // PAPEL 'Juiz', `ocupaDestinatario` deixa qualquer um com o cargo receber, e a titularidade é
+      // consequência da entrega. Medida que JÁ tem juiz (a de dentro do processo) não é reatribuída.
+      const assumeOJuizo = !medida.juiz;
       return {
-        campos: { requerimentoRecebidoEm: new Date().toISOString(), ...require('./atosPorCargo').carimboDeExecucao(recebedorId) },
-        aviso: `⚖️ Requerimento recebido. A medida **${medida.numero}** está liberada para decisão — os botões já estão no canal.`,
+        campos: {
+          requerimentoRecebidoEm: new Date().toISOString(),
+          ...(assumeOJuizo ? { juiz: recebedorId, aguardandoJuizDesde: new Date().toISOString() } : {}),
+          ...require('./atosPorCargo').carimboDeExecucao(recebedorId),
+        },
+        aviso: assumeOJuizo
+          ? `⚖️ Requerimento recebido. Você assume a medida **${medida.numero}** como Juiz e pode decidi-la — os botões já estão no canal.`
+          : `⚖️ Requerimento recebido. A medida **${medida.numero}** está liberada para decisão — os botões já estão no canal.`,
       };
     },
     aoAplicar: async (interaction, medida) => {

@@ -1646,8 +1646,15 @@ async function tratarModal(interaction, modulo, acao, extra) {
       ? (interaction.fields.getTextInputValue('tipo_livre') || '').trim()
       : '';
     const tipo = tipoLivre || tipoBase;
+    // QUEM CLICA DEFINE O RITO. O botão é o mesmo nos dois menus (de propósito — é atalho para a
+    // mesma ação, não um segundo caminho), então a bifurcação é por CARGO: membro do MP requer
+    // direto ao Juiz; Delegado pede e o MP tria.
+    const requerentEhMp = ministerioPublico.ehMembroDoMP(interaction) && !temCargo(interaction, 'Delegado');
     const resultado = await medidaCmd.solicitarMedida({
-      guild: interaction.guild, delegadoId: interaction.user.id, promotorId: null,
+      guild: interaction.guild,
+      delegadoId: requerentEhMp ? null : interaction.user.id,
+      promotorId: requerentEhMp ? interaction.user.id : null,
+      porMp: requerentEhMp,
       tipo,
       alvo: interaction.fields.getTextInputValue('alvo'),
       // Sem alvoDiscordId: o campo saiu do modal. O alvo é identificado por nome + RG.
