@@ -604,4 +604,4 @@ async function gerarEditalPNG({ numero, vagasJuiz, vagasPromotor, requisitos, in
   return renderHtmlToPng(html, { width: 794, height: 1123 }, { fullPage: true });
 }
 
-module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarCarteiraCargoPNG, gerarEditalPNG, nomeExibicao, getBrowser, renderHtmlToPng, renderHtmlToPngs };
+module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarCarteiraCargoPNG, gerarEditalPNG, nomeExibicao, getBrowser, renderHtmlToPng, renderHtmlToPngs, getLogoImgTag, LOGO_FILES };

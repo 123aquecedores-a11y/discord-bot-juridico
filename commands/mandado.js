@@ -158,6 +158,46 @@ async function emitirMandado(interaction, chave) {
   //
   // A guarda de colisão dos atos DECISÓRIOS continua onde faz sentido (sentença, referendo,
   // deferimento): lá o segundo clique desfaz o primeiro. Aqui ele só acrescenta um mandado.
+  // FUNDAMENTAÇÃO EM TRECHOS (19/08/2026). O que o Juiz escreveu no modal vira o PRIMEIRO trecho;
+  // daí em diante ele usa o MESMO painel do MP ("adicionar mais texto"). O teto de 4.000 caracteres
+  // é do campo do Discord, não do mandado.
+  //
+  // O estado da emissão (tipos e destinatário) fica guardado até o "Enviar" — sem isso o finalizador
+  // não saberia quais mandados expedir, já que ele nasce de um clique em outro componente.
+  const emissaoPeca = require('../utils/emissaoPeca');
+  pendentesDeFundamentacao.set(`${interaction.user.id}:${numero}`, { tipoValues, tipoLivre, destinatario });
+  emissaoPeca.semearRascunho(interaction.user.id, 'fundamentacao_mandado', numero, teor);
+  return interaction.reply({
+    ...emissaoPeca.painelDeRascunho(interaction.user.id, 'fundamentacao_mandado', numero),
+    ephemeral: true,
+  });
+}
+
+// Estado da emissão entre o modal e o "Enviar" do painel de trechos. Em memória, como todo rascunho
+// deste projeto: se o bot reinicia, o Juiz refaz — nada foi gravado nos autos ainda.
+const pendentesDeFundamentacao = new Map();
+
+// FINALIZADOR do rascunho do mandado: junta os trechos e expede.
+async function emitirMandadosComFundamentacao(interaction, tipoChave, numero) {
+  const emissaoPeca = require('../utils/emissaoPeca');
+  const pendente = pendentesDeFundamentacao.get(`${interaction.user.id}:${numero}`);
+  if (!pendente) {
+    return interaction.reply({ content: 'A emissão expirou — refaça pelo botão "Emitir mandado".', ephemeral: true }).catch(() => {});
+  }
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true }).catch(() => {});
+  if (!podeAtuarNoCaso(interaction, processo, 'juiz')) {
+    return interaction.reply({ content: `Só um(a) Juiz(a) pode emitir mandado. Responsável registrado: <@${processo.juiz}>.`, ephemeral: true }).catch(() => {});
+  }
+
+  const teor = emissaoPeca.textoDoRascunho(emissaoPeca.lerRascunho(interaction.user.id, tipoChave, numero));
+  if (!teor.trim()) {
+    return interaction.reply({ content: 'Não há texto na fundamentação — refaça pelo botão "Emitir mandado".', ephemeral: true }).catch(() => {});
+  }
+  const { tipoValues, tipoLivre, destinatario } = pendente;
+  pendentesDeFundamentacao.delete(`${interaction.user.id}:${numero}`);
+  emissaoPeca.limparRascunho(interaction.user.id, tipoChave, numero);
+
   // Defer antes do PNG (Puppeteer) — sem isso a janela de 3s do Discord estoura enquanto o
   // Chromium sobe e a interação "falha" mesmo com o mandado sendo emitido com sucesso. Com vários
   // tipos são vários PNGs, então a margem importa ainda mais.
@@ -260,6 +300,9 @@ async function emitirMandadoNoProcesso({ guild, processo, tipoRotulo, teor, emit
 // Mandados nascem de duas formas: automaticamente quando um Juiz referenda uma medida
 // cautelar (commands/medida.js -> referendar), ou emitidos direto pelo Juiz de dentro de um
 // processo penal já aberto (acima). Consulta e listagem seguem valendo pros dois casos.
+// Registrado no load: o "Enviar" do painel de trechos expede os mandados.
+require('../utils/emissaoPeca').registrarFinalizador('fundamentacao_mandado', emitirMandadosComFundamentacao);
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('mandado')

@@ -13,6 +13,7 @@
 //    fim. Mesmo token em todas as folhas: qualquer página capturada decodifica igual. Os dígitos, que
 //    são só para conferência humana, ficam na última.
 const QRCode = require('qrcode');
+const { getLogoImgTag } = require('./gerarDocumentoPNG');
 const { renderHtmlToPngs } = require('./gerarDocumentoPNG');
 
 // A4 a 96dpi, mesma medida do resto do projeto.
@@ -63,6 +64,18 @@ const CSS = `
     display: flex; flex-direction: column;
   }
   .cabecalho { text-align: center; border-bottom: 2px solid #1a1a1a; padding-bottom: 10px; }
+  /* BRASÃO — mesmo do template do tribunal (services/gerarDocumentoPNG.js). Menor que os 110px
+     de lá porque aqui a folha é mais curta e disputa espaço com o selo, que não pode encolher:
+     ele é o que a captura no jogo precisa ler. */
+  /* ALTURA FIXA, não max-height. Com max-height a caixa só ganha altura depois que a imagem
+     decodifica — e a paginação mede ANTES disso, porque data: URI não gera requisição e o
+     networkidle0 dispara na hora. O resultado era o corpo receber altura demais na medição,
+     encaixar um parágrafo a mais e ficar cortado pelo selo quando o brasão finalmente entrava.
+     Com height fixo, o espaço é reservado pelo CSS e a medição já vê o layout final. */
+  .cabecalho .brasao-img { height: 64px; width: auto; margin-bottom: 6px; }
+  /* Da página 2 em diante o timbre inteiro vira uma linha, mas o brasão FICA — é o que faz
+     qualquer folha solta continuar se identificando como documento do tribunal. */
+  .cabecalho-compacto .brasao-mini { height: 18px; vertical-align: middle; margin-right: 6px; }
   .cabecalho .orgao { font-size: 15px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
   .cabecalho .unidade { font-size: 12px; color: #333; margin-top: 2px; }
   .titulo { text-align: center; font-size: 17px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; margin: 16px 0 6px; }
@@ -96,7 +109,16 @@ const CSS = `
      tela, não de documento impresso. Peça judicial real usa entrelinha próxima de 1,5. */
   .corpo { flex: 1; min-height: 0; font-size: 14px; line-height: 1.45; text-align: justify; overflow: hidden; }
   .corpo p { margin: 0 0 7px 0; text-indent: 34px; }
+  /* DISPOSITIVO — o "CUMPRA-SE." do template do tribunal. Só em ato do Juízo: numa petição de
+     advogado seria ordem que ele não tem para dar. */
+  .dispositivo { font-size: 14px; line-height: 1.45; text-align: justify; margin-top: 10px; font-weight: bold; }
+  .folha:not(.ultima) .dispositivo { display: none; }
+  /* Fórmula de abertura, só na primeira folha — é o começo do documento, não de cada página. */
+  .vistos { font-size: 14px; line-height: 1.45; margin-bottom: 6px; }
+  .folha.continuacao .vistos { display: none; }
   .assinatura { text-align: center; font-size: 13px; margin: 12px 0 4px; }
+  /* Assinatura manuscrita: o próprio nome em cursiva, igual ao template do tribunal. */
+  .assinatura .assinatura-nome { font-family: 'Segoe Script', 'Brush Script MT', cursive; font-style: italic; font-size: 26px; color: #14245a; line-height: 1; margin-bottom: 2px; }
   .assinatura .linha { border-top: 1px solid #1a1a1a; width: 260px; margin: 0 auto 4px; }
 
   /* SELO — fonte monoespaçada, corpo grande, alto contraste (SPEC §5.3). Precisa sobreviver a
@@ -195,7 +217,8 @@ const scriptPaginacao = (numeroProcesso) => `
     var folhas = container.querySelectorAll('.folha');
     for (var j = 0; j < folhas.length; j++) {
       folhas[j].querySelector('.n-folha').textContent = 'fls. ' + (j + 1) + ' de ' + folhas.length;
-      var compacto = folhas[j].querySelector('.cabecalho-compacto');
+      // O texto vai num span próprio: escrever textContent no container apagaria o brasão ao lado.
+      var compacto = folhas[j].querySelector('.cabecalho-compacto .texto-compacto');
       if (compacto) compacto.textContent = NUMERO_PROCESSO + ' — fl. ' + (j + 1) + '/' + folhas.length;
     }
     document.body.setAttribute('data-paginas', folhas.length);
@@ -271,30 +294,46 @@ async function montarHtml(dados) {
     </div>`;
   }
 
+  // BRASÃO — reusa o carregador do template do tribunal (cache em memória, base64 embutido).
+  // Duplicar a leitura do arquivo aqui daria dois caminhos para a mesma imagem, e um deles
+  // ficaria para trás no dia em que o brasão mudar.
+  const chaveOrgao = /minist/i.test(dados.orgao || '') ? 'ministerio_publico'
+    : (/pol[ií]cia/i.test(dados.orgao || '') ? 'policia_civil' : 'judiciario');
+  const brasao = getLogoImgTag(chaveOrgao);
+  const brasaoMini = brasao ? brasao.replace('class="brasao-img"', 'class="brasao-mini"') : '';
+
+  // "CUMPRA-SE." é ordem: só em ato do JUÍZO. Numa petição de advogado ou manifestação do MP
+  // seria mandar cumprir o que eles não podem determinar.
+  const ehAtoDoJuizo = /juiz|desembargador/i.test(dados.cargoAssinante || '');
+
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>${CSS}</style></head><body>
     <div id="documento"></div>
     <div id="molde" style="display:none">${paragrafosHtml(dados.texto)}</div>
     <div id="modelo-folha" style="display:none">
       <div class="cabecalho">
+        ${brasao}
         <div class="orgao">${escapeHtml(dados.orgao)}</div>
         ${dados.unidade ? `<div class="unidade">${escapeHtml(dados.unidade)}</div>` : ''}
       </div>
-      <div class="cabecalho-compacto"></div>
+      <div class="cabecalho-compacto">${brasaoMini}<span class="texto-compacto"></span></div>
       <div class="titulo">${escapeHtml(dados.titulo)}</div>
       <div class="metadados">
-        <span>Processo nº ${escapeHtml(dados.numeroProcesso)}</span>
-        <span>Documento ${escapeHtml(dados.numeroPeca)}</span>
-        <span>${escapeHtml(dados.data)}</span>
+        <span><strong>Processo/Protocolo</strong> ${escapeHtml(dados.numeroProcesso)}</span>
+        <span><strong>Documento</strong> ${escapeHtml(dados.numeroPeca)}</span>
+        <span><strong>Data</strong> ${escapeHtml(dados.data)}</span>
       </div>
       ${dados.qualificacao ? `<div class="qualificacao">${negritoSimples(dados.qualificacao)}</div>` : ''}
+      <div class="vistos">Vistos.</div>
       <div class="corpo"></div>
+      ${ehAtoDoJuizo ? '<div class="dispositivo">CUMPRA-SE.</div>' : ''}
       <div class="assinatura">
+        <div class="assinatura-nome">${escapeHtml(dados.assinante)}</div>
         <div class="linha"></div>
         <div><strong>${escapeHtml(dados.assinante)}</strong></div>
         <div>${escapeHtml(dados.cargoAssinante)}</div>
       </div>
       ${seloHtml}
-      <div class="rodape"><span class="n-folha"></span><span>${dados.gated ? 'Autenticidade conferível pelo selo acima' : 'Documento emitido pelo sistema — modo aberto, sem selo de autenticação'}</span></div>
+      <div class="rodape"><span class="n-folha"></span><span>Documento gerado eletronicamente pelo sistema do Tribunal${dados.gated ? ' — autenticidade conferível pelo selo acima' : ' — modo aberto, sem selo de autenticação'}</span></div>
     </div>
     <script>${scriptPaginacao(dados.numeroProcesso)}</script>
   </body></html>`;

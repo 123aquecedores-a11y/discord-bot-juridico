@@ -189,6 +189,31 @@ const TIPOS = {
   // a decisão em partes, e o desfecho é a emissão dos mandados, não uma entrega com selo.
   //
   // `destinatarios: []` é declaração, não descuido: não há a quem entregar este texto.
+  // FUNDAMENTAÇÃO DA SENTENÇA e do MANDADO DIRETO. Como a da medida: não viram peça por si —
+  // são o CORPO de um ato que já tem pipeline próprio. Existem para que o Juiz monte a decisão
+  // em trechos, com o mesmo painel do MP, em vez de caber tudo num campo de 4.000 caracteres.
+  fundamentacao_sentenca: {
+    rotulo: 'Fundamentação da sentença',
+    titulo: 'SENTENÇA',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Juiz',
+    destinatarios: [],
+    tabela: 'processos',
+    ativo: true,
+    semPeca: true,
+  },
+
+  fundamentacao_mandado: {
+    rotulo: 'Fundamentação do mandado',
+    titulo: 'MANDADO',
+    orgao: 'PODER JUDICIÁRIO',
+    emissor: 'Juiz',
+    destinatarios: [],
+    tabela: 'processos',
+    ativo: true,
+    semPeca: true,
+  },
+
   fundamentacao_medida: {
     rotulo: 'Fundamentação do Juízo',
     titulo: 'DECISÃO',
@@ -417,6 +442,21 @@ const chaveRascunho = (userId, tipo, numero) => `${userId}:${tipo}:${numero}`;
 // clique em "Enviar" reemite o mesmo conteúdo.
 function limparRascunho(userId, tipo, numero) {
   rascunhos.delete(chaveRascunho(userId, tipo, numero));
+}
+
+// SEMEAR o rascunho com um texto que veio de outro lugar — tipicamente o primeiro trecho, digitado
+// num modal antes de o painel existir. É o que permite a uma decisão do Juiz começar como sempre
+// começou (um modal) e SÓ ENTÃO ganhar o "adicionar mais texto": ele escreve o primeiro bloco no
+// modal, e daí em diante usa o mesmo painel do MP.
+function semearRascunho(userId, tipo, numero, texto) {
+  rascunhos.set(chaveRascunho(userId, tipo, numero), { trechos: [String(texto || '')].filter(Boolean) });
+}
+
+// O painel de trechos, montado para quem não passou por `abrirEmissao`. Mesmo componente, mesmos
+// botões, mesmo roteador — só o ponto de entrada é outro.
+function painelDeRascunho(userId, tipoChave, numero) {
+  const cfg = TIPOS[tipoChave];
+  return painelRascunho(tipoChave, numero, lerRascunho(userId, tipoChave, numero), cfg);
 }
 
 function lerRascunho(userId, tipo, numero) {
@@ -1413,4 +1453,5 @@ module.exports = {
   aplicarEfeitoDoRecebimento, EFEITOS_POS_RECEBIMENTO, // elo "documento entregue -> proxima etapa"
   finalizarPeca, emitirAtoComoPeca, // pipeline de emissao reusado por sentenca e recurso
   registrarFinalizador, lerRascunho, textoDoRascunho, limparRascunho, // rascunho por trechos, reusavel
+  semearRascunho, painelDeRascunho, MAX_TRECHOS,
 };
