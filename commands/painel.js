@@ -1296,10 +1296,15 @@ async function tratarUserSelect(interaction, modulo, campo) {
   }
 
   if (modulo === 'rh' && campo === 'demitir') {
+    // deferUpdate: a redistribuição percorre os tickets abertos e posta nos canais — passa dos 3s.
+    await interaction.deferUpdate();
     const registro = await rhCmd.demitirComRole(interaction.guild, usuarioId);
     const embed = new EmbedBuilder().setColor(registro ? 0xe74c3c : 0x95a5a6)
-      .setDescription(registro ? `<@${usuarioId}> foi removido do cargo jurídico.` : `<@${usuarioId}> não tinha cargo jurídico ativo.`);
-    return interaction.update({ embeds: [embed], components: [botaoVoltar()] });
+      .setDescription(registro
+        ? `<@${usuarioId}> foi removido do cargo jurídico.
+${rhCmd.resumoDaDemissao(registro)}`
+        : `<@${usuarioId}> não tinha cargo jurídico ativo.`);
+    return interaction.editReply({ embeds: [embed], components: [botaoVoltar()] });
   }
 
   if (modulo === 'peticao' && campo.startsWith('vincularcliente#')) {
