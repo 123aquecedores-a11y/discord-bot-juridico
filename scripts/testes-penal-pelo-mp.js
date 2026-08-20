@@ -121,8 +121,13 @@ console.log('\n3) O CAMINHO DE PRODUÇÃO: botão no painel do MP → denúncia'
     '3e: e a flag chega em criarProcessoPenal');
 
   // Vai DIRETO para a denúncia: nada de perguntar "denunciar ou arquivar" a quem acabou de abrir.
-  ok(/processo:oferecer:\$\{resultado\.numero\}/.test(painel),
-    '3f: o promotor recebe o botão de escrever a denúncia na hora');
+  // ERA `processo:oferecer` até 20/08/2026 — e essa asserção PASSAVA, porque só olhava se o botão
+  // existia, não para onde ele apontava. `processo:oferecer` cai em executarParecerMp, que despeja
+  // teor+PNG direto no canal. Agora ela cobra o DESTINO, que é o que importa.
+  ok(/painel:acao:processo:escreverdenuncia:\$\{resultado\.numero\}/.test(painel),
+    '3f: o promotor recebe o botão de escrever a denúncia na hora, apontado para o caminho GATED');
+  ok(!/setCustomId\(`processo:oferecer:\$\{resultado\.numero\}`\)/.test(painel),
+    '3f2: e NÃO para `processo:oferecer`, que pula a peça e o selo');
   ok(/📝 Escrever denúncia/.test(painel), '3g: com rótulo que diz o que fazer');
   // O bloco inteiro (mensagem + linha de botões) passa de 400 caracteres; o que importa é que a
   // resposta do caminho semDelegado use editReply e NÃO respostaSumindo.
@@ -132,13 +137,19 @@ console.log('\n3) O CAMINHO DE PRODUÇÃO: botão no painel do MP → denúncia'
   const codigoSemDelegado = blocoSemDelegado.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
   ok(/interaction\.editReply\(/.test(codigoSemDelegado) && !/respostaSumindo/.test(codigoSemDelegado),
     '3h: a mensagem NÃO some sozinha — respostaSumindo apagaria o botão em 45s');
-
-  // O botão reusa o gatilho que já existia; não nasceu um caminho paralelo de denúncia.
-  const idx = LER('index.js');
-  ok(/oferecer: 'oferecer'/.test(idx), '3i: `processo:oferecer` é roteado, o botão não é decorativo');
+  // O botão reusa o gatilho que já existia; não nasceu um caminho paralelo de denúncia. O gatilho
+  // certo é o do HUB DO MP (opção "Oferecer denúncia"), que entra no gate — não o `processo:oferecer`.
+  ok(/if \(acao === 'escreverdenuncia'\) return processoCmd\.abrirDenunciaGated\(interaction, extra\)/.test(painel),
+    '3i: o botão é roteado, não é decorativo');
   const proc = LER('commands', 'processo.js');
-  ok(/setCustomId\(`processo:oferecer:\$\{numero\}`\)/.test(proc),
-    '3j: e é o MESMO customId que o painel do processo já usava');
+  ok(typeof processoCmd.abrirDenunciaGated === 'function', '3j: e o handler existe e é exportado');
+  const corpo = proc.slice(proc.indexOf('async function abrirDenunciaGated'));
+  const corpoDenuncia = corpo.slice(0, corpo.indexOf('\n}\n') + 3).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  ok(corpoDenuncia.length > 200, '3j-z: o corpo da função foi localizado (scan não vazio)');
+  ok(/abrirEmissao\(interaction, 'denuncia_mp', numero\)/.test(corpoDenuncia),
+    '3k: ele abre a MESMA emissão gated do hub do MP');
+  ok(!/executarParecerMp|confirmarParecerMp/.test(corpoDenuncia),
+    '3l: e não passa perto do parecer que posta direto no canal');
 }
 
 // ---------------------------------------------------------------------------
