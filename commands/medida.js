@@ -4,6 +4,8 @@ const { proximoNumero } = require('../utils/numeracao');
 const { temCargo, isAdmin, isSuperStaff , podeAtuarNoCaso, recusaDoCaso } = require('../utils/permissoes');
 const rh = require('../utils/rh');
 const acumuloDePapeis = require('../utils/acumuloDePapeis');
+const modoEntrega = require('../utils/modoEntrega');
+const ministerioPublico = require('../utils/ministerioPublico');
 const canais = require('../utils/canais');
 const config = require('../config');
 const rascunhoCrimes = require('../utils/rascunhoCrimes');
@@ -55,12 +57,15 @@ function embedMedida(medida) {
       { name: 'Alvo', value: truncar(medida.alvo), inline: true },
       // Identidade do alvo é NOME + RG (o Discord saiu em 19/08/2026 — alvo é personagem de RP e
       // não tem conta). RG vazio é normal quando o alvo é um local, não uma pessoa.
+      //
+      // UM campo só: ao trocar o antigo "Discord do alvo" por este, ficou lado a lado com um campo
+      // de RG condicional que já existia, e o card passou a mostrar "RG do alvo" duas vezes.
       { name: 'RG do alvo', value: medida.rgAlvo || '— (alvo é local, ou RG não informado)', inline: true },
       ...(medida.nomeAlvo ? [{ name: 'Nome civil do alvo', value: truncar(medida.nomeAlvo), inline: true }] : []),
-      ...(medida.rgAlvo ? [{ name: 'RG do alvo', value: medida.rgAlvo, inline: true }] : []),
       { name: 'Motivo/Indícios', value: truncar(medida.motivo) },
-      { name: 'Delegado', value: `<@${medida.delegado}>`, inline: true },
-      { name: 'Promotor', value: `<@${medida.promotor}>`, inline: true },
+      // Medida requerida pelo MP não tem Delegado — mencionar cru imprimia `<@null>` no card.
+      ...(medida.delegado ? [{ name: 'Delegado', value: `<@${medida.delegado}>`, inline: true }] : []),
+      { name: 'Promotor', value: medida.promotor ? `<@${medida.promotor}>` : '—', inline: true },
       ...(medida.juiz ? [{ name: 'Juiz sorteado', value: `<@${medida.juiz}>`, inline: true }] : []),
     );
 }
@@ -345,8 +350,17 @@ async function emitirMandadosDaMedida(interaction, tipoChave, numero) {
     return interaction.reply({ content: 'Não há texto na fundamentação — o rascunho pode ter expirado. Comece de novo.', ephemeral: true }).catch(() => {});
   }
 
-  const processo = db.buscarPorNumero('processos', medida.processoVinculado);
-  if (!processo) return interaction.reply({ content: 'Processo vinculado não encontrado.', ephemeral: true }).catch(() => {});
+  // MEDIDA AVULSA não tem processo por trás — o MP a requereu fora de qualquer caso. Antes isto
+  // recusava com "Processo vinculado não encontrado", que travava a decisão de uma medida
+  // perfeitamente válida.
+  //
+  // Os dois caminhos usam funções que JÁ existiam: dentro do processo, o mandado é juntado aos
+  // autos (emitirMandadoNoProcesso); avulso, ele nasce no canal da própria medida
+  // (emitirMandadoDaMedida — a mesma que o referendo usa, e que já tratava processoVinculado nulo).
+  const processo = medida.processoVinculado ? db.buscarPorNumero('processos', medida.processoVinculado) : null;
+  if (medida.processoVinculado && !processo) {
+    return interaction.reply({ content: 'Processo vinculado não encontrado.', ephemeral: true }).catch(() => {});
+  }
 
   await interaction.deferReply({ ephemeral: true });
   emissaoPeca.limparRascunho(interaction.user.id, tipoChave, numero);
@@ -355,6 +369,16 @@ async function emitirMandadosDaMedida(interaction, tipoChave, numero) {
     status: 'Deferida', fundamentacaoJuiz, decisaoJuizEm: new Date().toISOString(),
     ...atosPorCargo.carimboDeExecucao(interaction.user.id),
   });
+
+  if (!processo) {
+    const r = await emitirMandadoDaMedida(interaction, db.buscarPorNumero('medidas', numero), fundamentacaoJuiz);
+    await auditoria.registrar(interaction.guild, { acao: 'Medida deferida — mandado emitido', executorId: interaction.user.id, referencia: `${numero} → Mandado ${r.numeroMandado}` });
+    return interaction.editReply({
+      content: r.postado
+        ? `Medida ${numero} deferida com a sua fundamentação. Mandado ${r.numeroMandado} emitido no canal da medida.`
+        : `Medida ${numero} deferida e Mandado ${r.numeroMandado} emitido, mas **não consegui postar no canal** (${r.erro}). O ato está gravado — use \`/medida reemitir numero:${numero}\` para publicá-lo.`,
+    });
+  }
 
   const resultadoMandado = await mandadoCmd.emitirMandadoNoProcesso({
     guild: interaction.guild, processo, tipoRotulo: medida.tipo,
@@ -397,7 +421,18 @@ async function indeferirMedidaDireta(interaction, numero) {
   return interaction.reply({ content: `Medida ${numero} indeferida. Fica registrada no histórico do processo, sem mandado emitido.`, ephemeral: true });
 }
 
-async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvoDiscordId, rgAlvo = null, motivo, semIndicios = false }) {
+// `porMp` — o MINISTÉRIO PÚBLICO requer a medida por conta própria, fora de um processo
+// (20/08/2026). Antes este caminho criava um ticket com os botões "Aprovar / Negar" e o próprio MP
+// aprovava o próprio pedido: uma etapa que não decide nada, porque quem pede já decidiu pedir.
+//
+// Agora o requerimento vai DIRETO ao Juiz, pelo mesmo rito da medida de dentro do processo (A5):
+// vira peça com selo, o Juiz recebe em cena, escreve a própria fundamentação e expede o mandado.
+//
+// O caminho do DELEGADO não muda: lá o MP triando o pedido é ato real — ele avalia o que a polícia
+// pediu e pode negar. É a mesma diferença entre inquérito e denúncia direta.
+async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvoDiscordId, rgAlvo = null, motivo, semIndicios = false, porMp = false }) {
+  if (porMp) return solicitarMedidaPeloMp({ guild, promotorId: promotorId || delegadoId, tipo, alvo, alvoDiscordId, rgAlvo, motivo });
+
   // MESMA regra de acúmulo do processo penal (utils/acumuloDePapeis.js — um módulo só, para os dois
   // fluxos não divergirem): promotor que abre sem delegado separado ocupa os dois papéis. Sem isso,
   // o promotor pedia a medida e o bot sorteava OUTRO promotor para analisar o próprio pedido dele.
@@ -441,6 +476,77 @@ async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvo
   await canal.send({ content: `<@${delegadoId}> <@${promotorFinal}>`, embeds: [embedMedida(medida)], components: componentesIniciais });
 
   await auditoria.registrar(guild, { acao: 'Medida cautelar solicitada', executorId: delegadoId, referencia: numero });
+  return { numero, canal };
+}
+
+// MEDIDA REQUERIDA PELO MP, sem processo. Réplica exata do rito de dentro do processo
+// (criarPendenciaMedidaDireta): a diferença é só de onde vem o canal e o juiz.
+//
+// SEM JUIZ na criação, de propósito. Não há processo de onde herdá-lo, e sortear um agora
+// escolheria alguém que talvez nem esteja em cena. A peça é dirigida ao PAPEL 'Juiz' — qualquer um
+// com o cargo pode receber (ocupaDestinatario + cobreOPapel) — e quem recebe assume, pelo mesmo elo
+// da denúncia (EFEITOS_POS_RECEBIMENTO.solicitacao_medida). É a fila que o bot já tinha, não uma nova.
+async function solicitarMedidaPeloMp({ guild, promotorId, tipo, alvo, alvoDiscordId, rgAlvo, motivo }) {
+  if (!promotorId) return { erro: 'Não identifiquei quem está requerendo a medida.' };
+  const numero = proximoNumero(db, 'medidas', 'MD');
+
+  const canal = await canais.criarCanalTicket(guild, {
+    categoriaId: config.categoriaMedidasId, prefixo: 'medida', numero,
+    membros: [promotorId],
+  });
+
+  db.inserir('medidas', {
+    numero, tipo, alvo, alvoDiscordId: alvoDiscordId || null, rgAlvo: rgAlvo || null, motivo,
+    // Já nasce na fase do Juiz: não há triagem do MP a fazer sobre o próprio requerimento.
+    status: 'Aprovada - aguardando juiz',
+    delegado: null, promotor: promotorId, juiz: null,
+    fundamentacaoPromotor: motivo,
+    canalId: canal.id, processoVinculado: null,
+    // MODO CARIMBADO na criação (SPEC §11.2). A medida de dentro do processo herda o modo DELE;
+    // esta não tem processo, então carrega o próprio — senão modoDoProcesso a leria como
+    // `legado` e o requerimento nunca seria gated.
+    modoEntrega: modoEntrega.modoParaNovoProcesso(guild.id),
+    aguardandoJuizDesde: new Date().toISOString(), lembreteJuizEnviado: false, escalonamentoJuizEnviado: false,
+  });
+
+  // O REQUERIMENTO VIRA PEÇA — mesmo tipo e mesmo pipeline da medida de dentro do processo.
+  const gated = require('../utils/pecas').modoDoProcesso(db.buscarPorNumero('medidas', numero)) === 'ingame';
+  let emissao = { ok: false };
+  if (gated) {
+    emissao = await require('../utils/emissaoPeca').emitirAtoComoPeca(
+      { guild, autorId: promotorId },
+      {
+        tipo: 'solicitacao_medida', processoNumero: numero, tabela: 'medidas',
+        texto: `Medida requerida: ${tipo}\nAlvo: ${alvo}${rgAlvo ? ` (RG ${rgAlvo})` : ''}\n\n${motivo}`,
+        destinatarios: [{ papel: 'Juiz' }],
+      },
+    ).catch(err => { console.error('Falha ao emitir a peça do requerimento avulso:', err.message); return { ok: false, razao: err.message }; });
+  }
+
+  const medida = db.buscarPorNumero('medidas', numero);
+  if (gated && emissao.ok) {
+    // Só METADADO, e SEM os botões de decidir: eles nascem quando um Juiz receber em cena.
+    await canal.send({
+      content: `⚖️ Requerimento de medida cautelar **${numero}** protocolado por <@${promotorId}>.\n`
+        + '📄 O teor fica restrito até a entrega pessoal. **Qualquer Juiz** pode receber e assumir o caso — use **Entregar agora** acima quando estiverem em cena.',
+      embeds: [embedMedida(medida)],
+    });
+  } else {
+    // Modo aberto/legado (ou falha na emissão): o Juiz é sorteado e os botões vão direto, como no
+    // rito antigo. Requerimento que não chega a ninguém é pior que requerimento visível.
+    const juizId = rh.sortearJuiz({ excluirIds: [promotorId, alvoDiscordId].filter(Boolean) });
+    if (juizId) {
+      db.atualizar('medidas', numero, { juiz: juizId });
+      await canais.adicionarMembro(canal, juizId);
+    }
+    await canal.send({
+      content: juizId ? `<@${juizId}> — requerimento do Ministério Público para apreciação.` : `<@${promotorId}> — não há Juiz disponível agora; o requerimento fica aguardando.`,
+      embeds: [embedMedida(db.buscarPorNumero('medidas', numero))],
+      components: juizId ? [botoesAnaliseDireta(numero)] : [],
+    });
+  }
+
+  await auditoria.registrar(guild, { acao: 'Medida cautelar requerida pelo MP', executorId: promotorId, referencia: numero });
   return { numero, canal };
 }
 
@@ -738,15 +844,20 @@ module.exports = {
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'solicitar') {
-      if (!temCargo(interaction, 'Delegado')) {
-        return interaction.reply({ content: 'Só Delegados podem solicitar medida cautelar.', ephemeral: true });
+      // O MP também requer por aqui (20/08/2026) — antes o slash era exclusivo do Delegado, e o
+      // promotor tinha de usar o painel. Mesma bifurcação por cargo do painel: quem é do MP e
+      // não é Delegado requer DIRETO ao Juiz; o Delegado pede e o MP tria.
+      const ehMp = ministerioPublico.ehMembroDoMP(interaction) && !temCargo(interaction, 'Delegado');
+      if (!temCargo(interaction, 'Delegado') && !ehMp) {
+        return interaction.reply({ content: 'Só Delegados ou membros do Ministério Público podem solicitar medida cautelar.', ephemeral: true });
       }
 
       await interaction.deferReply({ ephemeral: true });
       const resultado = await solicitarMedida({
         guild: interaction.guild,
-        delegadoId: interaction.user.id,
-        promotorId: interaction.options.getUser('promotor')?.id || null,
+        porMp: ehMp,
+        delegadoId: ehMp ? null : interaction.user.id,
+        promotorId: ehMp ? interaction.user.id : (interaction.options.getUser('promotor')?.id || null),
         tipo: interaction.options.getString('tipo'),
         alvo: interaction.options.getString('alvo'),
         rgAlvo: interaction.options.getString('alvo_rg') || null,
