@@ -154,6 +154,27 @@ client.once('ready', async () => {
   // sorteioPromotorEm (trava das 24h do MP) + relatório de quantos casos abertos há por tipo.
   require('./utils/retroatividade').aplicarRetroatividade();
 
+  // A segunda instância enxerga os tickets ABERTOS que já existiam. Canal criado antes de
+  // 20/08/2026 não tem o overwrite de role do Desembargador, e sem esta passada a abertura só
+  // valeria para casos novos — ele continuaria sem ver justamente os processos em curso.
+  // Idempotente: canal que já tem o overwrite é pulado, então rodar todo boot não custa nada.
+  try {
+    const canais = require('./utils/canais');
+    const db = require('./database/db');
+    const TABELAS = ['processos', 'medidas', 'peticoes', 'oficios', 'apelacoes'];
+    let abertos = 0, liberados = 0;
+    for (const tabela of TABELAS) {
+      for (const r of db.todos(tabela, x => x && x.canalId && !x.arquivadoManual)) {
+        abertos++;
+        const canal = await guild.channels.fetch(r.canalId).catch(() => null);
+        if (canal && await canais.garantirAcessoSegundaInstancia(canal)) liberados++;
+      }
+    }
+    console.log(`🏛️ [2ª instância] ${abertos} ticket(s) aberto(s) conferido(s) — ${liberados} canal(is) liberado(s) agora para o Desembargador.`);
+  } catch (e) {
+    console.error('[2ª instância] liberação retroativa falhou (ignorado, não derruba o boot):', e.message);
+  }
+
   // Simulador de alto fluxo (só quando SIMULAR=1) — cria tickets ao vivo pra teste. Ver
   // scripts/simulador.js. Roda em paralelo, sem travar o bot (que segue respondendo normalmente).
   if (process.env.SIMULAR === '1') {

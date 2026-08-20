@@ -37,6 +37,30 @@ async function obterOuCriarCategoria(guild, chaveEstado, nome) {
 // mensagem exige), então os componentes continuam funcionando normalmente mesmo bloqueado.
 // A única exceção real é aguardarAnexoPDF, que depende de mensagem de verdade pra pegar o
 // anexo — ele mesmo libera SendMessages pontualmente pra quem está anexando (ver anexoPdf.js).
+// A SEGUNDA INSTÂNCIA ENXERGA TUDO (20/08/2026, pedido do operador).
+//
+// O Desembargador já podia LER os autos por toda porta do bot — `temAcessoTotal`
+// (PAPEIS_COMPARTILHADOS) libera o histórico e a listagem, e `CARGOS_QUE_VEEM_TEOR` libera o teor
+// das peças gated. O que faltava era o Discord: o canal do ticket nega ViewChannel ao @everyone e
+// só abre para os membros nominais e a staff, então ele não via o canal existir. Na prática podia
+// ler o processo por comando e não conseguia abrir a porta dele.
+//
+// LEITURA, não escrita: `deny SendMessages` é deliberado. Ele é instância RECURSAL — acompanha e
+// supervisiona, não peticiona em primeiro grau. As ações que ele tem (Supervisão, Designar Juiz,
+// Trocar Juiz) são botão/select/modal, que NÃO exigem SendMessages no Discord.
+//
+// E quando ele É parte do caso, escreve normalmente: overwrite de MEMBRO tem precedência sobre
+// overwrite de ROLE no Discord, e quem entra num caso entra por `adicionarMembro`, que grava
+// overwrite de membro. O deny de role só alcança quem está ali apenas pelo cargo.
+function overwriteSegundaInstancia() {
+  if (!config.roleDesembargadorId) return [];
+  return [{
+    id: config.roleDesembargadorId, type: OverwriteType.Role,
+    allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+    deny: [PermissionFlagsBits.SendMessages],
+  }];
+}
+
 async function criarCanalTicket(guild, { categoriaId, prefixo, numero, membros = [], bloquearConversa = false }) {
   guildGuard.exigirGuild(guild, 'canais.criarCanalTicket');
   const permissaoMembro = bloquearConversa
@@ -47,6 +71,7 @@ async function criarCanalTicket(guild, { categoriaId, prefixo, numero, membros =
     { id: guild.roles.everyone, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
     ...membros.map(id => ({ id, type: OverwriteType.Member, ...permissaoMembro })),
   ];
+  overwrites.push(...overwriteSegundaInstancia());
   if (config.staffRoleId) {
     overwrites.push({
       id: config.staffRoleId, type: OverwriteType.Role,
@@ -127,4 +152,25 @@ async function reabrirCanal(canal, membros) {
   }
 }
 
-module.exports = { criarCanalTicket, adicionarMembro, arquivarCanal, reabrirCanal, obterOuCriarCategoria, canalTemConversaBloqueada };
+// Aplica o overwrite da segunda instância a um canal que JÁ existe. Chamada no boot, sobre os
+// tickets abertos: canal criado antes de 20/08/2026 não tem o overwrite, e sem isto a mudança só
+// valeria para processos novos — o Desembargador continuaria sem ver justamente os casos em curso.
+//
+// Idempotente e silenciosa: se o overwrite já está lá, não faz nada; se falhar, loga e segue. Não
+// pode derrubar o boot por causa de permissão de um canal.
+async function garantirAcessoSegundaInstancia(canal) {
+  if (!config.roleDesembargadorId || !canal) return false;
+  const atual = canal.permissionOverwrites?.cache?.get(config.roleDesembargadorId);
+  if (atual && atual.allow?.has(PermissionFlagsBits.ViewChannel)) return false;
+  try {
+    await canal.permissionOverwrites.edit(config.roleDesembargadorId, {
+      ViewChannel: true, ReadMessageHistory: true, SendMessages: false,
+    }, { type: OverwriteType.Role });
+    return true;
+  } catch (e) {
+    console.error(`[canais] não consegui liberar ${canal.id} para a segunda instância: ${e.message}`);
+    return false;
+  }
+}
+
+module.exports = { criarCanalTicket, adicionarMembro, arquivarCanal, reabrirCanal, obterOuCriarCategoria, canalTemConversaBloqueada, garantirAcessoSegundaInstancia };
