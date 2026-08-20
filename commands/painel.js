@@ -485,10 +485,16 @@ async function finalizarProcessoPenal(interaction) {
     // ele mesmo abriu o caso, a decisão de denunciar já está tomada. Mandá-lo ao menu
     // "oferecer / arquivar" seria perguntar o que ele acabou de responder.
     //
-    // O botão leva ao MESMO `processo:oferecer` do fluxo do Delegado — a denúncia segue o caminho
-    // normal daí em diante (peça, selo, entrega ao Juiz). Um botão, e não a abertura automática do
-    // formulário, porque esta interação já foi reconhecida (deferUpdate acima) e o Discord não
-    // aceita abrir modal depois disso.
+    // O botão vai para `painel:acao:processo:escreverdenuncia` → processoCmd.abrirDenunciaGated,
+    // que é o MESMO caminho da opção "Oferecer denúncia" do hub do MP: peça `denuncia_mp` com
+    // selo, entrega in-game ao Juiz e, no recebimento, EFEITOS_POS_RECEBIMENTO.denuncia_mp faz o
+    // Juiz que recebeu assumir o processo.
+    //
+    // CORRIGIDO EM 20/08/2026: apontava para `processo:oferecer`, que cai em executarParecerMp e
+    // despeja teor+PNG direto no canal, sem peça, sem selo e sem entrega. Não reaponte para lá.
+    //
+    // Um botão, e não a abertura automática do formulário, porque esta interação já foi
+    // reconhecida (deferUpdate acima) e o Discord não aceita abrir modal depois disso.
     if (rascunho.dados.semDelegado) {
       // editReply, e NÃO respostaSumindo: aquela apaga a mensagem em 45 segundos e levaria o botão
       // da denúncia junto. Aqui a mensagem É a porta do próximo passo — precisa ficar.
@@ -497,7 +503,7 @@ async function finalizarProcessoPenal(interaction) {
           + 'Escreva a denúncia agora — ela segue o caminho de sempre: vira peça com selo e é entregue ao Juiz em cena.',
         embeds: [],
         components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`processo:oferecer:${resultado.numero}`).setLabel('📝 Escrever denúncia').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`painel:acao:processo:escreverdenuncia:${resultado.numero}`).setLabel('📝 Escrever denúncia').setStyle(ButtonStyle.Success),
         )],
       });
     }
@@ -922,6 +928,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'citacaocumprida') return processoCmd.marcarCitacaoCumprida(interaction, extra);
     if (acao === 'voltarfase') return processoCmd.abrirModalVoltarFase(interaction, extra);
     if (acao === 'manifestacaomp') return processoCmd.abrirManifestacaoMp(interaction, extra);
+    if (acao === 'escreverdenuncia') return processoCmd.abrirDenunciaGated(interaction, extra);
     if (acao === 'deferirreqmp') return processoCmd.decidirRequerimentoMp(interaction, extra, true);
     if (acao === 'indeferirreqmp') return processoCmd.decidirRequerimentoMp(interaction, extra, false);
     if (acao === 'addadvogado') return processoCmd.abrirAdicionarAdvogado(interaction, extra);

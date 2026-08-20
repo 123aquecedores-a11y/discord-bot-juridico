@@ -509,11 +509,13 @@ const CATALOGO_ACOES = [
     quando: (p) => faseComJuiz(p) && p.tipo === 'Penal',
     botao: (numero) => mandadoCmd.botaoEmitirMandado(numero),
   },
-  {
-    id: 'solicitar_medida', grupo: 3, cargo: ['Promotor'],
-    quando: (p) => faseComJuiz(p) && p.tipo === 'Penal' && !!p.promotor,
-    botao: (numero) => medidaCmd.botaoSolicitarMedidaDireta(numero),
-  },
+  // "Solicitar medida" (medidaCmd.botaoSolicitarMedidaDireta) FOI REMOVIDA do painel em
+  // 20/08/2026, a pedido do operador: o MP não pede cautelar por um botão próprio. Ele requer pela
+  // "Manifestação do MP" classificada como REQUERIMENTO, que já vai à apreciação do Juiz — e é o
+  // Juiz quem expede o mandado, por `emitir_mandado` acima (caminho independente, que não passa
+  // por medida nenhuma). O handler `painel:acao:medida:solicitardireta` continua roteado em
+  // painel.js DE PROPÓSITO: solicitações já feitas precisam continuar decidíveis pelo Juiz
+  // (deferirdireta/indeferirdireta). Não recrie o botão sem falar com o operador.
   {
     id: 'registrar_depoimento', grupo: 3, cargo: ['Juiz', 'Promotor', 'Delegado'],
     quando: (p) => faseComJuiz(p) && p.tipo === 'Penal',
@@ -619,8 +621,9 @@ const HUBS_PROCESSO = [
     id: 'hubmp', label: '🏛️ Ministério Público', estilo: ButtonStyle.Primary,
     visivel: (p) => p.tipo === 'Penal',
     // O "peticionar" do MP é a Manifestação do MP (o gate de peticionar é advogado-parte; o MP
-    // manifesta/requer por aqui — oferecer denúncia, arquivar, medida, requerimento livre).
-    acoes: ['manifestacao_mp', 'solicitar_medida', 'registrar_depoimento', 'anexar_prova'],
+    // manifesta/requer por aqui — oferecer denúncia, arquivar e requerimento livre). A CAUTELAR
+    // também sai daqui: virou requerimento como outro, que o Juiz aprecia e cumpre expedindo mandado.
+    acoes: ['manifestacao_mp', 'registrar_depoimento', 'anexar_prova'],
   },
   {
     id: 'hubadvogado', label: '📎 Advogado / Defesa', estilo: ButtonStyle.Secondary,
@@ -3042,12 +3045,14 @@ async function voltarFase(interaction, chave) {
 }
 
 // ---- Manifestação do Ministério Público (prompt_manifestacao_mp) ----
-// Ponto ÚNICO de atuação do MP dentro do processo penal. NÃO duplica os fluxos: roteia pros
-// handlers que já existem (oferecer/arquivar via modalParecerMp; medida cautelar via
-// medida.abrirSolicitarMedidaDireta) e acrescenta a "Manifestação/Requerimento livre" (documento
-// pela janela de upload da F5): manifestação junta direto aos autos; requerimento vira pendência
-// na fila do Juiz. Gate de entrada: membro do MP; cada handler roteado MANTÉM sua trava de "dono
-// do caso" (promotor do processo). Ciente de contexto: o botão vive no painel e carrega o número.
+// Ponto ÚNICO de atuação do MP dentro do processo penal. NÃO duplica os fluxos: a denúncia vai ao
+// gate (abrirEmissao 'denuncia_mp'), o arquivamento reusa o modalParecerMp de sempre, e a
+// "Manifestação/Requerimento livre" é o ato com TEOR — manifestação junta direto aos autos;
+// requerimento vira pendência na fila do Juiz. Desde 20/08/2026 a MEDIDA CAUTELAR também entra por
+// aqui, como requerimento: o MP não tem mais botão próprio de "Solicitar medida", e quem expede o
+// mandado é o Juiz, pelo hub dele. Gate de entrada: membro do MP; cada handler roteado MANTÉM sua
+// trava de "dono do caso" (promotor do processo). Ciente de contexto: o botão vive no painel e
+// carrega o número.
 
 function ehMembroDoMp(interaction) {
   return isAdmin(interaction) || isSuperStaff(interaction) || temCargo(interaction, 'Promotor') || temCargo(interaction, 'Procurador');
@@ -3062,14 +3067,14 @@ async function abrirManifestacaoMp(interaction, numero) {
   const processo = db.buscarPorNumero('processos', numero);
   if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
   if (processo.tipo !== 'Penal') return interaction.reply({ content: 'A manifestação do MP é para processos penais.', ephemeral: true });
-
   const opcoes = [];
   if (!processo.juiz) {
     opcoes.push({ label: 'Oferecer denúncia', value: 'oferecer', emoji: '⚖️' });
     opcoes.push({ label: 'Promover arquivamento', value: 'arquivar', emoji: '📦' });
-  } else {
-    opcoes.push({ label: 'Requerer medida cautelar', value: 'medida', emoji: '🔒' });
   }
+  // "Requerer medida cautelar" (value 'medida' → medida.abrirSolicitarMedidaDireta) SAIU daqui em
+  // 20/08/2026: a cautelar passou a ser pedida pela opção abaixo, classificada como REQUERIMENTO —
+  // que já nasce com documento e vai à apreciação do Juiz, e é o Juiz quem expede o mandado.
   opcoes.push({ label: 'Manifestação / Requerimento livre (c/ documento)', value: 'livre', emoji: '📝' });
 
   const select = new StringSelectMenuBuilder().setCustomId(`painel:select:processo:manifestacaomp:${numero}`).setPlaceholder('Ato do MP nesta fase').addOptions(opcoes);
@@ -3097,15 +3102,40 @@ async function tratarManifestacaoMp(interaction, numero) {
     }
     return interaction.showModal(modalParecerMp(numero, escolha));
   }
-  if (escolha === 'medida') return medidaCmd.abrirSolicitarMedidaDireta(interaction, numero);
   // BLOCO D — a manifestação livre é o ato do MP que tem TEOR, e por isso é a que entra no gate.
   // Bifurca por modo, como o `peticionar`: legado segue no modal antigo, processo novo vai para o
-  // formulário com selo. "medida" e "oferecer/arquivar" continuam nos fluxos próprios de sempre.
+  // formulário com selo. "oferecer/arquivar" continua no fluxo próprio de sempre.
   if (escolha === 'livre' && !ehLegado(processo)) {
     return require('../utils/emissaoPeca').abrirEmissao(interaction, 'manifestacao_mp_gated', numero);
   }
   if (escolha === 'livre') return interaction.showModal(modalManifestacaoLivre(numero));
   return interaction.reply({ content: 'Opção inválida.', ephemeral: true });
+}
+
+// Porta DIRETA para a denúncia GATED. Usada pelo botão "📝 Escrever denúncia" que o painel do MP
+// devolve quando o PROMOTOR abre o processo penal sem delegado (commands/painel.js) — ali ele já
+// respondeu que vai denunciar, então mandá-lo ao menu "oferecer / arquivar" seria perguntar de
+// novo o que ele acabou de responder.
+//
+// Faz EXATAMENTE o que `tratarManifestacaoMp` faz na opção 'oferecer': mesmas travas (membro do
+// MP + dono do caso), mesma bifurcação por modo, mesmo destino. Não é um segundo fluxo — é o
+// mesmo, sem o menu na frente.
+//
+// ATENÇÃO: até 20/08/2026 esse botão apontava para `processo:oferecer`, que cai em
+// executarParecerMp e posta teor+PNG DIRETO no canal, sem peça, sem selo e sem entrega ao Juiz.
+// Além do vazamento, o elo EFEITOS_POS_RECEBIMENTO.denuncia_mp (o Juiz que recebe assume o
+// processo) nunca disparava. Não reaponte para lá.
+async function abrirDenunciaGated(interaction, numero) {
+  if (!ehMembroDoMp(interaction)) return interaction.reply({ content: 'Só Promotor/Procurador podem oferecer denúncia.', ephemeral: true });
+  const processo = db.buscarPorNumero('processos', numero);
+  if (!processo) return interaction.reply({ content: 'Processo não encontrado.', ephemeral: true });
+  if (processo.tipo !== 'Penal') return interaction.reply({ content: 'A denúncia é para processos penais.', ephemeral: true });
+  if (!podeAtuarNoCaso(interaction, processo, 'promotor')) {
+    return interaction.reply({ content: `Só um(a) Promotor(a) pode oferecer denúncia. Responsável registrado: <@${processo.promotor}>.`, ephemeral: true });
+  }
+  // Processo legado não tem selo: cai no parecer de sempre, igual ao hub faz.
+  if (ehLegado(processo)) return interaction.showModal(modalParecerMp(numero, 'oferecer'));
+  return require('../utils/emissaoPeca').abrirEmissao(interaction, 'denuncia_mp', numero);
 }
 
 function modalManifestacaoLivre(numero) {
@@ -4400,6 +4430,7 @@ module.exports = {
   voltarFase,
   abrirManifestacaoMp,
   tratarManifestacaoMp,
+  abrirDenunciaGated,
   salvarManifestacaoLivre,
   decidirRequerimentoMp,
   salvarSentencaPorCrime,
