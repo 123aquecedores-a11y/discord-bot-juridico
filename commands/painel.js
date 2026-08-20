@@ -485,12 +485,14 @@ async function finalizarProcessoPenal(interaction) {
     // ele mesmo abriu o caso, a decisão de denunciar já está tomada. Mandá-lo ao menu
     // "oferecer / arquivar" seria perguntar o que ele acabou de responder.
     //
-    // O botão vai para `painel:acao:processo:escreverdenuncia` → processoCmd.abrirDenunciaGated,
-    // que é o MESMO caminho da opção "Oferecer denúncia" do hub do MP: peça `denuncia_mp` com
-    // selo, entrega in-game ao Juiz e, no recebimento, EFEITOS_POS_RECEBIMENTO.denuncia_mp faz o
-    // Juiz que recebeu assumir o processo.
+    // O botão vai para `painel:acao:processo:manifestacaomp` — a PORTA ÚNICA do MP, a mesma do hub
+    // dentro do processo. Peça `manifestacao_mp_gated` com selo, entregue em cena ao Juiz; o
+    // recebimento da primeira delas num penal sem juiz distribui o processo e o leva a Instrução.
     //
-    // CORRIGIDO EM 20/08/2026: apontava para `processo:oferecer`, que cai em executarParecerMp e
+    // O promotor NOMEIA o documento no próprio formulário ("Denúncia"), então o botão não precisa
+    // dizer ao bot que ato é este — nem existe mais um "tipo denúncia" a escolher.
+    //
+    // HISTÓRICO: até 20/08/2026 apontava para `processo:oferecer`, que cai em executarParecerMp e
     // despeja teor+PNG direto no canal, sem peça, sem selo e sem entrega. Não reaponte para lá.
     //
     // Um botão, e não a abertura automática do formulário, porque esta interação já foi
@@ -503,7 +505,7 @@ async function finalizarProcessoPenal(interaction) {
           + 'Escreva a denúncia agora — ela segue o caminho de sempre: vira peça com selo e é entregue ao Juiz em cena.',
         embeds: [],
         components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`painel:acao:processo:escreverdenuncia:${resultado.numero}`).setLabel('📝 Escrever denúncia').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`painel:acao:processo:manifestacaomp:${resultado.numero}`).setLabel('📝 Escrever denúncia').setStyle(ButtonStyle.Success),
         )],
       });
     }
@@ -711,19 +713,24 @@ function podeArquivarManualmente(interaction, modulo, entidade) {
   return false;
 }
 
-async function arquivarManual(interaction, modulo, numero) {
+// `opcoes.jaRespondido`: quando o arquivamento vem do fluxo de RAZÕES do Juiz
+// (processo.arquivarComRazoes), a interação já teve deferReply e já vai receber a resposta final de
+// lá. Responder aqui também estouraria a interação. Nesse modo a função devolve `{ erro }` ou
+// `{ ok: true }` em vez de falar — quem chamou decide o que dizer.
+async function arquivarManual(interaction, modulo, numero, opcoes = {}) {
+  const mudo = !!opcoes.jaRespondido;
+  const responder = (content) => (mudo ? { erro: content } : interaction.reply({ content, ephemeral: true }));
   const tabela = TABELAS_ARQUIVAR[modulo];
-  if (!tabela) return interaction.reply({ content: 'Tipo inválido.', ephemeral: true });
+  if (!tabela) return responder('Tipo inválido.');
   const entidade = db.buscarPorNumero(tabela, numero);
-  if (!entidade) return interaction.reply({ content: `${numero} não encontrado.`, ephemeral: true });
+  if (!entidade) return responder(`${numero} não encontrado.`);
   if (!podeArquivarManualmente(interaction, modulo, entidade)) {
-    return interaction.reply({ content: 'Você não tem permissão pra arquivar isso — só quem está responsável pelo caso, um Desembargador/Procurador ou Staff.', ephemeral: true });
+    return responder('Você não tem permissão pra arquivar isso — só quem está responsável pelo caso, um Desembargador/Procurador ou Staff.');
   }
-  if (!entidade.canalId) return interaction.reply({ content: 'Esse item não tem canal associado.', ephemeral: true });
+  if (!entidade.canalId) return responder('Esse item não tem canal associado.');
 
   const canal = await interaction.guild.channels.fetch(entidade.canalId).catch(() => null);
-  if (!canal) return interaction.reply({ content: 'Canal não encontrado (já pode ter sido apagado).', ephemeral: true });
-
+  if (!canal) return responder('Canal não encontrado (já pode ter sido apagado).');
   await canais.arquivarCanal(canal);
   // Marca o arquivamento manual (independe do status jurídico) pra a varredura de responsável
   // fantasma NÃO ressuscitar um caso que a Staff fechou de propósito (ver utils/responsaveis.js).
@@ -739,6 +746,7 @@ async function arquivarManual(interaction, modulo, numero) {
   }
   await auditoria.registrar(interaction.guild, { acao: `Arquivado manualmente (${modulo})`, executorId: interaction.user.id, referencia: numero });
 
+  if (mudo) return { ok: true };
   return interaction.reply({ content: `📦 ${numero} arquivado — canal travado e movido pra categoria Arquivados.`, ephemeral: true });
 }
 
@@ -928,7 +936,8 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'citacaocumprida') return processoCmd.marcarCitacaoCumprida(interaction, extra);
     if (acao === 'voltarfase') return processoCmd.abrirModalVoltarFase(interaction, extra);
     if (acao === 'manifestacaomp') return processoCmd.abrirManifestacaoMp(interaction, extra);
-    if (acao === 'escreverdenuncia') return processoCmd.abrirDenunciaGated(interaction, extra);
+    if (acao === 'arquivarcomrazoes') return processoCmd.abrirArquivarComRazoes(interaction, extra);
+    if (acao === 'despachar') return processoCmd.abrirDespacho(interaction, extra);
     if (acao === 'deferirreqmp') return processoCmd.decidirRequerimentoMp(interaction, extra, true);
     if (acao === 'indeferirreqmp') return processoCmd.decidirRequerimentoMp(interaction, extra, false);
     if (acao === 'addadvogado') return processoCmd.abrirAdicionarAdvogado(interaction, extra);
@@ -1049,7 +1058,20 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     if (acao === 'decidirreconsideracao') return medidaCmd.decidirReconsideracao(interaction, extra);
     if (acao === 'pedirreconsideracaojuiz') return medidaCmd.pedirReconsideracaoJuiz(interaction, extra);
     if (acao === 'decidirreconsideracaojuiz') return medidaCmd.decidirReconsideracaoJuiz(interaction, extra);
-    if (acao === 'solicitardireta') return medidaCmd.abrirSolicitarMedidaDireta(interaction, extra);
+    // APOSENTADO em 20/08/2026: a ABERTURA de medida cautelar pelo MP não existe mais. O MP requer
+    // pela Manifestação do MP, que já vai à apreciação do Juiz, e quem expede o mandado é o Juiz.
+    // Fechar a rota (e não só tirar o botão) é o que impede um botão sobrevivente numa mensagem
+    // antiga de reabrir o fluxo aposentado.
+    //
+    // A DECISÃO continua roteada logo abaixo, de propósito: medidas já pedidas precisam de
+    // desfecho, e sem deferir/indeferir elas ficariam pendentes para sempre.
+    if (acao === 'solicitardireta') {
+      return interaction.reply({
+        content: '📋 Este fluxo foi aposentado. O Ministério Público requer medidas pela **Manifestação do MP**, '
+          + 'no painel do processo — o pedido vai ao Juiz com selo e entrega, e é ele quem expede o mandado.',
+        ephemeral: true,
+      });
+    }
     if (acao === 'deferirdireta') return medidaCmd.deferirMedidaDireta(interaction, extra);
     if (acao === 'indeferirdireta') return medidaCmd.indeferirMedidaDireta(interaction, extra);
   }
@@ -1171,14 +1193,9 @@ async function tratarSelect(interaction, modulo, campo, extra) {
     return mandadoCmd.processarSelecaoDestinatario(interaction, extra);
   }
 
-  if (modulo === 'medida' && campo === 'tipodireta') {
-    return medidaCmd.processarSelecaoTipoDireta(interaction, extra);
-  }
-
-  if (modulo === 'medida' && campo === 'destinatariodireta') {
-    return medidaCmd.processarSelecaoDestinatarioDireta(interaction, extra);
-  }
-
+  // APOSENTADOS (20/08/2026): eram os passos 2 e 3 da abertura de medida pelo MP (tipo -> alvo).
+  // A abertura foi fechada em executarAcaoBotao; estes ficariam órfãos, e um select sobrevivente
+  // num cliente levaria a meio caminho de um fluxo que não termina mais.
   if (modulo === 'processo' && campo === 'testemunhadepoimento') {
     return processoCmd.processarSelecaoTestemunha(interaction, extra);
   }
@@ -1410,7 +1427,8 @@ async function tratarModal(interaction, modulo, acao, extra) {
     return rhCmd.contratarViaModal(interaction, usuarioId, cargo);
   }
   if (modulo === 'mandado' && acao === 'emitir') return mandadoCmd.emitirMandado(interaction, extra);
-  if (modulo === 'medida' && acao === 'solicitardireta') return medidaCmd.criarSolicitacaoMedidaDireta(interaction, extra);
+  // APOSENTADO (20/08/2026) junto com a abertura — ver a nota em executarAcaoBotao. Sem esta rota,
+  // um modal já aberto no cliente de alguém não consegue criar uma medida pelo fluxo antigo.
   if (modulo === 'processo' && acao === 'depoimento') return processoCmd.registrarDepoimentoHandler(interaction, extra);
   if (modulo === 'processo' && acao === 'anexarprova') return processoCmd.salvarProva(interaction, extra);
   if (modulo === 'peticao' && acao === 'anexarprova') return peticaoCmd.salvarProvaPeticao(interaction, extra);
@@ -1851,6 +1869,7 @@ async function postarPainelFixo(guild, client) {
 }
 
 module.exports = {
+  arquivarManual, // reusada por processo.arquivarComRazoes — o fecho do canal mora aqui, e num lugar só
   data: new SlashCommandBuilder().setName('painel').setDescription('Abre o painel interativo com todos os módulos em botões'),
 
   async execute(interaction) {

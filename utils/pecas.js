@@ -307,7 +307,7 @@ function novoDestinatario({ papel, habilitacaoId = null }, { gated, agora }) {
 // nome de exibição, e — mais importante — documento assinado não muda de assinante nem de partes
 // depois de emitido. Congelar aqui é o que torna a renderização determinística e o documento
 // reproduzível anos depois.
-function gerar({ processoTabela, processoNumero, tipo, autorId, autorPapel, texto, qualificacao = null, assinante = null, destinatarios = [], agora = Date.now() }) {
+function gerar({ processoTabela, processoNumero, tipo, autorId, autorPapel, texto, qualificacao = null, assinante = null, tituloLivre = null, destinatarios = [], agora = Date.now() }) {
   const processo = db.buscarPorNumero(processoTabela, processoNumero);
   if (!processo) return { ok: false, razao: 'processo não encontrado' };
 
@@ -331,6 +331,14 @@ function gerar({ processoTabela, processoNumero, tipo, autorId, autorPapel, text
     texto, // fonte da verdade; o PNG é renderizado a partir daqui (SPEC §5.1)
     qualificacao, // classe e partes, congeladas na emissão
     assinante,    // nome de exibição de quem assinou, congelado na emissão
+    // TÍTULO LIVRE (20/08/2026). Quando o ato admite nomenclatura própria — é o caso da Manifestação
+    // do MP, que virou a porta única do Ministério Público — quem escreve nomeia o documento:
+    // "Denúncia", "Pedido de prisão temporária", "Promoção de arquivamento". É RÓTULO: não aciona
+    // efeito, não roteia nada, nenhuma regra o lê. Congelado aqui pelo mesmo motivo de
+    // `qualificacao` e `assinante`: o servidor HTTP que imprime a página no jogo não tem Discord
+    // para recalcular nada, e documento assinado não muda de título depois de emitido.
+    // `null` = usa o título fixo do catálogo (utils/catalogoAtos.js).
+    tituloLivre: tituloLivre || null,
     modoEntrega: modo,
     gated,
     digitos: gated ? novosDigitos() : null,
@@ -683,6 +691,9 @@ function paraRenderizacao(pecaNumero, usuarioId, { ehStaff = false } = {}) {
       // que esta porta expõe de sensível.
       gated: peca.gated,
       texto: peca.texto, digitos: peca.digitos, autorId: peca.autorId, autorPapel: peca.autorPapel,
+      // Rótulo escolhido por quem escreveu, quando o ato admite (ver `gerar`). Sai junto porque o
+      // cabeçalho do PNG é montado a partir daqui — sem ele o documento cairia no título fixo.
+      tituloLivre: peca.tituloLivre || null,
       destinatarios: peca.destinatarios.map(d => ({ papel: d.papel, habilitacaoId: d.habilitacaoId, token: d.token })),
     },
   };
@@ -722,6 +733,7 @@ function resolverTokenPublico(token) {
         tipo: peca.tipo, gated: peca.gated, processoTipo: processo ? processo.tipo : null,
         texto: peca.texto, digitos: peca.digitos, codigoArquivo: peca.codigoArquivo,
         qualificacao: peca.qualificacao, assinante: peca.assinante, criadoEm: peca.criadoEm,
+        tituloLivre: peca.tituloLivre || null,
         autorId: peca.autorId, autorPapel: peca.autorPapel,
         tokenSelo: dest.token, papel: dest.papel, habilitacaoId: dest.habilitacaoId,
         pagina: achada.pagina,
