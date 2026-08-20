@@ -23,6 +23,9 @@ function resolverGuild(interaction) {
 }
 const devolutivaPoliciaCivil = require('../utils/devolutivaPoliciaCivil');
 const documentoPng = require('../services/gerarDocumentoPNG');
+// PAGINADO para o documento do mandado do referendo — o mais longo do bot, porque junta a
+// fundamentação do MP com a do Juízo. Página única o transformava em tira comprida.
+const { gerarPecaPNG } = require('../services/gerarPecaPNG');
 const diario = require('../utils/diarioOficial');
 const diarioAtos = require('../utils/diarioAtos');
 const { aguardarAnexoPDF, coletarAnexoPdf } = require('../utils/anexoPdf');
@@ -726,21 +729,25 @@ async function emitirMandadoDaMedida(interaction, medida, fundamentacaoJuiz, { r
   const medidaAtualizada = db.buscarPorNumero('medidas', numero);
   // Assinatura = quem clicou (o Juiz que referenda a medida, ou superstaff no lugar dele).
   const nomeAssinante = await documentoPng.nomeExibicao(interaction.guild, interaction.user.id);
-  const pngMandado = await documentoPng.gerarDocumentoPNG({
-    tipoDocumento: 'mandado_generico',
-    orgaoEmissor: 'judiciario',
-    subunidade: 'Comarca de São Paulo — Vara Criminal',
-    tituloDocumento: `MANDADO DE ${medida.tipo.toUpperCase()}`,
-    numeroProcesso: numeroMandado,
-    dataEmissao: documentos.dataExtenso(),
-    destinatario: medida.alvo,
-    corpoTexto: [
+  // PAGINADO, pelo mesmo gerador do mandado direto (20/08/2026). Este caminho — Juiz referenda a
+  // medida — tinha o MESMO defeito de página única do outro: o documento junta a fundamentação do
+  // MP com a do Juízo, então é justamente o mandado mais LONGO do bot, e era o que mais saía como
+  // tira comprida. `gated: false`: mandado é exclusão declarada por urgência (SPEC §11.1).
+  const paginasMandado = await gerarPecaPNG({
+    gated: false, token: null, digitos: null, codigoArquivo: null,
+    numeroPeca: null, numeroProcesso: numeroMandado,
+    titulo: `MANDADO DE ${medida.tipo.toUpperCase()}`,
+    orgao: 'PODER JUDICIÁRIO',
+    unidade: 'Comarca de São Paulo — Vara Criminal',
+    data: new Date().toLocaleDateString('pt-BR'),
+    qualificacao: null,
+    texto: [
       `Fundamentação do Ministério Público:\n${medida.fundamentacaoPromotor || '—'}`,
       '',
       `Fundamentação do Juízo:\n${fundamentacaoJuiz}`,
       ...(medida.codigoExterno ? ['', `Pedido advindo do Inquérito Policial nº ${medida.codigoExterno}.`] : []),
     ].join('\n'),
-    nomeAssinante,
+    assinante: nomeAssinante,
     cargoAssinante: 'Juiz de Direito',
   }).catch(err => { console.error('Falha ao gerar PNG do mandado:', err.message); return null; });
 
@@ -755,7 +762,15 @@ async function emitirMandadoDaMedida(interaction, medida, fundamentacaoJuiz, { r
         codigoExterno: medida.codigoExterno,
       })}`,
       components: [botaoCumprir(numeroMandado)],
-      ...(pngMandado ? { files: [{ attachment: pngMandado, name: `Mandado-${numeroMandado}.png` }] } : {}),
+      // Uma folha = um anexo, mesmo padrão de commands/mandado.js. Nome em template ÚNICO, sem
+      // aninhar nem ternário no `name:` — a varredura de testes-anexos-em-canal.js identifica o
+      // ponto pelo literal, e as duas formas truncam a captura.
+      ...(((paginasMandado || []).length) ? {
+        files: (paginasMandado || []).map((buf, i) => {
+          const fl = (paginasMandado || []).length > 1 ? `-fl${i + 1}` : '';
+          return { attachment: buf, name: `Mandado-${numeroMandado}${fl}.png` };
+        }),
+      } : {}),
     });
     // Registra o PNG do referendo em documentosAnexados — o mandado direto (mandado.js) já fazia
     // isso; sem isto a rastreabilidade do mandado ficava só no direto. Protocolo = processo
@@ -798,7 +813,11 @@ async function emitirMandadoDaMedida(interaction, medida, fundamentacaoJuiz, { r
     await auditoria.registrar(interaction.guild, { acao: 'Medida referendada — mandado emitido', executorId: interaction.user.id, referencia: `${numero} → Mandado ${numeroMandado}` });
   }
   await devolutivaPoliciaCivil.enviarDevolutivaMandado(medidaAtualizada, {
-    decisao: 'Deferido', fundamentacao: fundamentacaoJuiz, juizId: medida.juiz, numeroMandado, pngBuffer: pngMandado,
+    // PRIMEIRA folha na devolutiva à Polícia Civil: o canal deles recebe a via de rosto do mandado,
+    // e o documento completo continua no canal da medida. `pngBuffer` espera UM buffer, não a lista
+    // — mandar o array faria o anexo sair corrompido, sem erro visível.
+    decisao: 'Deferido', fundamentacao: fundamentacaoJuiz, juizId: medida.juiz, numeroMandado,
+    pngBuffer: (paginasMandado || [])[0] || null,
   });
   // NÍVEL 2 — NÃO publica no Diário aqui (no deferimento/emissão): publicar antes do cumprimento
   // avisaria o alvo e queimaria a diligência. A publicação acontece só no cumprimento

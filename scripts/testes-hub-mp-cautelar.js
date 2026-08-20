@@ -98,7 +98,7 @@ console.log('1) VERIFICAÇÃO OBRIGATÓRIA — o Juiz expede mandado sem depende
     'async function processarSelecaoTipo',
     'async function processarSelecaoDestinatario',
     'async function emitirMandado(',
-    'async function emitirMandadosComFundamentacao',
+    'async function emitirMandadoComFundamentacao',
     'async function emitirMandadoNoProcesso',
   ];
   for (const cab of cadeia) {

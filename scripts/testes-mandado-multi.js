@@ -71,32 +71,41 @@ console.log('\n2) OS ÍNDICES sobrevivem à viagem pelo customId');
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n3) O CAMINHO INTEIRO leva TODOS os tipos até a emissão');
+console.log('\n3) O CAMINHO INTEIRO leva UM tipo até a emissão');
 // ---------------------------------------------------------------------------
-// Este é o bloco que impede o estado "marca 3 e sai 1" de voltar.
+// ESTE BLOCO FOI INVERTIDO EM 20/08/2026, por decisão do operador.
+//
+// Ele nasceu para impedir "marca 3 e sai 1": o select era múltiplo e um bug fazia só o primeiro
+// tipo virar mandado. A correção da época foi emitir UM MANDADO POR TIPO — e é isso que o operador
+// pegou em teste: o Juiz clicava uma vez e o canal recebia três mandados com a MESMA fundamentação
+// e o MESMO destinatário, o mesmo documento repetido de título trocado.
+//
+// A múltipla seleção foi REMOVIDA. Quem precisa de um mandado abrangente escolhe "Outro" e o
+// NOMEIA ("Mandado de prisão, busca e apreensão") — o nome é rótulo do documento, não uma lista
+// que o bot interpreta. As asserções abaixo agora guardam o oposto do que guardavam: uma seleção,
+// um documento.
+//
+// A maquinaria de índices no customId (seção 2) CONTINUA: ela existe por causa do teto de 100
+// caracteres, e vale para um índice tanto quanto valia para três.
 {
   const src = LER('commands', 'mandado.js');
   ok(src.length > 1000, '3z: o arquivo foi lido (scan não vazio)');
+  const codigo = src.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  ok(codigo.length > 1000, '3z2: e o código sem comentários foi extraído (a asserção não casa com a explicação)');
 
-  ok(/selectTipoMedidaCoercitiva\(`painel:select:mandado:tipo:\$\{numero\}`, \{ multi: true \}\)/.test(src),
-    '3a: o select do mandado é múltiplo');
-  ok(/const indices = indicesDeValores\(interaction\.values \|\| \[\]\)/.test(src),
-    '3b: a seleção guarda TODOS os valores marcados, não `values[0]`');
-  ok(!/const valor = interaction\.values\[0\]/.test(src),
-    '3c: e não sobrou nenhuma leitura de um único valor no fluxo do mandado');
-  ok(/valoresDeIndices\(indices\)/.test(src), '3d: o destinatário repassa a lista adiante');
+  ok(/selectTipoMedidaCoercitiva\(`painel:select:mandado:tipo:\$\{numero\}`\)/.test(codigo),
+    '3a: o select do mandado NÃO é múltiplo');
+  ok(!/multi: true/.test(codigo), '3a2: e não sobrou nenhuma opção de multi no fluxo do mandado');
 
-  const corpo = src.slice(src.indexOf('async function emitirMandado(interaction, chave)'), src.indexOf('async function emitirMandadoNoProcesso'));
+  const corpo = codigo.slice(codigo.indexOf('async function emitirMandado(interaction, chave)'), codigo.indexOf('async function emitirMandadoNoProcesso'));
   ok(corpo.length > 500, '3y: o corpo de emitirMandado foi encontrado (scan não vazio)');
-  ok(/const tipoValues = valoresDeIndices\(indices\)/.test(corpo), '3e: a emissão lê a lista completa');
-  ok(/for \(const tipoValue of tipoValues\)/.test(corpo),
-    '3f: e emite UM MANDADO POR TIPO — é aqui que "marca 3 e sai 1" morre');
-  ok(/emitidos\.push/.test(corpo) && /falhas\.push/.test(corpo),
-    '3g: cada emissão é contabilizada separadamente');
-  ok(/catch \(err\)/.test(corpo),
-    '3h: um tipo que falha não leva os outros junto — cada mandado é ato autônomo');
-  ok(/Nenhum mandado pôde ser emitido/.test(corpo),
-    '3i: e se nenhum sair, o Juiz é avisado em vez de receber silêncio');
+  ok(/const tipoValue = valoresDeIndices\(indices\)\[0\]/.test(corpo), '3e: a emissão lê UM tipo');
+  ok(!/for \(const tipoValue of/.test(corpo), '3f: sem laço — um clique, um documento');
+  ok(!/emitidos\.push|falhas\.push/.test(corpo), '3g: sem acumulador de vários mandados');
+  ok(/catch \(err\)/.test(corpo) || /catch \(err\)/.test(codigo.slice(codigo.indexOf('async function emitirMandadoComFundamentacao'))),
+    '3h: e a falha da emissão é tratada, não engolida');
+  ok(/O mandado não pôde ser emitido/.test(codigo),
+    '3i: se não sair, o Juiz é avisado em vez de receber silêncio');
 }
 
 // ---------------------------------------------------------------------------
