@@ -173,7 +173,9 @@ console.log('\n5) ESCOPO — só a denúncia destrava, e só o elo pedido');
   // operador; um tipo que apareça sem passar por essa decisão é o que este canário existe para
   // pegar. Atualizado em 19/08/2026: +razoes_recurso (o recurso passou a exigir entrega).
   const tiposComEfeito = Object.keys(emissao.EFEITOS_POS_RECEBIMENTO).sort();
-  ok(JSON.stringify(tiposComEfeito) === JSON.stringify(['denuncia_mp', 'razoes_recurso']),
+  // +solicitacao_medida em 19/08/2026: o requerimento do MP passou a ser entregue ao Juiz em cena,
+  // e é o recebimento que libera os botões de deferir/indeferir. Antes eles nasciam com o pedido.
+  ok(JSON.stringify(tiposComEfeito) === JSON.stringify(['denuncia_mp', 'razoes_recurso', 'solicitacao_medida']),
     '5b: só os elos decididos têm efeito de recebimento — nenhum a mais',
     tiposComEfeito.join(', '));
 }
