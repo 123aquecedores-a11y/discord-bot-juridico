@@ -86,7 +86,11 @@ console.log('1) O ponto único de decisão funciona (teste COMPORTAMENTAL, não 
 
 console.log('\n1b) Todos os atos migrados usam o PONTO ÚNICO, não a regra copiada');
 {
-  const esperado = { 'commands/processo.js': 5, 'commands/mandado.js': 1, 'commands/medida.js': 1 };
+  // -1 em commands/processo.js em 20/08/2026: a SENTENÇA deixou de usar `detalheDeAndamento`.
+  // Com o gate removido (decisão do operador), o teor não precisa mais ser restringido no
+  // andamento — o documento já está publicado no canal. O helper continua sendo o ponto único
+  // para quem ainda restringe.
+  const esperado = { 'commands/processo.js': 4, 'commands/mandado.js': 1, 'commands/medida.js': 1 };
   let total = 0;
   for (const [arq, n] of Object.entries(esperado)) {
     const src = fs.readFileSync(path.join(raiz, arq), 'utf-8');
@@ -94,7 +98,7 @@ console.log('\n1b) Todos os atos migrados usam o PONTO ÚNICO, não a regra copi
     total += visto;
     ok(visto === n, `1b-${arq}: ${n} ato(s) pelo ponto único`, `achou ${visto}`);
   }
-  ok(total === 7, '1b-total: os 7 atos migrados passam pelo mesmo lugar', `total ${total}`);
+  ok(total === 6, '1b-total: os 6 atos migrados passam pelo mesmo lugar', `total ${total}`);
 
   // Ninguém pode reintroduzir a regra DE ANDAMENTO por fora do helper. A checagem antes era ampla
   // demais e passou a acusar uma decisão LEGÍTIMA e diferente: se o PNG da intimação vai ou não ao
@@ -144,11 +148,19 @@ console.log('\n3) Nenhum ato NOVO gravando andamento sem passar por esta revisã
     //
     // A regra geral NÃO mudou: o teor da SENTENÇA, da denúncia e das peças do MP continua saindo
     // só pela entrega gated com selo. O que entra aqui é a fala ordinatória do Juízo nos autos.
-    'commands/processo.js': 29,
+    // 29 -> 27 em 20/08/2026: o despacho e o arquivamento saíram daqui e passaram a lavrar por
+    // `emissaoPeca.publicarAtoNoCanal` (que registra o andamento junto com a publicação do PNG).
+    // Não sumiram — mudaram de arquivo. Ver a contagem de utils/emissaoPeca.js abaixo, que subiu
+    // exatamente na mesma proporção.
+    'commands/processo.js': 27,
     'commands/mandado.js': 1,
     'commands/medida.js': 2,
     'commands/oficio.js': 2,
-    'utils/emissaoPeca.js': 5, // +1 em 19/08/2026: 'selo destravado pela supervisão' — REVISADO: o detalhe carrega o MOTIVO escrito pela supervisão (metadado do ato), nunca o teor da peça
+    // +1 em 20/08/2026: `publicarAtoNoCanal` lavra o andamento do ato publicado (sentença,
+    // despacho, razões do arquivamento). REVISADO, e é EXCEÇÃO DECLARADA: os três carregam TEOR de
+    // propósito — são a fala do Juízo nos autos, feita para ser lida, e o documento já vai
+    // publicado no canal junto. Ver a razão PUBLICADO em scripts/testes-anexos-em-canal.js.
+    'utils/emissaoPeca.js': 6, // +1 em 19/08/2026: 'selo destravado pela supervisão' — REVISADO: o detalhe carrega o MOTIVO escrito pela supervisão (metadado do ato), nunca o teor da peça
     // +1 em 19/08/2026: 'juiz_designado' (elo denúncia recebida → destrava o juiz) — REVISADO: o detalhe diz QUEM assumiu e que o caso foi para instrução; é metadado da distribuição, não tem nada do teor da denúncia
     'utils/supervisao.js': 2,
   };

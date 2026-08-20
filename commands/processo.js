@@ -3221,6 +3221,12 @@ async function decidirRequerimentoMp(interaction, chave, deferir) {
 // o réu perde se foi condenado em ALGUM crime e a acusação perde se houve absolvição em ALGUM —
 // os dois lados podem ter interesse recursal simultâneo (antes era mutuamente exclusivo).
 function ladosQuePerderam(processo) {
+  // ARQUIVAMENTO SEM MÉRITO (20/08/2026). Não há `resultado` nem `sentencaPorCrime` — o Juiz
+  // encerrou o caso sem julgar. Quem perde é a ACUSAÇÃO: o processo que ela queria em curso morreu
+  // sem decisão. O réu/defesa venceu, e por isso não recorre — mesma lógica de "quem perdeu
+  // recorre" que vale na sentença e na petição administrativa.
+  if (arquivadoSemMerito(processo)) return { perdeuReu: false, perdeuAcusacao: true };
+
   const spc = processo.sentencaPorCrime;
   if (processo.tipo === 'Penal' && Array.isArray(spc) && spc.length) {
     return { perdeuReu: spc.some(s => s.resultado === 'Condenado'), perdeuAcusacao: spc.some(s => s.resultado === 'Absolvido') };
@@ -3231,6 +3237,8 @@ function ladosQuePerderam(processo) {
   };
 }
 
+const arquivadoSemMerito = (p) => p && p.status === 'Arquivado sem julgamento de mérito';
+
 function podeRecorrer(interaction, processo) {
   if (isSuperStaff(interaction)) return true;
   const uid = interaction.user.id;
@@ -3240,16 +3248,34 @@ function podeRecorrer(interaction, processo) {
   // perdeu (absolvição em ao menos um). Como agora não são exclusivos, testa o lado de quem clica.
   const ehReuOuDefesa = (processo.reus || []).includes(uid) || (processo.habilitacoes || []).some(h => h.advogadoId === uid && h.status === 'Aprovado');
   if (perdeuReu && ehReuOuDefesa) return true;
+
+  // No ARQUIVAMENTO a acusação é o MP como ÓRGÃO, não só o promotor titular — mesma decisão de
+  // 19/08/2026 (atos por cargo) e o mesmo critério já usado na petição administrativa, onde o MP
+  // recorre do deferimento por `cobreOPapel`. Sem isso, promotor de férias = arquivamento
+  // irrecorrível.
+  if (perdeuAcusacao && arquivadoSemMerito(processo) && processo.tipo === 'Penal') {
+    return uid === processo.promotor || rh.cobreOPapel(uid, 'Promotor');
+  }
   if (perdeuAcusacao && (processo.tipo === 'Penal' ? uid === processo.promotor : uid === processo.autor)) return true;
   return false;
 }
 
 // Explica o motivo real da recusa, não só a regra abstrata — quem tenta recorrer sem
-// ter perdido precisa entender que perdeu por não ter perdido, não só "você não pode".
 function explicarNegacaoRecurso(interaction, processo) {
   const uid = interaction.user.id;
   const ehReuOuDefesa = (processo.reus || []).includes(uid) || (processo.habilitacoes || []).some(h => h.advogadoId === uid && h.status === 'Aprovado');
-  const ehAutorOuPromotor = processo.tipo === 'Penal' ? uid === processo.promotor : uid === processo.autor;
+  const ehMp = uid === processo.promotor || rh.cobreOPapel(uid, 'Promotor');
+  const ehAutorOuPromotor = processo.tipo === 'Penal' ? ehMp : uid === processo.autor;
+
+  // O ARQUIVAMENTO tem recusa própria: dizer "você venceu a causa" a quem foi absolvido sem
+  // julgamento seria descrever um resultado que não existe.
+  if (arquivadoSemMerito(processo)) {
+    if (ehReuOuDefesa) {
+      return 'Você não pode recorrer: o processo foi **arquivado sem julgamento de mérito**, ou seja, encerrou a seu favor. '
+        + 'Quem perde com o arquivamento é a acusação, e é o Ministério Público quem tem o recurso liberado.';
+    }
+    return 'Você não pode recorrer: você não é parte deste processo. Do arquivamento sem mérito recorre o Ministério Público.';
+  }
 
   if (!ehReuOuDefesa && !ehAutorOuPromotor) {
     return 'Você não pode recorrer: você não é parte deste processo (nem réu/defesa, nem autor/Promotor).';
@@ -3961,91 +3987,51 @@ async function executarSentenca(interaction, numero, modo) {
     ? processo.sentencaPorCrime.map(s => `${s.nome} (Art. ${s.codigo_artigo}) — ${s.resultado}`).join('; ')
     : ((processo.crimes || []).map(c => crimeLabel(c)).join(', ') || 'crime não especificado');
 
-  const TIPO_DOCUMENTO_SENTENCA = {
-    'Penal:Condenado': 'sentenca_penal_condenatoria', 'Penal:Absolvido': 'sentenca_penal_absolutoria',
-    'Civil:Procedente': 'sentenca_civel_procedente', 'Civil:Improcedente': 'sentenca_civel_improcedente',
-  };
-  const tipoDocumento = TIPO_DOCUMENTO_SENTENCA[`${processo.tipo}:${resultado}`];
-
-  const pngSentenca = await documentoPng.gerarDocumentoPNG({
-    tipoDocumento, orgaoEmissor: 'judiciario',
-    subunidade: processo.tipo === 'Penal' ? 'Comarca de São Paulo — Vara Criminal' : 'Comarca de São Paulo — Vara Cível',
-    tituloDocumento: 'SENTENÇA', numeroProcesso: numero, dataEmissao: documentos.dataExtenso(),
-    destinatario: processo.tipo === 'Penal' ? 'Réu(s)' : 'Autor e Réu(s)', corpoTexto: texto,
-    nomeReu, nomeAutor, crimeDescricao, pena, regime, nomeAssinante, cargoAssinante: 'Juiz de Direito',
-  }).catch(err => { console.error('Falha ao gerar PNG da sentença:', err.message); return null; });
-
-  // BLOCO E — SENTENÇA GATED. Em processo `ingame` a sentença vira PEÇA: só o juiz vê o teor, e
-  // cada advogado habilitado recebe a via dele em mãos, com selo (um token por habilitação, §11.3).
-  // O canal recebe METADADO. Sem isso o resultado ficava público no instante do julgamento, e
-  // ninguém precisaria procurar o juiz — que é exatamente o que a entrega in-game existe para
-  // forçar.
-  const sentencaGated = require('../utils/pecas').modoDoProcesso(processo) === 'ingame';
-  let msgSentenca = null;
-  if (sentencaGated) {
-    const habilitados = (processo.habilitacoes || [])
-      .filter(h => h.status === 'Aprovado')
-      .map(h => ({ papel: 'Advogado', habilitacaoId: h.id }));
-    // Sem defesa habilitada não há a quem entregar. A peça não é criada (seria órfã, pendente até a
-    // válvula sem dono) e o ato segue no caminho aberto — mesmo critério do arquivamento do MP.
-    // PIPELINE COMPLETO, não `pecas.gerar` cru. `gerar` só INSERE o registro: não rende PNG, não
-    // manda nada ao Juiz e — o que quebrava tudo — não posta o card com o botão **Entregar agora**.
-    // A sentença nascia no banco, o card mandava usar um botão que não existia em lugar nenhum, e
-    // a entrega em cena ficava inalcançável. `emitirAtoComoPeca` é o mesmo caminho que toda peça
-    // já percorria; a sentença é que estava fora dele.
-    let emissao = { ok: false };
-    if (habilitados.length) {
-      emissao = await require('../utils/emissaoPeca').emitirAtoComoPeca(interaction, {
-        tipo: 'sentenca', processoNumero: numero, texto,
-        destinatarios: habilitados, assinante: nomeAssinante,
-      }).catch(err => { console.error('Falha ao emitir a peça da sentença:', err.message); return { ok: false, razao: err.message }; });
-    }
-    const avisoEmissao = !habilitados.length
-      ? '⚠️ Não há defesa habilitada neste processo — a sentença foi lavrada sem peça de entrega.'
-      : (emissao.ok
-        ? `🔒 O teor fica restrito até a entrega pessoal a cada advogado. O PNG foi para a sua DM — use **Entregar agora** no canal do processo quando estiver em cena.${emissao.paginas ? '' : '\n⚠️ O PNG não pôde ser renderizado agora; o texto está salvo e a staff pode reemitir a imagem.'}`
-        : `⚠️ A sentença está lavrada nos autos, mas a peça de entrega falhou (${emissao.razao || 'motivo desconhecido'}). Peça à staff para reemitir — nada do julgamento se perdeu.`);
-    await interaction.editReply({
-      content: `⚖️ **Sentença proferida — ${numero}** (${resultado}).\n${avisoEmissao}`,
-      embeds: [embedProcesso(processo)], components: [botaoRecorrer(numero)],
-    });
-  } else {
-    msgSentenca = await interaction.editReply({
-      content: documentos.textoSentenca(processo), embeds: [embedProcesso(processo)], components: [botaoRecorrer(numero)],
-      ...(pngSentenca ? { files: [{ attachment: pngSentenca, name: `Sentenca-${numero}.png` }] } : {}),
-    });
-  }
-  // URL DE ANEXO NÃO É MAIS GUARDADA (SPEC §3.7): link assinado do CDN do Discord expira em 24h e
-  // vira link morto nos autos. O original é o registro no banco; o PNG se regera do texto.
-  const anexoUrlSentenca = null;
-
-  // A devolutiva à Polícia Civil manda o TEOR para outro canal. Em processo gated isso seria uma
-  // segunda porta de saída da sentença, por fora da entrega — o mesmo furo do Diário.
-  if (processo.tipo === 'Penal' && !sentencaGated) {
-    await devolutivaPoliciaCivil.enviarSentencaPoliciaCivil({ processo, texto: documentos.textoSentenca(processo), pngBuffer: pngSentenca });
-  }
-  // VAZAMENTO FECHADO EM 18/08/2026. `detalhe` do andamento guardava a fundamentação INTEIRA, e
-  // andamento não passa por podeVerTeor — a camada de visibilidade cobre a tabela `pecas`, não
-  // `andamentos`. Resultado: em processo `ingame`, qualquer parte lia a sentença completa pelo
-  // botão "Histórico" (embedHistorico → temAcessoTotal, que libera para todas as partes), sem
-  // nenhuma entrega pessoal ter acontecido. E o andamento é PERMANENTE: continua consultável
-  // depois do canal ser arquivado.
+  // SENTENÇA PUBLICADA NO TICKET (20/08/2026, decisão do operador). O gate da sentença foi
+  // REMOVIDO: ela deixa de ser peça entregue em cena e passa a ser publicada no canal do processo,
+  // com o PNG visível às partes na hora do julgamento.
   //
-  // Aqui o teor simplesmente não é persistido quando o processo é gated — não é "esconder na
-  // exibição", é não gravar. A fonte da sentença continua sendo `processos.sentenca`, que é onde
-  // a migração para o módulo gated (pendente) vai pendurar o selo e a entrega.
+  // O QUE ISSO REVOGA, dito por extenso para ninguém "reconsertar" achando que é regressão: até
+  // aqui, em processo `ingame` a sentença virava peça `sentenca`, o PNG ia por DM ao Juiz e cada
+  // advogado habilitado recebia a via dele com selo. Duas coisas mataram esse desenho na prática:
+  //   - processo SEM defesa habilitada não tinha a quem entregar, então nenhuma peça era criada —
+  //     e o `pngSentenca` gerado logo acima era DESCARTADO. A sentença não produzia documento
+  //     nenhum, em lugar nenhum. Foi o defeito que o operador pegou em teste;
+  //   - o custo de encenação para o ato que ENCERRA o processo não se pagava.
+  //
+  // O gate continua valendo para o resto (denúncia, manifestação do MP, intimação, razões de
+  // recurso) — o teste testes-anexos-em-canal.js guarda cada exceção, e esta está declarada lá.
+  //
+  // PAGINADO, e não `gerarDocumentoPNG` de página única: com a fundamentação por trechos a sentença
+  // chega a 12.000 caracteres, e em folha única o texto escorre para fora — foi o bug do mandado.
+  const emissaoPeca = require('../utils/emissaoPeca');
+  const publicacao = await emissaoPeca.publicarAtoNoCanal(interaction.guild, {
+    tipoChave: 'sentenca', numeroProcesso: numero, texto, autorId: interaction.user.id,
+    tituloDocumento: 'SENTENÇA',
+  });
+  const pngSentenca = (publicacao.paginas && publicacao.paginas[0]) || null;
+
+  await interaction.editReply({
+    content: documentos.textoSentenca(processo),
+    embeds: [embedProcesso(processo)],
+    components: [botaoRecorrer(numero)],
+  });
+  // O TEOR VAI PARA O ANDAMENTO. Enquanto a sentença era gated, `detalheDeAndamento` guardava só
+  // um resumo: o andamento é PERMANENTE e não passa por `podeVerTeor` (a camada de visibilidade
+  // cobre a tabela `pecas`, não `andamentos`), então gravar o teor ali era uma segunda porta de
+  // saída por fora da entrega. Com a sentença publicada no canal (20/08/2026) essa porta deixou de
+  // ser um furo — o documento já está à vista de quem tem acesso ao processo.
   await andamentos.registrar(interaction.guild, numero, {
     tipo: 'sentenca', titulo: `⚖️ Sentença — ${resultado}`,
-    detalhe: require('../utils/pecas').detalheDeAndamento(numero, texto,
-      'Sentença proferida. O teor fica restrito até a entrega pessoal ao advogado de cada parte.'),
-    executorId: interaction.user.id, anexoUrl: anexoUrlSentenca, metadata: { resultado, pena, regime },
+    detalhe: `Sentença proferida por <@${interaction.user.id}> — **${resultado}**.\n\n${texto}`,
+    executorId: interaction.user.id, anexoUrl: null, metadata: { resultado, pena, regime },
   });
   await repostarPainel(interaction.guild, numero);
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
-  // CANAL NÃO É ARQUIVADO EM PROCESSO GATED. A entrega da sentença acontece DEPOIS do julgamento —
-  // arquivar aqui fecharia o canal antes de o juiz conseguir entregar em mãos, e a sentença nunca
-  // sairia do gate. O arquivamento passa a ser consequência da entrega, não do julgamento.
-  if (canal && !sentencaGated) await canais.arquivarCanal(canal);
+  // O canal fecha JUNTO com o julgamento. Enquanto a sentença era gated ele ficava aberto, porque a
+  // entrega em cena acontecia depois — arquivar teria fechado o canal antes de o Juiz conseguir
+  // entregar. Sem gate, o documento já foi publicado acima e não há nada pendente a esperar.
+  if (canal) await canais.arquivarCanal(canal);
   await auditoria.registrar(interaction.guild, { acao: `Sentença: ${resultado}`, executorId: interaction.user.id, referencia: `Processo ${numero}` });
 
   // DIÁRIO OFICIAL — política cancelada em 18/08/2026 (ver o cabeçalho de utils/diarioOficial.js).
@@ -4055,7 +4041,11 @@ async function executarSentenca(interaction, numero, modo) {
   //
   // Condicional ao interruptor, não removido: em processo `aberto`/`legado` a publicação continua,
   // porque ali não há entrega pessoal a proteger.
-  if (!sentencaGated) {
+  //
+  // Lê `modoDoProcesso` direto, e não a antiga `sentencaGated`: a sentença deixou de ser gated em
+  // 20/08/2026, mas a política do DIÁRIO é outra decisão e não mudou junto. Amarrar as duas na
+  // mesma variável faria a sentença voltar ao Diário sem ninguém ter pedido.
+  if (require('../utils/pecas').modoDoProcesso(processo) !== 'ingame') {
     try {
       await diario.publicarNoDiario(interaction.guild, 'sentenca', {
         numero, tipoProcesso: processo.tipo, resultado, parte: nomeReu, magistrado: nomeAssinante,
@@ -4110,20 +4100,42 @@ async function arquivarComRazoes(interaction, tipoChave, numero) {
   await interaction.deferReply({ ephemeral: true });
   emissaoPeca.limparRascunho(interaction.user.id, tipoChave, numero);
 
-  // As RAZÕES entram nos autos ANTES de o canal fechar. Depois de `arquivarManual`, o canal está
-  // travado para envio — e um andamento que não conseguisse ser postado deixaria o arquivamento
-  // exatamente tão mudo quanto era antes.
-  await andamentos.registrar(interaction.guild, numero, {
-    tipo: 'processo_arquivado',
-    titulo: '📦 Processo arquivado pelo Juízo',
-    detalhe: `<@${interaction.user.id}> determinou o arquivamento do processo ${numero}.\n\n**Razões:**\n${razoes}`,
-    executorId: interaction.user.id,
-    metadata: { razoes },
-  }).catch((e) => console.error(`[processo] falha ao lavrar arquivamento de ${numero}:`, e.message));
+  // TUDO ANTES DE O CANAL FECHAR. `arquivarManual` trava o envio no canal; publicar depois seria
+  // publicar num canal mudo. Por isso o documento, o andamento e o botão de recurso saem primeiro,
+  // e só então o canal é arquivado.
+  //
+  // O botão "Recorrer" é o MESMO `botaoRecorrer` da sentença — mesmo customId, mesmo modal, mesma
+  // apelação. Ele fica na mensagem porque o painel do processo some em status terminal
+  // (STATUS_TERMINAIS_PAINEL), exatamente como acontece depois do julgamento.
+  const r = await emissaoPeca.publicarAtoNoCanal(interaction.guild, {
+    tipoChave, numeroProcesso: numero, texto: razoes, autorId: interaction.user.id,
+    tituloDocumento: 'DECISÃO DE ARQUIVAMENTO',
+    andamento: {
+      tipo: 'processo_arquivado',
+      titulo: '📦 Processo arquivado pelo Juízo',
+      detalhe: `<@${interaction.user.id}> determinou o arquivamento do processo ${numero}.\n\n**Razões:**\n${razoes}`,
+      metadata: { razoes },
+    },
+    componentes: [botaoRecorrer(numero)],
+  });
 
-  const r = await require('./painel').arquivarManual(interaction, 'processo', numero, { jaRespondido: true });
-  if (r && r.erro) return interaction.editReply({ content: r.erro });
-  return interaction.editReply({ content: `📦 Processo **${numero}** arquivado. As razões estão lavradas nos autos e visíveis às partes.` });
+  // O status é o que abre o recurso: `podeRecorrerDoArquivamento` lê 'Arquivado sem julgamento de
+  // mérito' — o mesmo status que a supervisão já usava para reabrir caso arquivado. Gravado ANTES
+  // do fecho do canal, senão o primeiro clique no botão encontraria o processo ainda "em Instrução"
+  // e recusaria o recurso.
+  db.atualizar('processos', numero, {
+    status: 'Arquivado sem julgamento de mérito',
+    arquivadoEm: new Date().toISOString(),
+    razoesArquivamento: razoes,
+    ...atosPorCargo.carimboDeExecucao(interaction.user.id),
+  });
+
+  const fecho = await require('./painel').arquivarManual(interaction, 'processo', numero, { jaRespondido: true });
+  if (fecho && fecho.erro) return interaction.editReply({ content: fecho.erro });
+  return interaction.editReply({
+    content: `📦 Processo **${numero}** arquivado.${r.postado ? ' A decisão foi publicada no canal com as razões' : ' ⚠️ Não consegui publicar no canal'}`
+      + ' — o Ministério Público pode recorrer ao Desembargador pelo botão na mensagem.',
+  });
 }
 
 // ---- (b) MANIFESTAR-SE NOS AUTOS / DESPACHO ----
@@ -4159,18 +4171,30 @@ async function publicarDespacho(interaction, tipoChave, numero) {
   await interaction.deferReply({ ephemeral: true });
   emissaoPeca.limparRascunho(interaction.user.id, tipoChave, numero);
 
-  // Nos autos E no canal. `andamentos.registrar` já posta no canal do processo — é o que torna o
-  // despacho visível às PARTES, que é o ponto do ato.
-  await andamentos.registrar(interaction.guild, numero, {
-    tipo: 'despacho_juiz',
-    titulo: `✍️ ${assunto}`,
-    detalhe: `Despacho de <@${interaction.user.id}> nos autos do processo ${numero}.\n\n${texto}`,
-    executorId: interaction.user.id,
-    metadata: { assunto },
-  }).catch((e) => console.error(`[processo] falha ao lavrar despacho em ${numero}:`, e.message));
+  // PNG PAGINADO + POSTAGEM NO CANAL + ANDAMENTO, tudo em `publicarAtoNoCanal`.
+  //
+  // A versão de 20/08/2026 (manhã) chamava só `andamentos.registrar`, com um comentário meu
+  // afirmando que ele "já posta no canal do processo". NÃO POSTA: grava no banco e espelha apenas o
+  // TÍTULO no canal de auditoria. O despacho ficava nos autos, truncado em 300 caracteres no
+  // histórico, e o canal não recebia nada — enquanto a resposta dizia "as partes já o veem no
+  // canal". Era bug de PUBLICAÇÃO, não de persistência.
+  const r = await emissaoPeca.publicarAtoNoCanal(interaction.guild, {
+    tipoChave, numeroProcesso: numero, texto, autorId: interaction.user.id,
+    tituloDocumento: assunto.toUpperCase(),
+    andamento: {
+      tipo: 'despacho_juiz',
+      titulo: `✍️ ${assunto}`,
+      detalhe: `Despacho de <@${interaction.user.id}> nos autos do processo ${numero}.\n\n${texto}`,
+      metadata: { assunto },
+    },
+  });
 
   await repostarPainel(interaction.guild, numero).catch(() => {});
-  return interaction.editReply({ content: `✍️ Despacho lavrado nos autos de **${numero}** — as partes já o veem no canal.` });
+  return interaction.editReply({
+    content: r.postado
+      ? `✍️ Despacho lavrado nos autos de **${numero}** e publicado no canal — as partes já o veem.`
+      : `✍️ Despacho lavrado nos autos de **${numero}**. ⚠️ Não consegui postar no canal (ele pode ter sido arquivado) — o texto está no histórico.`,
+  });
 }
 // Registrados no load: o "Enviar" do painel de trechos de cada decisão do Juiz. Ver FINALIZADORES
 // em utils/emissaoPeca.js — mesmo rascunho, desfechos diferentes.
@@ -4509,6 +4533,7 @@ module.exports = {
   voltarFase,
   abrirManifestacaoMp,
   abrirArquivarComRazoes,
+  podeRecorrer, explicarNegacaoRecurso, // exportadas para teste: a regra de acesso ao recurso
   arquivarComRazoes,   // exportadas para teste: sao os FINALIZADORES, chamados pelo router de pecas
   publicarDespacho,
   abrirDespacho,

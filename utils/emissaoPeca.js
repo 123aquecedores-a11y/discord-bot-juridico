@@ -1127,6 +1127,85 @@ async function renderizar(guild, peca, cfg) {
   return porDestinatario;
 }
 
+// ---------------------------------------------------------------------------
+// ATO PUBLICADO NOS AUTOS — documento sem selo, postado no canal (20/08/2026)
+// ---------------------------------------------------------------------------
+// Terceira coisa que se pode fazer com o rascunho por trechos, ao lado de "virar peça" e "virar o
+// corpo de outro ato": PUBLICAR. O ato do Juízo que fala nos autos — despacho, razões do
+// arquivamento — é documento de verdade, com brasão e paginação, mas NÃO é peça entregue:
+//
+//   - sem selo, sem token, sem janela de entrega (`gated: false`);
+//   - postado NO canal do processo, visível às partes na hora;
+//   - registrado em `andamentos`, que é o histórico dos autos.
+//
+// POR QUE ESTA FUNÇÃO EXISTE (bug de 20/08/2026, pego em teste pelo operador): eu escrevi
+// `publicarDespacho` e `arquivarComRazoes` chamando só `andamentos.registrar`, com um comentário
+// afirmando que ele "já posta no canal do processo". NÃO POSTA — `andamentos.registrar` grava no
+// banco e espelha apenas o TÍTULO no canal de auditoria. O texto ficava nos autos (recuperável
+// pelo botão "📜 Histórico"), truncado em 300 caracteres, e o canal não recebia nada. A mensagem
+// dizia "as partes já o veem no canal" e não havia nada para ver.
+//
+// A lição: afirmação sobre o comportamento de uma função tem que ser verificada, não lembrada.
+//
+// REUSA `gerarPecaPNG` — o gerador PAGINADO, o mesmo das peças. Não `gerarDocumentoPNG`, que é
+// página única: um despacho de três trechos sairia com o texto escorrendo para fora da folha, que
+// foi exatamente o bug do mandado.
+async function publicarAtoNoCanal(guild, { tipoChave, numeroProcesso, tabela = null, texto, tituloDocumento = null, autorId, andamento = null, componentes = [] }) {
+  const cfg = TIPOS[tipoChave];
+  if (!cfg) return { ok: false, razao: 'tipo desconhecido' };
+  const alvo = tabela || cfg.tabela;
+  const processo = db.buscarPorNumero(alvo, numeroProcesso);
+  if (!processo) return { ok: false, razao: 'processo não encontrado' };
+
+  let paginas = null;
+  try {
+    paginas = await gerarPecaPNG({
+      gated: false,            // sem selo: não há entrega a destravar
+      token: null, digitos: null, codigoArquivo: null,
+      numeroPeca: null,        // não é peça: não tem número de peça
+      numeroProcesso,
+      titulo: tituloDocumento || cfg.titulo,
+      orgao: cfg.orgao,
+      unidade: unidadeDoProcesso(processo),
+      data: new Date().toLocaleDateString('pt-BR'),
+      qualificacao: qualificacao(processo, alvo),
+      texto,
+      assinante: await nomeExibicao(guild, autorId),
+      cargoAssinante: cfg.emissor,
+    });
+  } catch (e) {
+    // O documento não sair NÃO pode impedir o ato: o texto é a fonte da verdade, o PNG é a via.
+    console.error(`[ato] falha ao renderizar ${tipoChave} de ${numeroProcesso}:`, e.message);
+  }
+
+  // O ANDAMENTO PRIMEIRO. No arquivamento o canal é travado logo depois, e um andamento que não
+  // conseguisse ser lavrado deixaria o ato tão mudo quanto o bug que esta função corrige.
+  if (andamento) {
+    await andamentos.registrar(guild, numeroProcesso, { ...andamento, executorId: autorId })
+      .catch(e => console.error(`[ato] falha ao lavrar ${tipoChave} de ${numeroProcesso}:`, e.message));
+  }
+
+  const canal = processo.canalId ? await guild.channels.fetch(processo.canalId).catch(() => null) : null;
+  if (!canal) return { ok: true, paginas, postado: false };
+
+  // Nome do anexo num template ÚNICO, sem aninhar e sem ternário no `name:`: a varredura de
+  // scripts/testes-anexos-em-canal.js identifica o ponto pelo literal do `name:`. Template dentro
+  // de template trunca a captura, e um ternário faz ela capturar o nome da VARIÁVEL — nos dois
+  // casos o inventário passa a vigiar um nome que não existe.
+  const arquivos = (paginas || []).map((buf, i) => {
+    const folha = (paginas || []).length > 1 ? `-fl${i + 1}` : '';
+    return { attachment: buf, name: `ato-${numeroProcesso}${folha}.png` };
+  });
+  const mensagem = await canal.send({
+    content: andamento ? `📋 **${andamento.titulo}** — processo ${numeroProcesso}, por <@${autorId}>.` : null,
+    ...(arquivos.length ? { files: arquivos } : {}),
+    ...(componentes.length ? { components: componentes } : {}),
+  }).catch(e => { console.error(`[ato] falha ao postar ${tipoChave} em ${numeroProcesso}:`, e.message); return null; });
+
+  return { ok: true, paginas, postado: !!mensagem, mensagem };
+}
+
+
 // Por DM, e não no canal do processo: o canal é compartilhado com o destinatário, e postar ali
 // entregaria o teor antes da cena.
 //
@@ -1653,6 +1732,7 @@ async function publicarRelatorioSemanal(guild, { agora = Date.now() } = {}) {
 module.exports = {
   router, TIPOS, tipoAtivo, abrirEmissao, criarPeca, entregarAgora, encerrarEntrega,
   receberTrecho, verRascunho, desfazerTrecho, abrirModalTrecho, abrirRecebimento, anexarAoRascunho,
+  publicarAtoNoCanal, // ato do Juízo publicado nos autos: PNG paginado, sem selo, postado no canal
   estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA, TTL_RASCUNHO_MS,
   verificarValvulaEEncerramento, publicarRelatorioSemanal, unidadeDoProcesso,
   qualificacao, // exportada para teste: e ela que classifica o rito no cabecalho do documento

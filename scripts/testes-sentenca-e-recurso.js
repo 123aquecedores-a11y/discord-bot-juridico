@@ -91,33 +91,56 @@ console.log('\n2) A REGRA do resultado agregado');
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n3) A SENTENÇA passa pelo pipeline completo de emissão');
+console.log('\n3) A SENTENÇA é PUBLICADA nos autos, pelo gerador paginado');
 // ---------------------------------------------------------------------------
+// MUDOU EM 20/08/2026, por decisão do operador: a sentença deixou de ser peça entregue em cena e
+// passou a ser publicada no canal do processo. Esta seção antes cobrava `emitirAtoComoPeca`; agora
+// cobra `publicarAtoNoCanal`. O pipeline de PEÇA continua sendo testado logo abaixo, porque as
+// outras peças (denúncia, manifestação, razões, intimação) continuam usando-o.
+//
+// A razão da mudança, para não ser desfeita por engano: processo SEM defesa habilitada não tinha a
+// quem entregar, nenhuma peça era criada, e o PNG gerado logo antes era DESCARTADO. A sentença não
+// produzia documento em lugar nenhum — nem canal, nem DM.
 {
   const src = LER('commands', 'processo.js');
   const corpo = src.slice(src.indexOf('async function executarSentenca'));
   ok(corpo.length > 1000, '3z: o corpo de executarSentenca foi encontrado (scan não vazio)');
 
-  ok(/emitirAtoComoPeca/.test(corpo), '3a: a sentença emite pelo pipeline completo');
+  ok(/publicarAtoNoCanal\(/.test(corpo), '3a: a sentença é publicada pelo ponto único de ato do Juízo');
   ok(!/pecas'\)\.gerar\(/.test(corpo) && !/pecas\.gerar\(/.test(corpo),
-    '3b: e NÃO chama mais pecas.gerar cru — era isso que pulava o PNG e o botão de entrega');
+    '3b: e NÃO chama pecas.gerar cru — era isso que pulava o PNG e o botão de entrega');
+  ok(!/emitirAtoComoPeca/.test(corpo), '3b2: nem emite peça — não há entrega em cena a fazer');
 
-  // O pipeline precisa mesmo fazer as quatro coisas; sem isso a troca acima seria cosmética.
+  // PAGINADO. A fundamentação por trechos chega a 12.000 caracteres; em folha única o texto escorre
+  // para fora da página — foi o bug do mandado, e é o motivo de não usar `gerarDocumentoPNG` aqui.
   const emi = LER('utils', 'emissaoPeca.js');
+  const pub = emi.slice(emi.indexOf('async function publicarAtoNoCanal'));
+  const fimPub = pub.search(/\r?\n\}\r?\n/);
+  const corpoPub = pub.slice(0, fimPub < 0 ? pub.length : fimPub);
+  ok(corpoPub.length > 400 && corpoPub.length < 4000, '3z2: o corpo de publicarAtoNoCanal foi RECORTADO', `${corpoPub.length} chars`);
+  ok(/gerarPecaPNG\(/.test(corpoPub), '3c: publica pelo gerador PAGINADO');
+  ok(/gated: false/.test(corpoPub), '3d: sem selo — não é peça entregue');
+  ok(/canal\.send\(/.test(corpoPub), '3e: e posta NO canal do processo, visível às partes');
+  ok(/andamentos\.registrar\(/.test(corpoPub), '3f: lavrando o andamento junto');
+  // A ORDEM importa: no arquivamento o canal é travado logo depois. Andamento antes do send.
+  ok(corpoPub.indexOf('andamentos.registrar') < corpoPub.indexOf('canal.send'),
+    '3f2: o andamento é lavrado ANTES da postagem — no arquivamento o canal fecha em seguida');
+
+  // O PIPELINE DE PEÇA continua inteiro, para as peças que continuam sendo peças.
   const fin = emi.slice(emi.indexOf('async function finalizarPeca('), emi.indexOf('async function emitirAtoComoPeca('));
-  ok(fin.length > 400, '3z2: o corpo de finalizarPeca foi encontrado (scan não vazio)');
-  ok(/renderizar\(/.test(fin), '3c: finalizarPeca RENDERIZA o PNG');
-  ok(/enviarAoEmissor\(/.test(fin), '3d: ...manda ao emissor (o Juiz recebe a via para imprimir no jogo)');
-  ok(/postarNoCanal\(/.test(fin), '3e: ...posta o card com o botão "Entregar agora" — o que faltava');
-  ok(/andamentos\.registrar\(/.test(fin), '3f: ...e lavra o andamento da emissão');
+  ok(fin.length > 400, '3z3: o corpo de finalizarPeca foi encontrado (scan não vazio)');
+  ok(/renderizar\(/.test(fin), '3g: finalizarPeca RENDERIZA o PNG');
+  ok(/enviarAoEmissor\(/.test(fin), '3h: ...manda ao emissor (a via para imprimir no jogo)');
+  ok(/postarNoCanal\(/.test(fin), '3i: ...posta o card com o botão "Entregar agora"');
+  ok(/andamentos\.registrar\(/.test(fin), '3j: ...e lavra o andamento da emissão');
 
   // criarPeca (o fluxo do formulário) tem que usar o MESMO pipeline, senão são duas cópias.
   const criar = emi.slice(emi.indexOf('async function criarPeca('), emi.indexOf('async function criarPeca(') + 4000);
-  ok(/finalizarPeca\(/.test(criar), '3g: criarPeca usa o mesmo finalizarPeca — uma implementação, não duas');
+  ok(/finalizarPeca\(/.test(criar), '3k: criarPeca usa o mesmo finalizarPeca — uma implementação, não duas');
 
-  // A falha da peça não pode desfazer o julgamento: a sentença é ato consumado.
-  ok(/A sentença está lavrada nos autos, mas a peça de entrega falhou/.test(corpo),
-    '3h: se a emissão falhar, o Juiz é avisado e a sentença CONTINUA lavrada');
+  // A falha do PNG não pode desfazer o julgamento: a sentença é ato consumado.
+  ok(/falha ao renderizar/.test(corpoPub) && /catch/.test(corpoPub),
+    '3l: se o PNG falhar, o ato CONTINUA — o texto é a fonte da verdade, o PNG é a via');
 }
 
 // ---------------------------------------------------------------------------
