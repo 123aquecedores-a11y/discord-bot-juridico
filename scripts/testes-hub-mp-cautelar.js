@@ -42,12 +42,17 @@ const LER = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf-8')
 // Um corpo de função, do cabeçalho até a primeira chave de fechamento na coluna zero, SEM as
 // linhas de comentário. Sem tirar comentário, uma asserção casa com a explicação em vez do código
 // — já aconteceu três vezes neste projeto.
+//
+// `\r?\n` e NÃO '\n}\n' literal: o repo roda em Windows e o git entrega CRLF. Com a busca literal
+// o corte não achava nada, o corpo virava o ARQUIVO INTEIRO, e toda asserção positiva passava por
+// acidente. Por isso `corpoDe` devolve '' quando não acha o cabeçalho e os canários abaixo cobram
+// TETO além de piso.
 function corpoDe(fonte, cabecalho) {
   const i = fonte.indexOf(cabecalho);
   if (i < 0) return '';
   const resto = fonte.slice(i);
-  const fim = resto.indexOf('\n}\n');
-  return resto.slice(0, fim < 0 ? resto.length : fim + 3)
+  const fim = resto.search(/\r?\n\}\r?\n/);
+  return resto.slice(0, fim < 0 ? resto.length : fim)
     .split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
 }
 
@@ -96,7 +101,7 @@ console.log('1) VERIFICAÇÃO OBRIGATÓRIA — o Juiz expede mandado sem depende
   for (const cab of cadeia) {
     const nome = cab.replace(/^(async )?function /, '').replace('(', '');
     const corpo = corpoDe(MANDADO, cab);
-    ok(corpo.length > 40, `1d-z (${nome}): a função foi localizada`);
+    ok(corpo.length > 40 && corpo.length < 4000, `1d-z (${nome}): o corpo foi RECORTADO (nem vazio, nem o arquivo todo)`, `${corpo.length} chars`);
     ok(!/'medidas'|solicitacao_medida|abrirSolicitarMedidaDireta|medidaCmd/.test(corpo),
       `1d (${nome}): não lê medida nem depende de uma`);
   }
@@ -134,12 +139,12 @@ console.log('\n2) Os botões de medida SAÍRAM do hub do MP');
 
   // A segunda porta: a opção dentro do menu da Manifestação.
   const abrir = corpoDe(PROC, 'async function abrirManifestacaoMp');
-  ok(abrir.length > 200, '2z3: abrirManifestacaoMp foi localizada');
+  ok(abrir.length > 200 && abrir.length < 3000, '2z3: o corpo de abrirManifestacaoMp foi RECORTADO', `${abrir.length} chars`);
   ok(!/Requerer medida cautelar/.test(abrir), '2f: a opção "Requerer medida cautelar" saiu do menu');
   ok(!/value: 'medida'/.test(abrir), '2g: e o valor dela também');
 
   const tratar = corpoDe(PROC, 'async function tratarManifestacaoMp');
-  ok(tratar.length > 200, '2z4: tratarManifestacaoMp foi localizada');
+  ok(tratar.length > 200 && tratar.length < 3000, '2z4: o corpo de tratarManifestacaoMp foi RECORTADO', `${tratar.length} chars`);
   ok(!/escolha === 'medida'/.test(tratar), '2h: e a rota que levava a abrirSolicitarMedidaDireta');
   ok(!/abrirSolicitarMedidaDireta/.test(tratar), '2i: nenhuma chamada sobrou no handler');
 }
@@ -185,7 +190,7 @@ async function secao5() {
   ok(typeof processoCmd.abrirDenunciaGated === 'function', '5a: abrirDenunciaGated existe e é exportada');
 
   const corpo = corpoDe(PROC, 'async function abrirDenunciaGated');
-  ok(corpo.length > 300, '5z: o corpo foi localizado (scan não vazio)');
+  ok(corpo.length > 300 && corpo.length < 2500, '5z: o corpo foi RECORTADO (nem vazio, nem o arquivo todo)', `${corpo.length} chars`);
   ok(/abrirEmissao\(interaction, 'denuncia_mp', numero\)/.test(corpo), '5b: e abre a emissão gated');
   ok(!/executarParecerMp|confirmarParecerMp/.test(corpo),
     '5c: sem passar pelo parecer que posta direto no canal');

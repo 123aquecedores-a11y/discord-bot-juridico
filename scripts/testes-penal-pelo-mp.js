@@ -144,8 +144,17 @@ console.log('\n3) O CAMINHO DE PRODUÇÃO: botão no painel do MP → denúncia'
   const proc = LER('commands', 'processo.js');
   ok(typeof processoCmd.abrirDenunciaGated === 'function', '3j: e o handler existe e é exportado');
   const corpo = proc.slice(proc.indexOf('async function abrirDenunciaGated'));
-  const corpoDenuncia = corpo.slice(0, corpo.indexOf('\n}\n') + 3).split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
-  ok(corpoDenuncia.length > 200, '3j-z: o corpo da função foi localizado (scan não vazio)');
+  // Fim da função = a primeira chave de fechamento na coluna zero. `\r?\n` e NÃO '\n}\n': o repo
+  // roda em Windows e o git entrega os arquivos com CRLF — com a busca literal o corte não achava
+  // nada, o corpo virava o arquivo inteiro e a asserção passava por acidente. Foi o canário
+  // (3j-z) que pegou.
+  const fimCorpo = corpo.search(/\r?\n\}\r?\n/);
+  const corpoDenuncia = corpo.slice(0, fimCorpo < 0 ? corpo.length : fimCorpo)
+    .split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+  // CANÁRIO com teto, não só piso: sem o teto, um corte que falha devolve o ARQUIVO INTEIRO e a
+  // asserção seguinte passa porque `abrirEmissao` aparece em outro lugar qualquer do arquivo.
+  ok(fimCorpo > 0 && corpoDenuncia.length > 200 && corpoDenuncia.length < 2500,
+    '3j-z: o corpo foi RECORTADO (nem vazio, nem o arquivo todo)', `${corpoDenuncia.length} chars`);
   ok(/abrirEmissao\(interaction, 'denuncia_mp', numero\)/.test(corpoDenuncia),
     '3k: ele abre a MESMA emissão gated do hub do MP');
   ok(!/executarParecerMp|confirmarParecerMp/.test(corpoDenuncia),
