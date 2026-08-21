@@ -126,4 +126,47 @@ function sortearPorCargo(cargo, { excluirIds = [] } = {}) {
   return ativos[Math.floor(Math.random() * ativos.length)].discordId;
 }
 
-module.exports = { CARGOS, CARGOS_MAGISTRATURA, COBERTURA, precisaRg, getCargo, temCargo, cobreOPapel, contratar, atualizarDados, demitir, setLicenca, listarPorCargo, magistradosSemRg, sortearJuiz, sortearPorCargo };
+
+// ---------------------------------------------------------------------------
+// IMPEDIMENTO POR SER PARTE (Fase 1) — quem é parte não lê o caso pelo cargo
+// ---------------------------------------------------------------------------
+// A leitura ampla da Fase 2 abre TODOS os tickets aos quatro cargos. Sem esta trava, o Juiz que é
+// réu num processo passaria a ler os autos do próprio caso — e a acompanhar o que a acusação faz
+// contra ele. É a razão de `precisaRg` existir e de `/rh sem-rg` cobrar RG desses cargos.
+//
+// CASA POR RG, e não por Discord ID, de propósito: o operador entra no caso como PERSONAGEM. O
+// mesmo jogador pode ser réu com uma identidade e magistrado com outra, e é o RG que diz quem é
+// quem no jogo. Casar por ID pegaria só o caso em que ele usou a mesma conta.
+//
+// FAIL-OPEN, e visível: magistrado SEM RG cadastrado não é impedido — não dá para casar o que não
+// existe. `/rh sem-rg` lista exatamente essas pessoas, e `contratar` avisa na hora. Falhar fechado
+// (impedir todo mundo sem RG) trancaria o tribunal inteiro por um campo em branco.
+const PAPEIS_QUE_IMPEDEM = ['reu', 'investigado', 'alvo', 'autor', 'testemunha'];
+
+// RGs de quem é PARTE neste registro, de qualquer papel que impeça. Lê `partes[]` (a fonte do
+// processo) e também os campos soltos que os outros ritos usam — medida guarda o alvo em `rgAlvo`,
+// a abertura penal guarda o réu em `reuRg`.
+function rgsDasPartes(registro) {
+  if (!registro) return [];
+  const rgs = (registro.partes || [])
+    .filter(p => p && p.rg && PAPEIS_QUE_IMPEDEM.includes(String(p.papel || '').toLowerCase()))
+    .map(p => String(p.rg).trim());
+  for (const campo of ['reuRg', 'rgAlvo', 'autorRg', 'requerenteRg']) {
+    if (registro[campo]) rgs.push(String(registro[campo]).trim());
+  }
+  // O réu da abertura penal pode vir como lista de RGs separados por vírgula (vários réus).
+  return [...new Set(rgs.flatMap(r => r.split(',').map(x => x.trim())).filter(Boolean))];
+}
+
+// Discord IDs dos magistrados/MP ativos que estão impedidos neste caso. É esta lista que vira
+// overwrite NEGATIVO por membro no canal — no Discord, deny por membro vence allow por cargo.
+function impedidosNoCaso(registro) {
+  const rgs = new Set(rgsDasPartes(registro).map(r => r.toUpperCase()));
+  if (!rgs.size) return [];
+  return db.todos('rh', r => r.ativo && CARGOS_MAGISTRATURA.includes(r.cargo) && r.rg
+    && rgs.has(String(r.rg).trim().toUpperCase()))
+    .map(r => r.discordId);
+}
+
+module.exports = { CARGOS, CARGOS_MAGISTRATURA, COBERTURA, precisaRg, getCargo, temCargo, cobreOPapel, contratar, atualizarDados, demitir, setLicenca, listarPorCargo, magistradosSemRg, sortearJuiz, sortearPorCargo,
+  PAPEIS_QUE_IMPEDEM, rgsDasPartes, impedidosNoCaso };

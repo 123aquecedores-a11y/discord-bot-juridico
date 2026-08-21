@@ -943,9 +943,13 @@ async function criarProcessoPenal({ guild, delegadoId, promotorId, crimesTexto, 
 
   // delegadoId pode ser nulo: denúncia nascida direto de um ato do MP (Requisição/Inquérito
   // Civil), sem inquérito policial por trás — o Promotor que expediu o ato é quem abre.
+  // IMPEDIMENTO já na criação, e não só no backfill: o canal nasce com o overwrite negativo de
+  // quem é parte. Sem isto haveria uma janela entre abrir o processo e o próximo boot em que o
+  // magistrado-réu leria o próprio caso.
   const canal = await canais.criarCanalTicket(guild, {
     categoriaId: config.categoriaProcessosPenaisId, prefixo: 'processo', numero,
     membros: [delegadoFinal, promotorFinal].filter(Boolean), bloquearConversa: true,
+    impedidos: rh.impedidosNoCaso({ numero, reuRg, partes: [] }),
   });
 
   db.inserir('processos', {
@@ -1012,6 +1016,7 @@ async function criarProcessoCivil({ guild, advogadoId, nomeAcao, autorNome, auto
   const canal = await canais.criarCanalTicket(guild, {
     categoriaId: config.categoriaProcessosCiveisId, prefixo: 'processo', numero,
     membros: [...new Set([advogadoId, autorDiscordId, reuDiscordId].filter(Boolean))], bloquearConversa: true,
+    impedidos: rh.impedidosNoCaso({ numero, reuRg, autorRg, partes: [] }),
   });
 
   // Exclui não só o advogado que abriu, mas autor e réu de verdade — nada impede que a mesma
@@ -1441,11 +1446,30 @@ async function intimarReu(interaction, numero) {
     destinatario: processo.reuNome || 'Réu(s)', corpoTexto: corpoComCodigo, nomeAssinante, cargoAssinante: 'Juiz de Direito',
   }).catch(err => { console.error('Falha ao gerar PNG da intimação do réu:', err.message); return null; });
 
+  // A VIA DO RÉU NÃO VAI MAIS AO CANAL (20/08/2026).
+  //
+  // O PNG tem o CÓDIGO DE HABILITAÇÃO impresso no corpo (documentos.corpoIntimacaoReu) e era
+  // anexado no canal do ticket. Enquanto o canal era só das partes, isso passava; com a leitura
+  // institucional (os quatro cargos veem todo ticket), o código de 4 dígitos que abre a defesa
+  // ficaria à vista de quem não é do caso — e ele só pode existir na via do réu, in-game.
+  //
+  // Agora a via vai por DM ao Juiz, que é quem a imprime e entrega em cena — mesmo padrão de
+  // `emissaoPeca.enviarAoEmissor`. Se a DM estiver fechada, o código continua na resposta efêmera
+  // abaixo, que só ele vê: o fluxo não trava, e o segredo não vaza para o canal.
+  const dm = await interaction.user.createDM().catch(() => null);
+  let viaEntregue = false;
+  if (dm && png) {
+    viaEntregue = await dm.send({
+      content: `📃 **Via do réu — processo ${numero}.** O código de habilitação está impresso no documento. Imprima e entregue ao réu em cena.`,
+      files: [{ attachment: png, name: `Intimacao-Reu-${numero}.png` }],
+    }).then(() => true).catch(() => false);
+  }
+
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) {
     await canal.send({
-      content: '📃 **Intimação do réu emitida** — a via do réu (com o código de habilitação) está no anexo e é a que vai pro jogo. Marque **"intimação cumprida"** quando o réu receber; só então o caso abre para a defesa se habilitar.',
-      files: png ? [{ attachment: png, name: `Intimacao-Reu-${numero}.png` }] : [],
+      content: '📃 **Intimação do réu emitida** — a via do réu (com o código de habilitação) foi enviada ao Juiz por mensagem privada, e é a que vai pro jogo. '
+        + 'Marque **"intimação cumprida"** quando o réu receber; só então o caso abre para a defesa se habilitar.',
       components: [new ActionRowBuilder().addComponents(botaoMarcarIntimacaoCumprida(numero))],
     }).catch(() => {});
   }
@@ -1453,7 +1477,13 @@ async function intimarReu(interaction, numero) {
     tipo: 'intimacao_reu_emitida', titulo: '📃 Intimação do réu emitida',
     detalhe: 'Intimação do réu emitida com código de habilitação impresso na via do réu.', executorId: interaction.user.id,
   });
-  return interaction.editReply({ content: `📃 Intimação do réu emitida. **Código de habilitação (via do réu): \`${codigo}\`** — já impresso na via do réu (anexo). Repasse ao réu no jogo. Quando ele receber, clique em **Marcar intimação cumprida**.` });
+  return interaction.editReply({
+    content: `📃 Intimação do réu emitida. **Código de habilitação (via do réu): \`${codigo}\`**\n`
+      + (viaEntregue
+        ? '📩 A via impressa foi para a sua DM — é ela que vai pro jogo. Repasse ao réu em cena.'
+        : '⚠️ Não consegui te mandar a via por DM (ela pode estar fechada). O código acima é o que importa — repasse ao réu no jogo.')
+      + '\nQuando ele receber, clique em **Marcar intimação cumprida**.',
+  });
 }
 
 // Espelho cível do "intimação do réu cumprida" do penal (19/08/2026). O que ele marca é o encontro

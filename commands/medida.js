@@ -460,6 +460,9 @@ async function solicitarMedida({ guild, delegadoId, promotorId, tipo, alvo, alvo
     prefixo: 'medida',
     numero,
     membros: [delegadoFinal, promotorFinal].filter(Boolean),
+    // `rotuloTipo` é o que faz busca e apreensão / quebra de sigilo nascerem RESTRITAS, sem
+    // leitura por cargo. `impedidos` fecha a janela entre criar o canal e o próximo boot.
+    rotuloTipo: tipo, impedidos: rh.impedidosNoCaso({ numero, rgAlvo }),
   });
 
   db.inserir('medidas', {
@@ -496,6 +499,7 @@ async function solicitarMedidaPeloMp({ guild, promotorId, tipo, alvo, alvoDiscor
   const canal = await canais.criarCanalTicket(guild, {
     categoriaId: config.categoriaMedidasId, prefixo: 'medida', numero,
     membros: [promotorId],
+    rotuloTipo: tipo, impedidos: rh.impedidosNoCaso({ numero, rgAlvo }),
   });
 
   db.inserir('medidas', {
