@@ -246,6 +246,14 @@ function secao5() {
 (async () => {
   await secao2();
   secao5();
+
+  // FECHA O CHROMIUM antes de sair. Este arquivo não renderiza nada de propósito — ele testa
+  // PERMISSÃO —, mas `contratarViaModal` chama `contratarComRole`, que emite a carteirinha, que
+  // lança o Puppeteer. O PNG é subproduto e ninguém o olha aqui; o custo, não: o Node não encerra
+  // enquanto o ChildProcess do Chromium e os sockets estiverem vivos, e o processo ficava preso
+  // até o desligamento por ociosidade (5 min). Medido: 301s, dos quais ~2s eram trabalho.
+  await require('../services/gerarDocumentoPNG').fecharBrowser();
+
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { falhas.forEach(f => console.log(`   - ${f.nome}${f.detalhe ? ` (${f.detalhe})` : ''}`)); process.exit(1); }
   try { fs.unlinkSync(DB_TESTE); } catch (_) {}

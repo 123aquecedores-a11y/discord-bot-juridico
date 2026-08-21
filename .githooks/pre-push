@@ -15,13 +15,17 @@
 
 echo ""
 echo "──────────────────────────────────────────────────────────────"
-echo "  pre-push: rodando a SUÍTE COMPLETA (inclui os testes de"
-echo "  Chromium). Leva ~5 min. Para pular numa emergência de"
+echo "  pre-push: SUÍTE COMPLETA com FULL_RENDER=1 (renderização"
+echo "  integral, sem stub). Para pular numa emergência de"
 echo "  verdade: git push --no-verify"
 echo "──────────────────────────────────────────────────────────────"
 echo ""
 
-npm run test:completo
+# FULL_RENDER=1 no hook, e não no `npm run test:completo`, de propósito: o dia a dia roda a suíte
+# dezenas de vezes e não precisa pagar a renderização integral a cada vez — mas o que CHEGA em
+# produção precisa ter passado por ela. O push é a fronteira, então é aqui que a flag entra.
+# Ver scripts/README-testes.md.
+FULL_RENDER=1 npm run test:completo
 resultado=$?
 
 if [ $resultado -ne 0 ]; then
