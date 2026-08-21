@@ -3,7 +3,8 @@ const {
   StringSelectMenuBuilder, UserSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const rh = require('../utils/rh');
-const { isAdmin, isSuperStaff } = require('../utils/permissoes');
+const { isAdmin, isSuperStaff, podeAdministrar, RECUSA_ADMINISTRATIVA } = require('../utils/permissoes');
+const logRh = require('../utils/logRh');
 const config = require('../config');
 const auditoria = require('../utils/auditoria');
 const db = require('../database/db');
@@ -44,7 +45,16 @@ async function aplicarApelido(membro, cargo, nomePersonagem) {
   return membro.setNickname(apelido).then(() => true).catch(() => false);
 }
 
-async function contratarComRole(guild, usuarioId, cargo, executorId = null, nomePersonagem = null, rg = null) {
+
+// Com que PODER a pessoa agiu. Congelado na linha do log: ler "Fulano demitiu" meses depois não
+// diz nada se Fulano já não for Procurador. Staff não tem cargo no /rh, e é isso que o fallback
+// nomeia — não é "desconhecido", é o poder que ela de fato usou.
+function cargoDoExecutor(executorId) {
+  const reg = rh.getCargo(executorId);
+  return (reg && reg.cargo) || 'Staff/Administração';
+}
+
+async function contratarComRole(guild, usuarioId, cargo, executorId = null, nomePersonagem = null, rg = null, motivo = null) {
   // Captura o cargo ATIVO anterior antes de contratar (rh.contratar desativa o registro antigo).
   const anterior = rh.getCargo(usuarioId);
   rh.contratar(usuarioId, cargo, nomePersonagem, rg);
@@ -66,7 +76,13 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
   const carteira = await carteirinha.emitirCarteirinha(guild, usuarioId)
     .catch(err => { console.error('[rh] falha ao emitir carteira:', err.message); return null; });
   if (executorId) {
-    await auditoria.registrar(guild, { acao: 'RH: contratação', executorId, referencia: `<@${usuarioId}> → ${cargo}${nomePersonagem ? ` ("${nomePersonagem}")` : ''}` });
+    await auditoria.registrar(guild, { acao: 'RH: contratação', executorId, referencia: `<@${usuarioId}> → ${cargo}${nomePersonagem ? ` ("${nomePersonagem}")` : ''}`, motivo });
+    // LOG PERSISTENTE, além da auditoria no canal: a auditoria é o AVISO (mensagem, some), isto é
+    // o ARQUIVO (tabela, consultável). Ver o cabeçalho de utils/logRh.js.
+    logRh.registrar({
+      acao: 'contratar', executorId, cargoExecutor: cargoDoExecutor(executorId),
+      alvoId: usuarioId, cargoAlvo: cargo, motivo, guildId: guild?.id,
+    });
   }
   // Publica a nomeação no Diário Oficial (try/catch — falha aqui não pode quebrar a contratação).
   // Cobre TODOS os caminhos que contratam: /rh contratar, aprovação de solicitação e aprovação de
@@ -99,6 +115,19 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
 // principal da Staff, então ele também passa a capturar RG (igual o /rh contratar slash). Ambos os
 // campos são OPCIONAIS: RG que faltar num cargo de magistratura dispara o aviso fail-open no submit
 // (não bloqueia). Pré-preenche com o cadastro atual (troca de cargo preserva nome/RG).
+
+// Modal de MOTIVO para as ações que o painel executava direto (demitir, licença). Elas mudam
+// quem pode o quê e agora exigem razão registrada — o mesmo que já vale no slash.
+// `chave` volta no customId para o handler saber sobre quem e o quê.
+function modalMotivoRh(acao, chave, titulo) {
+  const modal = new ModalBuilder().setCustomId(`painel:modal:rh:${acao}:${chave}`).setTitle(titulo.slice(0, 45));
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder().setCustomId('motivo').setLabel('Motivo — fica no log de RH')
+      .setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(300),
+  ));
+  return modal;
+}
+
 function modalContratarStaff(usuarioId, cargo) {
   const reg = rh.getCargo(usuarioId);
   const modal = new ModalBuilder().setCustomId(`painel:modal:rh:contratar:${usuarioId}#${cargo}`).setTitle(`Contratar — ${cargo}`.slice(0, 45));
@@ -106,19 +135,23 @@ function modalContratarStaff(usuarioId, cargo) {
   if (reg && reg.nomePersonagem) campoNome.setValue(reg.nomePersonagem);
   const campoRg = new TextInputBuilder().setCustomId('rg').setLabel('RG — necessário p/ magistrado/MP').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20);
   if (reg && reg.rg) campoRg.setValue(reg.rg);
+  // MOTIVO OBRIGATÓRIO (21/08/2026) — vai para o log de RH consultável. Nome e RG seguem
+  // opcionais; o motivo não, porque é o único campo que explica a decisão a quem auditar depois.
+  const campoMotivo = new TextInputBuilder().setCustomId('motivo').setLabel('Motivo da contratação').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(200);
   modal.addComponents(
     new ActionRowBuilder().addComponents(campoNome),
     new ActionRowBuilder().addComponents(campoRg),
+    new ActionRowBuilder().addComponents(campoMotivo),
   );
   return modal;
 }
 
 async function contratarViaModal(interaction, usuarioId, cargo) {
-  // Gate IGUAL ao do slash (/rh execute checa isAdmin): contratação é função de RH/admin, não
-  // decisão de mérito — por isso isAdmin, e NÃO o coringa isSuperStaff (que existe só pras decisões
-  // de mérito com responsável definido). Antes divergia dos dois caminhos; agora bate.
-  if (!isAdmin(interaction)) {
-    return interaction.reply({ content: 'Só Staff/Administração pode contratar.', ephemeral: true });
+  // Gate ÚNICO (21/08/2026): `podeAdministrar` — staff, ou Desembargador/Procurador pelo CARGO
+  // ATIVO NO RH. Antes era `isAdmin` aqui e no slash, cada um com a sua string de recusa; agora
+  // os dois caminhos batem, e quem perde o cargo no /rh perde a contratação no mesmo instante.
+  if (!podeAdministrar(interaction)) {
+    return interaction.reply({ content: RECUSA_ADMINISTRATIVA, ephemeral: true });
   }
   if (!usuarioId || !cargo || !rh.CARGOS.includes(cargo)) {
     return interaction.reply({ content: 'Contratação inválida (usuário/cargo).', ephemeral: true });
@@ -131,7 +164,7 @@ async function contratarViaModal(interaction, usuarioId, cargo) {
   await interaction.deferReply({ ephemeral: true });
   const nome = (interaction.fields.getTextInputValue('nome') || '').trim() || null;
   const rg = (interaction.fields.getTextInputValue('rg') || '').trim() || null;
-  await contratarComRole(interaction.guild, usuarioId, cargo, interaction.user.id, nome, rg);
+  await contratarComRole(interaction.guild, usuarioId, cargo, interaction.user.id, nome, rg, (interaction.fields.getTextInputValue('motivo') || '').trim());
   // Mesmo aviso fail-open do slash: magistrado/MP que ficou sem RG → impedimento não verificável.
   const reg = rh.getCargo(usuarioId);
   const aviso = rh.precisaRg(cargo) && !(reg && reg.rg)
@@ -160,7 +193,7 @@ function resumoDaDemissao(saiu) {
   return linhas.join('\n');
 }
 
-async function demitirComRole(guild, usuarioId, executorId = null) {
+async function demitirComRole(guild, usuarioId, executorId = null, motivo = null) {
   const registro = rh.getCargo(usuarioId);
   rh.demitir(usuarioId);
   if (registro) {
@@ -171,7 +204,11 @@ async function demitirComRole(guild, usuarioId, executorId = null) {
     }
   }
   if (executorId) {
-    await auditoria.registrar(guild, { acao: 'RH: demissão', executorId, referencia: `<@${usuarioId}>${registro ? ` (era ${registro.cargo})` : ''}` });
+    await auditoria.registrar(guild, { acao: 'RH: demissão', executorId, referencia: `<@${usuarioId}>${registro ? ` (era ${registro.cargo})` : ''}`, motivo });
+    logRh.registrar({
+      acao: 'demitir', executorId, cargoExecutor: cargoDoExecutor(executorId),
+      alvoId: usuarioId, cargoAlvo: registro ? registro.cargo : null, motivo, guildId: guild?.id,
+    });
   }
 
   // O CASO NÃO PODE FICAR SEM DONO (19/08/2026). Antes, a demissão só mexia no quadro; os casos
@@ -350,8 +387,8 @@ async function solicitarCargo(interaction, cargo) {
 // (aprovar → contratarComRole + followUp com apelido; negar → auditoria) fica ramificada por
 // `aprovar`, PRESERVANDO a ordem exata de cada uma.
 async function decidirSolicitacao(interaction, id, aprovar) {
-  if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
-    return interaction.reply({ content: `Só a staff pode ${aprovar ? 'aprovar' : 'negar'} solicitações de cargo.`, ephemeral: true });
+  if (!podeAdministrar(interaction)) {
+    return interaction.reply({ content: RECUSA_ADMINISTRATIVA, ephemeral: true });
   }
   const sol = db.buscarUm('solicitacoesCargo', s => s.id === Number(id));
   if (!sol) return interaction.reply({ content: 'Solicitação não encontrada.', ephemeral: true });
@@ -486,7 +523,7 @@ async function mostrarFichaFuncional(interaction) {
 // um Advogado, regenera e reenvia a carteirinha na DM. Log via auditoria. Não mexe em cargos nem
 // no apelido/roles do membro — só nos DADOS do cadastro. Fluxo botão→user-select→modal.
 function podeGerenciarDados(interaction) {
-  return isAdmin(interaction) || isSuperStaff(interaction);
+  return podeAdministrar(interaction);
 }
 
 async function abrirGerenciarDados(interaction) {
@@ -568,18 +605,25 @@ async function salvarGerenciarDados(interaction, usuarioId) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('rh')
-    .setDescription('Gestão de cargos jurídicos (só Staff/Administração)')
+    .setDescription('Gestão de cargos jurídicos (Staff, Desembargador ou Procurador)')
+    // MOTIVO OBRIGATÓRIO nas três ações que mudam quem pode o quê (21/08/2026). Elas deixaram de
+    // ser só da staff — Desembargador e Procurador também as praticam —, e um poder distribuído
+    // sem registro de razão é o que ninguém consegue auditar depois. Vai para `logRh`, consultável
+    // por "📜 Log de RH" no painel de Administração.
     .addSubcommand(sub => sub.setName('contratar').setDescription('Atribui um cargo jurídico a alguém')
       .addUserOption(o => o.setName('usuario').setDescription('Quem vai receber o cargo').setRequired(true))
       .addStringOption(o => o.setName('cargo').setDescription('Cargo jurídico').setRequired(true)
         .addChoices(...rh.CARGOS.map(c => ({ name: c, value: c }))))
+      .addStringOption(o => o.setName('motivo').setDescription('Por que esta contratação — fica no log de RH').setRequired(true))
       .addStringOption(o => o.setName('rg').setDescription('RG do personagem — necessário p/ magistrado/MP, impedimento casa por RG').setRequired(false)))
     .addSubcommand(sub => sub.setName('sem-rg').setDescription('Lista magistrados/MP ativos sem RG — impedimento não verificável'))
     .addSubcommand(sub => sub.setName('demitir').setDescription('Remove o cargo jurídico de alguém')
-      .addUserOption(o => o.setName('usuario').setDescription('Quem vai perder o cargo').setRequired(true)))
+      .addUserOption(o => o.setName('usuario').setDescription('Quem vai perder o cargo').setRequired(true))
+      .addStringOption(o => o.setName('motivo').setDescription('Por que esta demissão — fica no log de RH').setRequired(true)))
     .addSubcommand(sub => sub.setName('licenca').setDescription('Marca/desmarca alguém como afastado')
       .addUserOption(o => o.setName('usuario').setDescription('Quem entra/sai de licença').setRequired(true))
-      .addBooleanOption(o => o.setName('afastado').setDescription('true = entra de licença, false = volta ativo').setRequired(true)))
+      .addBooleanOption(o => o.setName('afastado').setDescription('true = entra de licença, false = volta ativo').setRequired(true))
+      .addStringOption(o => o.setName('motivo').setDescription('Por que — fica no log de RH').setRequired(true)))
     .addSubcommand(sub => sub.setName('listar').setDescription('Lista quem está em cada cargo')
       .addStringOption(o => o.setName('cargo').setDescription('Cargo jurídico').setRequired(true)
         .addChoices(...rh.CARGOS.map(c => ({ name: c, value: c }))))),
@@ -587,8 +631,8 @@ module.exports = {
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
 
-    if (!isAdmin(interaction)) {
-      return interaction.reply({ content: 'Só Staff/Administração pode usar comandos de RH.', ephemeral: true });
+    if (!podeAdministrar(interaction)) {
+      return interaction.reply({ content: RECUSA_ADMINISTRATIVA, ephemeral: true });
     }
 
     if (sub === 'contratar') {
@@ -599,7 +643,7 @@ module.exports = {
       // Chromium frio) — senão o reply que carrega o aviso fail-open de RG morre com 10062. Mesmo
       // motivo do contratarViaModal. editReply depois.
       await interaction.deferReply();
-      await contratarComRole(interaction.guild, usuario.id, cargo, interaction.user.id, null, rg);
+      await contratarComRole(interaction.guild, usuario.id, cargo, interaction.user.id, null, rg, interaction.options.getString('motivo'));
       // Fail-open VISÍVEL: se é cargo de magistratura/MP e a pessoa segue sem RG (nem informado agora,
       // nem preservado de um cargo anterior), avisa que o impedimento não vai pegar pra ela.
       const reg = rh.getCargo(usuario.id);
@@ -625,7 +669,7 @@ module.exports = {
       const usuario = interaction.options.getUser('usuario');
       // Defer: a redistribuição percorre os tickets abertos e posta nos canais — passa dos 3s.
       await interaction.deferReply();
-      const saiu = await demitirComRole(interaction.guild, usuario.id, interaction.user.id);
+      const saiu = await demitirComRole(interaction.guild, usuario.id, interaction.user.id, interaction.options.getString('motivo'));
       if (!saiu) return interaction.editReply({ content: `${usuario} não tinha cargo jurídico ativo.` });
       // Diz o que aconteceu com os CASOS, não só com o cargo: era isso que faltava para a Staff
       // saber se sobrou algo aguardando designação.
@@ -636,10 +680,16 @@ ${resumoDaDemissao(saiu)}` });
     if (sub === 'licenca') {
       const usuario = interaction.options.getUser('usuario');
       const afastado = interaction.options.getBoolean('afastado');
+      const motivo = interaction.options.getString('motivo');
       const atualizado = rh.setLicenca(usuario.id, afastado);
       if (!atualizado) return interaction.reply({ content: 'Essa pessoa não tem cargo jurídico ativo.', ephemeral: true });
       await auditoria.registrar(interaction.guild, {
-        acao: `RH: ${afastado ? 'licença' : 'retorno de licença'}`, executorId: interaction.user.id, referencia: `${usuario}`,
+        acao: `RH: ${afastado ? 'licença' : 'retorno de licença'}`, executorId: interaction.user.id, referencia: `${usuario}`, motivo,
+      });
+      logRh.registrar({
+        acao: 'licenca', executorId: interaction.user.id, cargoExecutor: cargoDoExecutor(interaction.user.id),
+        alvoId: usuario.id, cargoAlvo: (rh.getCargo(usuario.id) || {}).cargo || null,
+        motivo: `${afastado ? 'Afastamento' : 'Retorno'} — ${motivo}`, guildId: interaction.guild?.id,
       });
       return interaction.reply({ content: `${usuario} agora está ${afastado ? '**de licença**' : '**ativo**'}.` });
     }
@@ -658,6 +708,7 @@ ${resumoDaDemissao(saiu)}` });
     }
   },
 
+  modalMotivoRh, cargoDoExecutor,
   contratarComRole,
   demitirComRole, resumoDaDemissao, redistribuirCasosDe, derrubarHabilitacoesDe,
   modalContratarStaff,
