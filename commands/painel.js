@@ -6,8 +6,9 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../database/db');
 const config = require('../config');
-const { temCargo, isAdmin, isSuperStaff, papelInstitucional } = require('../utils/permissoes');
+const { temCargo, isAdmin, isSuperStaff, papelInstitucional, podeAdministrar, RECUSA_ADMINISTRATIVA } = require('../utils/permissoes');
 const rh = require('../utils/rh');
+const logRh = require('../utils/logRh');
 const crimes = require('../data/crimes.json');
 const { crimeLabel, buscarCrimes } = require('../utils/crimesTexto');
 const processoCmd = require('./processo');
@@ -74,7 +75,7 @@ function embedMenuPrincipal() {
 // Desembargador/Procurador formam a supervisão (trocam gente, não abrem caso); Advogado é o
 // único que protocola Petição; MP (Promotor/Procurador) é atribuição exclusiva do art. 129 CF.
 function botoesMenuPrincipal(interaction) {
-  const staff = isAdmin(interaction) || isSuperStaff(interaction);
+  const staff = podeAdministrar(interaction);
   const ehDelegado = temCargo(interaction, 'Delegado');
   const ehPromotor = temCargo(interaction, 'Promotor');
   const ehJuiz = temCargo(interaction, 'Juiz');
@@ -136,6 +137,9 @@ function submenuStaff(interaction) {
     linha(
       botaoSe(true, 'painel:acao:edital:abrir', '📢 Abrir edital', ButtonStyle.Secondary),
       botaoSe(true, 'painel:acao:comunicado:abrir', '📢 Publicar comunicado', ButtonStyle.Secondary),
+      // O ARQUIVO das três ações que mudam quem pode o quê. Fica aqui, e não dentro do RH, porque
+      // é ferramenta de AUDITORIA — quem consulta quer ler o histórico, não mexer em cargo.
+      botaoSe(true, 'painel:acao:rh:log', '📜 Log de RH', ButtonStyle.Secondary),
     ),
     // A linha da ENTREGA IN-GAME: o interruptor (SPEC §11.2), a ação de emergência (SPEC §11.2-2b —
     // separada do interruptor DE PROPÓSITO: emergência nunca como efeito colateral de rotina) e o
@@ -353,10 +357,10 @@ const SUBMENUS = {
 };
 
 async function abrirSubmenu(interaction, modulo) {
-  if (modulo === 'rh' && !isAdmin(interaction)) {
+  if (modulo === 'rh' && !podeAdministrar(interaction)) {
     return interaction.reply({ content: 'Só Staff/Administração pode usar comandos de RH.', ephemeral: true });
   }
-  if (modulo === 'staff' && !isAdmin(interaction) && !isSuperStaff(interaction)) {
+  if (modulo === 'staff' && !podeAdministrar(interaction)) {
     return interaction.reply({ content: 'Só Staff/Administração pode abrir o menu de administração.', ephemeral: true });
   }
   if (modulo === 'supervisao' && !supervisao.podeSupervisionar(interaction)) {
@@ -792,7 +796,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   // mesmo gate que o botão.
   if (modulo === 'modoentrega') {
     if (acao === 'alternar') {
-      if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
+      if (!podeAdministrar(interaction)) {
         return interaction.reply({ content: 'Só Staff pode alternar o Modo Entrega In-Game.', ephemeral: true });
       }
       const guildId = interaction.guild.id;
@@ -823,7 +827,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     // do interruptor DE PROPÓSITO: emergência nunca pode acontecer como efeito colateral de rotina.
     // Motivo obrigatório via modal — é ele que vai lavrado nos autos de cada processo afetado.
     if (acao === 'destravartudo') {
-      if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
+      if (!podeAdministrar(interaction)) {
         return interaction.reply({ content: 'Só Staff pode destravar entregas pendentes.', ephemeral: true });
       }
       const modal = new ModalBuilder().setCustomId('painel:modal:modoentrega:destravartudo').setTitle('🚨 Destravar entregas pendentes');
@@ -838,7 +842,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
     // (relatorioLegado, o OITAVO órfão ligado). O push semanal continua existindo; isto é a
     // consulta na hora, para a staff não depender de esperar domingo.
     if (acao === 'relatorio') {
-      if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
+      if (!podeAdministrar(interaction)) {
         return interaction.reply({ content: 'Só Staff pode ver o relatório da entrega.', ephemeral: true });
       }
       const pecas = require('../utils/pecas');
@@ -1117,7 +1121,7 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
   }
 
   if (modulo === 'rh') {
-    if (!isAdmin(interaction)) return interaction.reply({ content: 'Só Staff/Administração pode usar comandos de RH.', ephemeral: true });
+    if (!podeAdministrar(interaction)) return interaction.reply({ content: RECUSA_ADMINISTRATIVA, ephemeral: true });
 
     if (acao === 'contratar') {
       const row = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId('painel:userselect:rh:contratar').setPlaceholder('Selecione a pessoa'));
@@ -1131,6 +1135,19 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
       const row = new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId('painel:userselect:rh:licenca').setPlaceholder('Selecione a pessoa'));
       return interaction.update({ embeds: [new EmbedBuilder().setDescription('Quem entra/sai de licença?')], components: [row, botaoVoltar()] });
     }
+    if (acao === 'log') {
+      // CONSULTÁVEL PELA STAFF — e por quem mais administra. As três ações que mudam quem pode o
+      // quê ficam gravadas em `logRh` com executor, CARGO do executor, alvo, motivo e data.
+      const linhas = logRh.consultar({ limite: 12 });
+      const embed = new EmbedBuilder().setTitle('📜 Log de RH — contratação, demissão e licença').setColor(0x34495e);
+      if (!linhas.length) {
+        embed.setDescription('Nenhum registro ainda. As três ações passam a ser gravadas a partir de 21/08/2026.');
+      } else {
+        embed.setDescription(linhas.map(logRh.formatar).join('\n\n').slice(0, 4000));
+        embed.setFooter({ text: `Mostrando ${linhas.length} registro(s) mais recente(s).` });
+      }
+      return interaction.reply({ embeds: [embed], ephemeral: true });
+    }
     if (acao === 'listar') {
       const embed = new EmbedBuilder().setTitle('👥 Cargos jurídicos').setColor(0x3498db);
       for (const cargo of rh.CARGOS) {
@@ -1140,18 +1157,12 @@ async function executarAcaoBotao(interaction, modulo, acao, extra) {
       return interaction.reply({ embeds: [embed], ephemeral: true });
     }
     if (acao === 'licencaon' || acao === 'licencaoff') {
-      const usuarioId = extra;
-      const afastado = acao === 'licencaon';
-      const atualizado = rh.setLicenca(usuarioId, afastado);
-      if (atualizado) {
-        await auditoria.registrar(interaction.guild, {
-          acao: `RH: ${afastado ? 'licença' : 'retorno de licença'}`, executorId: interaction.user.id, referencia: `<@${usuarioId}>`,
-        });
-      }
-      const embed = new EmbedBuilder()
-        .setColor(atualizado ? 0x2ecc71 : 0xe74c3c)
-        .setDescription(atualizado ? `<@${usuarioId}> agora está ${afastado ? '**de licença**' : '**ativo**'}.` : 'Essa pessoa não tem cargo jurídico ativo.');
-      return interaction.update({ embeds: [embed], components: [botaoVoltar()] });
+      // MOTIVO ANTES DA AÇÃO (21/08/2026): a licença passou a exigir razão registrada, como a
+      // contratação e a demissão. O modal devolve em `painel:modal:rh:licenca:<id>#<on|off>`.
+      return interaction.showModal(
+        rhCmd.modalMotivoRh('licenca', `${extra}#${acao === 'licencaon' ? 'on' : 'off'}`,
+          acao === 'licencaon' ? 'Colocar de licença' : 'Tirar de licença'),
+      );
     }
   }
 }
@@ -1352,15 +1363,10 @@ async function tratarUserSelect(interaction, modulo, campo) {
   }
 
   if (modulo === 'rh' && campo === 'demitir') {
-    // deferUpdate: a redistribuição percorre os tickets abertos e posta nos canais — passa dos 3s.
-    await interaction.deferUpdate();
-    const registro = await rhCmd.demitirComRole(interaction.guild, usuarioId);
-    const embed = new EmbedBuilder().setColor(registro ? 0xe74c3c : 0x95a5a6)
-      .setDescription(registro
-        ? `<@${usuarioId}> foi removido do cargo jurídico.
-${rhCmd.resumoDaDemissao(registro)}`
-        : `<@${usuarioId}> não tinha cargo jurídico ativo.`);
-    return interaction.editReply({ embeds: [embed], components: [botaoVoltar()] });
+    // MOTIVO ANTES DA AÇÃO (21/08/2026). Antes o userselect já demitia; agora ele abre o modal, e
+    // a demissão acontece no submit. Um select NÃO pode abrir modal depois de `deferUpdate` — por
+    // isso o defer saiu daqui e foi para o handler do modal, que é onde a redistribuição roda.
+    return interaction.showModal(rhCmd.modalMotivoRh('demitir', usuarioId, 'Demitir'));
   }
 
   if (modulo === 'peticao' && campo.startsWith('vincularcliente#')) {
@@ -1397,7 +1403,7 @@ async function tratarModal(interaction, modulo, acao, extra) {
   // Emergência da entrega in-game (SPEC §11.2-2b): destrava TODAS as pendências, com motivo
   // obrigatório, e lavra em cada processo afetado — "entregas destravadas pela staff em tal hora".
   if (modulo === 'modoentrega' && acao === 'destravartudo') {
-    if (!isAdmin(interaction) && !isSuperStaff(interaction)) {
+    if (!podeAdministrar(interaction)) {
       return interaction.reply({ content: 'Só Staff pode destravar entregas pendentes.', ephemeral: true });
     }
     const motivo = interaction.fields.getTextInputValue('motivo');
@@ -1421,6 +1427,45 @@ async function tratarModal(interaction, modulo, acao, extra) {
         : 'Não havia nenhuma entrega pendente para destravar.',
     });
   }
+  // DEMISSÃO E LICENÇA pelo painel, agora com motivo (21/08/2026). O gate é o mesmo do resto do
+  // módulo — `podeAdministrar`, que lê o CARGO NO RH.
+  if (modulo === 'rh' && acao === 'demitir') {
+    if (!podeAdministrar(interaction)) return interaction.reply({ content: RECUSA_ADMINISTRATIVA, ephemeral: true });
+    const motivo = (interaction.fields.getTextInputValue('motivo') || '').trim();
+    // deferReply: a redistribuição percorre os tickets abertos e posta nos canais — passa dos 3s.
+    await interaction.deferReply({ ephemeral: true });
+    const registro = await rhCmd.demitirComRole(interaction.guild, extra, interaction.user.id, motivo);
+    const embed = new EmbedBuilder().setColor(registro ? 0xe74c3c : 0x95a5a6)
+      .setDescription(registro
+        ? `<@${extra}> foi removido do cargo jurídico.\n${rhCmd.resumoDaDemissao(registro)}\n**Motivo:** ${motivo}`
+        : `<@${extra}> não tinha cargo jurídico ativo.`);
+    return interaction.editReply({ embeds: [embed] });
+  }
+  if (modulo === 'rh' && acao === 'licenca') {
+    if (!podeAdministrar(interaction)) return interaction.reply({ content: RECUSA_ADMINISTRATIVA, ephemeral: true });
+    const [usuarioId, liga] = String(extra || '').split('#');
+    const afastado = liga === 'on';
+    const motivo = (interaction.fields.getTextInputValue('motivo') || '').trim();
+    const atualizado = rh.setLicenca(usuarioId, afastado);
+    if (atualizado) {
+      await auditoria.registrar(interaction.guild, {
+        acao: `RH: ${afastado ? 'licença' : 'retorno de licença'}`, executorId: interaction.user.id,
+        referencia: `<@${usuarioId}>`, motivo,
+      });
+      logRh.registrar({
+        acao: 'licenca', executorId: interaction.user.id, cargoExecutor: rhCmd.cargoDoExecutor(interaction.user.id),
+        alvoId: usuarioId, cargoAlvo: (rh.getCargo(usuarioId) || {}).cargo || null,
+        motivo: `${afastado ? 'Afastamento' : 'Retorno'} — ${motivo}`, guildId: interaction.guild?.id,
+      });
+    }
+    const embed = new EmbedBuilder()
+      .setColor(atualizado ? 0x2ecc71 : 0xe74c3c)
+      .setDescription(atualizado
+        ? `<@${usuarioId}> agora está ${afastado ? '**de licença**' : '**ativo**'}.\n**Motivo:** ${motivo}`
+        : 'Essa pessoa não tem cargo jurídico ativo.');
+    return interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+
   if (modulo === 'rh' && acao === 'contratar') {
     // extra = `${usuarioId}#${cargo}` (o router só entrega partes[4], sem ':' interno — daí o '#').
     const [usuarioId, cargo] = String(extra || '').split('#');

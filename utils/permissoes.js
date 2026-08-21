@@ -80,4 +80,37 @@ function papelInstitucional(interaction) {
   return 'PODER JUDICIÁRIO';
 }
 
-module.exports = { isAdmin, temCargo, isSuperStaff, papelInstitucional, podeAtuarNoCaso, recusaDoCaso };
+
+// ---------------------------------------------------------------------------
+// PODER ADMINISTRATIVO — a função ÚNICA (21/08/2026)
+// ---------------------------------------------------------------------------
+// Antes disso, "quem pode administrar" era `isAdmin(x) || isSuperStaff(x)` repetido em ~15 pontos
+// de commands/painel.js e mais alguns em rh.js. Espalhado assim, acrescentar um cargo significava
+// caçar cada condicional — e esquecer uma é como um poder fica pela metade.
+//
+// LÊ O RH, NÃO A ROLE DO DISCORD, e é a diferença que importa:
+//   - `isAdmin` olha `member.permissions.has(Administrator)` e a role de staff;
+//   - `isSuperStaff` olha a role "Staff Salve".
+// Os dois continuam valendo (staff é staff), mas Desembargador e Procurador entram pelo CARGO
+// ATIVO NO RH — `rh.temCargo`, que não conhece discord.js. O RH é a fonte da verdade do projeto, e
+// role do Discord já deu falso positivo aqui antes. Consequência prática: quem é demitido no /rh
+// perde o poder no mesmo instante, sem ninguém precisar mexer em role.
+//
+// NÍVEL 1 E NÍVEL 2 numa função só, de propósito: hoje ninguém tem um sem o outro — staff tem os
+// dois, e os dois cargos novos receberam os dois. Duas funções idênticas seriam duas coisas para
+// divergir. Se um dia um nível se separar do outro, é AQUI que ele se separa.
+const CARGOS_ADMINISTRATIVOS = ['Desembargador', 'Procurador'];
+
+function podeAdministrar(interaction) {
+  if (!interaction || !interaction.user) return false;
+  if (isAdmin(interaction) || isSuperStaff(interaction)) return true;
+  return CARGOS_ADMINISTRATIVOS.some(cargo => rh.temCargo(interaction.user.id, cargo));
+}
+
+// Mensagem única da recusa — para os ~15 pontos não escreverem 15 textos diferentes para a mesma
+// regra, e para quem lê saber POR QUE foi recusado.
+const RECUSA_ADMINISTRATIVA = 'Só Staff/Administração, Desembargador ou Procurador podem usar isso. '
+  + 'O poder vem do cargo ATIVO no `/rh` — se você foi demitido ou está de licença, ele cai junto.';
+
+module.exports = { isAdmin, temCargo, isSuperStaff, papelInstitucional, podeAtuarNoCaso, recusaDoCaso,
+  podeAdministrar, CARGOS_ADMINISTRATIVOS, RECUSA_ADMINISTRATIVA };
