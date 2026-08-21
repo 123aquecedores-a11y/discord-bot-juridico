@@ -12,6 +12,7 @@ const { truncar } = require('../utils/texto');
 const carteirinha = require('../utils/carteirinha');
 const diario = require('../utils/diarioOficial');
 const responsaveis = require('../utils/responsaveis');
+const reconciliacaoRoles = require('../utils/reconciliacaoRoles');
 
 // Título que vai na frente do apelido quando o cargo é aprovado (ex: "Juiz Fulano").
 // Desembargador abrevia pra caber no limite de 32 caracteres do apelido do Discord.
@@ -25,16 +26,10 @@ const TITULO = {
 // Juiz/Desembargador/Procurador livremente, ficando só na barreira da aprovação manual da staff.
 const CARGOS_RESTRITOS = ['Juiz', 'Desembargador', 'Procurador'];
 
-function roleIdPorCargo(cargo) {
-  return {
-    Delegado: config.roleDelegadoId,
-    Promotor: config.rolePromotorId,
-    Juiz: config.roleJuizId,
-    Advogado: config.roleAdvogadoId,
-    Desembargador: config.roleDesembargadorId,
-    Procurador: config.roleProcuradorId,
-  }[cargo];
-}
+// O mapa cargo→role mudou de casa em 21/08/2026: mora em utils/reconciliacaoRoles.js, porque agora
+// dois lugares o consultam (aqui e a reconciliação), e regra de cargo duplicada em dois arquivos é
+// a receita para o terceiro nascer torto.
+const roleIdPorCargo = reconciliacaoRoles.roleIdPorCargo;
 
 // Aplica o apelido "Título Nome" (ex: "Juiz Fulano"). Pode falhar se o cargo do bot estiver
 // abaixo do alvo na hierarquia ou faltar permissão "Gerenciar Apelidos" — retorna false nesse
@@ -65,10 +60,20 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
     // a role de Delegado pendurada no Discord (o temCargo segue o registro do rh, mas a role não).
     if (anterior && anterior.cargo !== cargo) {
       const roleAnterior = roleIdPorCargo(anterior.cargo);
-      if (roleAnterior) await membro.roles.remove(roleAnterior).catch(() => {});
+      if (roleAnterior) {
+        await membro.roles.remove(roleAnterior)
+          .catch(err => console.error(`[rh] falha ao remover a role ${anterior.cargo} de ${usuarioId} na promoção para ${cargo}: ${err.message}`));
+      }
     }
-    if (roleId) await membro.roles.add(roleId).catch(() => {});
+    if (roleId) {
+      await membro.roles.add(roleId)
+        .catch(err => console.error(`[rh] falha ao dar a role ${cargo} a ${usuarioId}: ${err.message}`));
+    }
   }
+  // A REDE, e não só o aviso: se qualquer um dos dois acima falhou, a role fica em desacordo com o
+  // RH — e é a role que abre os canais-ticket (utils/canais.js). A reconciliação corrige agora, no
+  // ato, e o boot repassa depois como rede de segurança. Ver utils/reconciliacaoRoles.js.
+  await reconciliacaoRoles.reconciliarMembro(guild, usuarioId, { motivo: `contratação (${cargo})` });
   const apelidoOk = nomePersonagem ? await aplicarApelido(membro, cargo, nomePersonagem) : null;
   // Emite a carteira CERTA conforme o cargo (Advogado → OAB; Juiz/Desembargador/Promotor/Procurador
   // → carteira funcional; demais cargos → nada) e envia na DM. Render/DM que falhar é logado dentro
@@ -204,9 +209,18 @@ async function demitirComRole(guild, usuarioId, executorId = null, motivo = null
     const roleId = roleIdPorCargo(registro.cargo);
     if (roleId) {
       const membro = await guild.members.fetch(usuarioId).catch(() => null);
-      if (membro) await membro.roles.remove(roleId).catch(() => {});
+      if (membro) {
+        // ESTA é a linha que vazava. Falhando calado, o demitido ficava com a role — e a role dá
+        // ViewChannel em todo canal-ticket (utils/canais.js). Agora grita, e a reconciliação logo
+        // abaixo fecha a porta mesmo quando ela falha.
+        await membro.roles.remove(roleId)
+          .catch(err => console.error(`[rh] falha ao remover a role ${registro.cargo} de ${usuarioId} na demissão: ${err.message}`));
+      }
     }
   }
+  // Roda MESMO sem registro: quem tinha role sem cargo nenhum no RH é exatamente o caso achado em
+  // produção em 21/08 — role posta na mão, fora do bot, sem nada no quadro.
+  await reconciliacaoRoles.reconciliarMembro(guild, usuarioId, { motivo: 'demissão' });
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: demissão', executorId, referencia: `<@${usuarioId}>${registro ? ` (era ${registro.cargo})` : ''}`, motivo });
     const log = logRh.registrar({

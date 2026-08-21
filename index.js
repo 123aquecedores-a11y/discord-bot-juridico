@@ -150,7 +150,33 @@ client.once('ready', async () => {
   // só se descobre no dia em que ele é necessário, que é o pior dia possível para descobrir. Esta
   // checagem faz a descoberta acontecer num dia qualquer. Silêncio é a resposta normal — só fala
   // quando o backup está ausente ou ficou para trás do dados.json. Ver utils/auditoria.js.
-  await require('./utils/auditoria').avisarBackupAtrasado(guild).catch(() => {});
+  //
+  // SEM `await`, de propósito: no caminho saudável isto custa 0,95ms e não toca a rede, mas no
+  // caminho doente ele busca o canal no Discord — e um fetch pendurado prenderia o boot inteiro
+  // esperando por um AVISO. Tarefa de diagnóstico não pode ser gargalo do que ela diagnostica.
+  //
+  // E o catch NÃO é mudo: engolir aqui criaria exatamente o defeito que a auditoria de 21/08 saiu
+  // caçando pelo projeto. Regra da casa: catch pode não interromper o fluxo, nunca pode calar.
+  require('./utils/auditoria')
+    .avisarBackupAtrasado(guild)
+    .catch(err => console.error('[boot] avisarBackupAtrasado falhou:', err.message));
+
+  // A ROLE SEGUE O RH (21/08/2026). Quem abre os canais-ticket é a ROLE do Discord
+  // (utils/canais.js), não o RH — então role em desacordo com o quadro é gente lendo os autos sem
+  // ter direito. Achado em produção: um membro com role de Promotor e nenhum registro no RH
+  // enxergando os 4 tickets abertos.
+  //
+  // Aqui é a REDE DE SEGURANÇA da varredura: os eventos (contratar/demitir/promover) já reconciliam
+  // no ato, e esta passada pega o que eles não viram — bot fora do ar, role posta na mão, remoção
+  // que falhou. Tem trava de massa própria. Ver utils/reconciliacaoRoles.js.
+  //
+  // Com `await` de propósito, ao contrário do aviso de backup: isto não é diagnóstico, é correção
+  // de permissão, e o resto do boot (leitura institucional) mexe nas mesmas permissões logo abaixo.
+  try {
+    await require('./utils/reconciliacaoRoles').reconciliarTodos(guild, { motivo: 'boot' });
+  } catch (e) {
+    console.error('[boot] reconciliação de roles falhou:', e.message);
+  }
 
   // Auto-cria os canais de publicação (📜│diário-oficial e 📢│editais) se faltarem — idempotente,
   // não duplica, e não derruba o boot se faltar permissão (ver utils/garantirCanais.js).
