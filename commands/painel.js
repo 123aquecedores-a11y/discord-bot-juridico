@@ -1447,21 +1447,28 @@ async function tratarModal(interaction, modulo, acao, extra) {
     const afastado = liga === 'on';
     const motivo = (interaction.fields.getTextInputValue('motivo') || '').trim();
     const atualizado = rh.setLicenca(usuarioId, afastado);
+    let logFalhou = { ok: true, aviso: null };
     if (atualizado) {
       await auditoria.registrar(interaction.guild, {
         acao: `RH: ${afastado ? 'licença' : 'retorno de licença'}`, executorId: interaction.user.id,
         referencia: `<@${usuarioId}>`, motivo,
       });
-      logRh.registrar({
+      logFalhou = logRh.registrar({
         acao: 'licenca', executorId: interaction.user.id, cargoExecutor: rhCmd.cargoDoExecutor(interaction.user.id),
         alvoId: usuarioId, cargoAlvo: (rh.getCargo(usuarioId) || {}).cargo || null,
         motivo: `${afastado ? 'Afastamento' : 'Retorno'} — ${motivo}`, guildId: interaction.guild?.id,
       });
+      // Quem clicou o botão vê a falha no MESMO embed, com os dados para lançar à mão. A licença
+      // não é desfeita por causa disso — ver utils/logRh.js.
+      if (!logFalhou.ok) await auditoria.avisar(interaction.guild, logFalhou.aviso);
     }
+    const okTexto = `<@${usuarioId}> agora está ${afastado ? '**de licença**' : '**ativo**'}.\n**Motivo:** ${motivo}`;
     const embed = new EmbedBuilder()
-      .setColor(atualizado ? 0x2ecc71 : 0xe74c3c)
+      // Amarelo quando a ação valeu mas o log falhou: nem verde (esconderia o problema) nem
+      // vermelho (mentiria dizendo que a licença não pegou).
+      .setColor(!atualizado ? 0xe74c3c : (logFalhou.ok ? 0x2ecc71 : 0xf1c40f))
       .setDescription(atualizado
-        ? `<@${usuarioId}> agora está ${afastado ? '**de licença**' : '**ativo**'}.\n**Motivo:** ${motivo}`
+        ? (logFalhou.ok ? okTexto : `${okTexto}\n\n${logFalhou.aviso}`)
         : 'Essa pessoa não tem cargo jurídico ativo.');
     return interaction.reply({ embeds: [embed], ephemeral: true });
   }

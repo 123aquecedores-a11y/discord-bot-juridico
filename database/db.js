@@ -66,6 +66,81 @@ function carregar() {
   }
 }
 
+// SAÚDE DO BACKUP .bak (21/08/2026).
+//
+// O `catch {}` que ficava na cópia do .bak era mudo por um motivo legítimo: perder o backup é ruim,
+// abortar a gravação do banco por causa dele é pior. O erro estava em confundir "não pode derrubar"
+// com "não pode aparecer" — assim o .bak podia estar quebrado há meses sem ninguém saber, até o dia
+// em que fosse justamente ele o necessário.
+//
+// Agora a falha grita, mas com FREIO: salvar() roda a cada escrita, e um disco cheio produziria
+// milhares de linhas por minuto até afogar o log de tudo o mais. O throttle solta a primeira
+// imediatamente e as seguintes no máximo a cada 5 minutos, com o total acumulado no meio.
+const BAK_LOG_INTERVALO_MS = 5 * 60 * 1000;
+
+// ATRASO, não IDADE. Medir "o .bak tem mais de X minutos" daria falso positivo o dia inteiro: num
+// tribunal parado ninguém grava nada, e um backup de 3h atrás está perfeito. O que denuncia falha é
+// o .bak ficar PARA TRÁS do dados.json — num sistema sadio a cópia acontece milissegundos antes do
+// rename, então a distância entre os dois é sempre próxima de zero.
+const BAK_ATRASO_MAX_MS = 10 * 60 * 1000;
+
+const saudeBak = { ultimoSucessoEm: null, ultimoErro: null, falhas: 0, ultimoLogEm: 0 };
+
+function mtimeMsDe(caminho) {
+  try { return fs.existsSync(caminho) ? fs.statSync(caminho).mtimeMs : null; } catch { return null; }
+}
+
+/**
+ * Estado da rede de segurança, para quem quiser avisar humano (ver utils/auditoria.js). NUNCA
+ * lança: é função de diagnóstico, e diagnóstico que quebra o boot é pior que o defeito que aponta.
+ */
+function saudeDoBackup({ agora = Date.now() } = {}) {
+  const bakEm = mtimeMsDe(`${DB_PATH}.bak`);
+  const dadosEm = mtimeMsDe(DB_PATH);
+  // Atraso entre a cópia e o original. Negativo (cópia mais nova) é normal e vira 0.
+  const atrasoMs = (bakEm !== null && dadosEm !== null) ? Math.max(0, dadosEm - bakEm) : null;
+  return {
+    existe: bakEm !== null,
+    bakEm,
+    dadosEm,
+    atrasoMs,
+    falhas: saudeBak.falhas,
+    ultimoErro: saudeBak.ultimoErro,
+    ultimoSucessoEm: saudeBak.ultimoSucessoEm,
+    // AUSENTE e ATRASADO merecem aviso por razões diferentes, e quem lê precisa distinguir para
+    // saber o que fazer: um diz "nunca houve rede", o outro diz "a rede parou de ser tecida".
+    ausente: dadosEm !== null && bakEm === null,
+    atrasado: atrasoMs !== null && atrasoMs > BAK_ATRASO_MAX_MS,
+    limiteAtrasoMs: BAK_ATRASO_MAX_MS,
+  };
+}
+
+// Copia a última versão boa antes de sobrescrever. Separada de salvar() para o caminho de erro
+// caber inteiro na cabeça: NADA aqui pode lançar para cima — o rename do banco vem depois.
+function copiarBak(agora = Date.now()) {
+  try {
+    if (!fs.existsSync(DB_PATH)) return;
+    fs.copyFileSync(DB_PATH, `${DB_PATH}.bak`);
+    saudeBak.ultimoSucessoEm = agora;
+    if (saudeBak.falhas) {
+      // A volta também é notícia: sem esta linha, quem viu o alarme nunca sabe que passou.
+      console.log(`[db] backup .bak voltou a funcionar após ${saudeBak.falhas} falha(s).`);
+      saudeBak.falhas = 0;
+      saudeBak.ultimoErro = null;
+    }
+  } catch (e) {
+    saudeBak.falhas += 1;
+    saudeBak.ultimoErro = e.message;
+    if (agora - saudeBak.ultimoLogEm >= BAK_LOG_INTERVALO_MS) {
+      saudeBak.ultimoLogEm = agora;
+      console.error(
+        `[db] FALHA ao gravar o backup .bak (${saudeBak.falhas} desde o último aviso): ${e.message}. `
+        + 'O dados.json continua sendo gravado normalmente — o que está em risco é só a rede de segurança.',
+      );
+    }
+  }
+}
+
 function salvar(dados) {
   // Gravação atômica: escreve num arquivo temporário e só então o renomeia por cima do
   // definitivo (rename é atômico no mesmo disco). Se o processo morrer no meio da escrita
@@ -74,8 +149,9 @@ function salvar(dados) {
   const conteudo = JSON.stringify(dados, null, 2);
   const tmp = `${DB_PATH}.tmp`;
   fs.writeFileSync(tmp, conteudo);
-  // guarda a última versão boa como .bak antes de sobrescrever (rede de segurança pro carregar)
-  try { if (fs.existsSync(DB_PATH)) fs.copyFileSync(DB_PATH, `${DB_PATH}.bak`); } catch {}
+  // guarda a última versão boa como .bak antes de sobrescrever (rede de segurança pro carregar).
+  // Nunca lança — ver copiarBak, que agora registra a falha em vez de engoli-la.
+  copiarBak();
   fs.renameSync(tmp, DB_PATH);
 }
 
@@ -157,4 +233,4 @@ function contar(tabela) {
   return (dados[tabela] || []).length;
 }
 
-module.exports = { todos, buscarPorNumero, buscarUm, inserir, atualizar, atualizarPorFiltro, contar };
+module.exports = { todos, buscarPorNumero, buscarUm, inserir, atualizar, atualizarPorFiltro, contar, saudeDoBackup };

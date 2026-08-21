@@ -55,6 +55,7 @@ if (process.env.MODO_FILHO === '1') {
   require('../utils/responsaveis').varrerResponsaveisFantasma = () => contar('varrerResponsaveisFantasma');
   require('../utils/diarioAtos').varrerDiario = () => contar('varrerDiario');
   require('../commands/painel').postarPainelFixo = () => contar('postarPainelFixo');
+  require('../utils/auditoria').avisarBackupAtrasado = () => contar('avisarBackupAtrasado');
 
   // ---- 2) Client falso: o bot "conecta" sem rede nenhuma. Só a classe Client é trocada; o resto
   // do discord.js (builders, enums) continua real, senão os comandos nem carregariam.
@@ -138,7 +139,7 @@ const TAREFAS_ESPERADAS = [
   'verificarProcessosPenaisSemJuiz', 'verificarPeticoesSemJuiz', 'verificarDiligenciasPendentes',
   'verificarMedidasAguardandoMP', 'verificarMedidasAguardandoJuiz', 'verificarMandadosPendentes',
   'verificarApelacoesPendentes', 'verificarPrazosContestacao', 'verificarPrazoHabilitacao',
-  'verificarPrazoDefesa', 'postarPainelFixo',
+  'verificarPrazoDefesa', 'postarPainelFixo', 'avisarBackupAtrasado',
 ];
 
 console.log('\n== Modo manutenção (SKIP_BOOT_TASKS) ==');

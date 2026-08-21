@@ -223,9 +223,10 @@ function secao5() {
     '5g: e a linha formatada traz alvo, executor, motivo e data', texto.slice(0, 60));
 
   // Motivo em branco NUNCA vira motivo vazio silencioso — o log não pode mentir.
+  // O retorno virou { ok, registro, erro, aviso } em 21/08/2026 — ver scripts/testes-falha-silenciosa.js.
   const semMotivo = logRh.registrar({ acao: 'demitir', executorId: 'x', cargoExecutor: 'Staff/Administração', alvoId: 'y', motivo: '   ' });
-  ok(semMotivo && semMotivo.motivo === '(sem motivo informado)',
-    '5h: motivo em branco vira marcador explícito, não string vazia', semMotivo && semMotivo.motivo);
+  ok(semMotivo && semMotivo.ok && semMotivo.registro && semMotivo.registro.motivo === '(sem motivo informado)',
+    '5h: motivo em branco vira marcador explícito, não string vazia', semMotivo && semMotivo.registro && semMotivo.registro.motivo);
 
   // OBRIGATÓRIO na porta de entrada: slash e modal.
   const rhSrc = LER('commands', 'rh.js');

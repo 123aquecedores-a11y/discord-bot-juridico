@@ -146,6 +146,12 @@ client.once('ready', async () => {
   // não descoberto uma semana depois por um jogador reclamando — ver utils/modoEntrega.js.
   require('./utils/modoEntrega').logarNoBoot(guild.id);
 
+  // A REDE DE SEGURANÇA ESTÁ DE PÉ? (21/08/2026) O .bak do banco falhando é invisível por natureza:
+  // só se descobre no dia em que ele é necessário, que é o pior dia possível para descobrir. Esta
+  // checagem faz a descoberta acontecer num dia qualquer. Silêncio é a resposta normal — só fala
+  // quando o backup está ausente ou ficou para trás do dados.json. Ver utils/auditoria.js.
+  await require('./utils/auditoria').avisarBackupAtrasado(guild).catch(() => {});
+
   // Auto-cria os canais de publicação (📜│diário-oficial e 📢│editais) se faltarem — idempotente,
   // não duplica, e não derruba o boot se faltar permissão (ver utils/garantirCanais.js).
   await garantirCanais(guild);

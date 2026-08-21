@@ -79,10 +79,14 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
     await auditoria.registrar(guild, { acao: 'RH: contratação', executorId, referencia: `<@${usuarioId}> → ${cargo}${nomePersonagem ? ` ("${nomePersonagem}")` : ''}`, motivo });
     // LOG PERSISTENTE, além da auditoria no canal: a auditoria é o AVISO (mensagem, some), isto é
     // o ARQUIVO (tabela, consultável). Ver o cabeçalho de utils/logRh.js.
-    logRh.registrar({
+    const log = logRh.registrar({
       acao: 'contratar', executorId, cargoExecutor: cargoDoExecutor(executorId),
       alvoId: usuarioId, cargoAlvo: cargo, motivo, guildId: guild?.id,
     });
+    // Falha de log NÃO desfaz a contratação (o cargo já foi dado) — mas também não some mais em
+    // silêncio: o aviso com os dados do lançamento manual vai para o canal de auditoria, que é
+    // onde quem opera RH já está olhando. Ver utils/logRh.js.
+    if (!log.ok) await auditoria.avisar(guild, log.aviso);
   }
   // Publica a nomeação no Diário Oficial (try/catch — falha aqui não pode quebrar a contratação).
   // Cobre TODOS os caminhos que contratam: /rh contratar, aprovação de solicitação e aprovação de
@@ -205,10 +209,12 @@ async function demitirComRole(guild, usuarioId, executorId = null, motivo = null
   }
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: demissão', executorId, referencia: `<@${usuarioId}>${registro ? ` (era ${registro.cargo})` : ''}`, motivo });
-    logRh.registrar({
+    const log = logRh.registrar({
       acao: 'demitir', executorId, cargoExecutor: cargoDoExecutor(executorId),
       alvoId: usuarioId, cargoAlvo: registro ? registro.cargo : null, motivo, guildId: guild?.id,
     });
+    // Idem contratar: a demissão está feita e NÃO é revertida por causa do log. O aviso aparece.
+    if (!log.ok) await auditoria.avisar(guild, log.aviso);
   }
 
   // O CASO NÃO PODE FICAR SEM DONO (19/08/2026). Antes, a demissão só mexia no quadro; os casos
@@ -686,12 +692,16 @@ ${resumoDaDemissao(saiu)}` });
       await auditoria.registrar(interaction.guild, {
         acao: `RH: ${afastado ? 'licença' : 'retorno de licença'}`, executorId: interaction.user.id, referencia: `${usuario}`, motivo,
       });
-      logRh.registrar({
+      const log = logRh.registrar({
         acao: 'licenca', executorId: interaction.user.id, cargoExecutor: cargoDoExecutor(interaction.user.id),
         alvoId: usuario.id, cargoAlvo: (rh.getCargo(usuario.id) || {}).cargo || null,
         motivo: `${afastado ? 'Afastamento' : 'Retorno'} — ${motivo}`, guildId: interaction.guild?.id,
       });
-      return interaction.reply({ content: `${usuario} agora está ${afastado ? '**de licença**' : '**ativo**'}.` });
+      // Aqui HÁ quem clicou, então o aviso vai direto para ele — é quem pode lançar à mão agora,
+      // sem depender de alguém ler o canal de auditoria depois. A licença em si já valeu.
+      if (!log.ok) await auditoria.avisar(interaction.guild, log.aviso);
+      const okTexto = `${usuario} agora está ${afastado ? '**de licença**' : '**ativo**'}.`;
+      return interaction.reply({ content: log.ok ? okTexto : `${okTexto}\n\n${log.aviso}` });
     }
 
     if (sub === 'listar') {
