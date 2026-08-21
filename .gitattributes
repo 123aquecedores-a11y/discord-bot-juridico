@@ -1,0 +1,46 @@
+# NORMALIZAÇÃO DE FIM DE LINHA (21/08/2026)
+#
+# O PROBLEMA, que mordeu TRÊS vezes antes disto existir:
+# a máquina de desenvolvimento é Windows com `core.autocrlf=true`. Com isso o git guarda LF no
+# repositório e escreve CRLF no disco a cada checkout — então um arquivo MUDA depois do commit.
+#
+# Consequência prática, e sempre a mesma: teste que varre o código-fonte com regex de multilinha
+# (`/foo\{\n  bar/`) passava verde ANTES do commit e reprovava DEPOIS, no hook de pre-push. O
+# diagnóstico é caro porque o código não mudou — o arquivo no disco é que mudou. Três vezes o
+# conserto foi remendar a regex para `\r?\n`; na terceira ficou claro que o remendo é o sintoma.
+#
+# `eol=lf` força LF no WORKING TREE também, não só no repositório, e ignora o `core.autocrlf` da
+# máquina. O arquivo passa a ser byte a byte o mesmo antes e depois do commit, em qualquer sistema.
+#
+# As regex com `\r?\n` que já existem continuam corretas e não precisam voltar atrás: elas casam
+# nos dois mundos, e defender-se de CRLF continua valendo para quem clonar com outra configuração.
+* text=auto eol=lf
+
+# Os que mais importam, explícitos — é neles que a varredura de código roda.
+*.js   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.html text eol=lf
+*.css  text eol=lf
+
+# Scripts de shell PRECISAM de LF: com CRLF o `#!/bin/sh` vira `#!/bin/sh\r` e o sistema não acha
+# o interpretador. Vale para o hook de pre-push, que é um .sh sem extensão.
+*.sh        text eol=lf
+.githooks/* text eol=lf
+
+# Binário nunca é convertido — conversão de fim de linha em PNG corrompe o arquivo.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+
+# Arquivos .bat são o inverso: o cmd.exe do Windows exige CRLF.
+*.bat text eol=crlf
