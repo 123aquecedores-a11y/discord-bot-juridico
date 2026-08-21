@@ -111,7 +111,30 @@ function classificarIdLivre(idTexto) {
   return { discordId: null, rg: limpo || null };
 }
 
+// QUEM NÃO PODE LER O PRÓPRIO CASO (20/08/2026).
+//
+// Existe desde sempre como regra de negócio — réu não julga a si mesmo, alvo não acompanha a
+// diligência contra ele. Virou também uma regra de PERMISSÃO DE CANAL quando os quatro cargos de
+// magistratura e MP passaram a ver todo ticket: sem isto, um Promotor que é RÉU num processo
+// enxergaria, pelo cargo, o canal onde se decide sobre ele.
+//
+// Pega o alvo por TODA porta em que ele pode estar gravado, e não só por `partes[]`: o mesmo
+// impedimento tem que valer no processo (reus/autorDiscordId), na medida (alvoDiscordId) e nas
+// partes tardias. Esquecer uma porta é deixar o buraco aberto justamente no caso raro.
+const PAPEIS_IMPEDIDOS = ['reu', 'autor', 'testemunha_acusacao', 'testemunha_defesa'];
+
+function idsImpedidos(registro) {
+  if (!registro) return [];
+  const ids = [
+    ...(registro.reus || []),
+    registro.autorDiscordId,
+    registro.alvoDiscordId,
+    ...(registro.partes || []).filter(p => PAPEIS_IMPEDIDOS.includes(p.papel)).map(p => p.discordId),
+  ];
+  return [...new Set(ids.filter(Boolean).map(String))];
+}
+
 module.exports = {
   PAPEIS_TESTEMUNHA, adicionarParte, espelharPartesDaAbertura, listarPartes, listarTestemunhas, registrarDepoimento,
-  selectDestinatario, classificarIdLivre,
+  selectDestinatario, classificarIdLivre, idsImpedidos, PAPEIS_IMPEDIDOS,
 };

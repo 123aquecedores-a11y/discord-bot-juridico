@@ -154,25 +154,34 @@ client.once('ready', async () => {
   // sorteioPromotorEm (trava das 24h do MP) + relatório de quantos casos abertos há por tipo.
   require('./utils/retroatividade').aplicarRetroatividade();
 
-  // A segunda instância enxerga os tickets ABERTOS que já existiam. Canal criado antes de
-  // 20/08/2026 não tem o overwrite de role do Desembargador, e sem esta passada a abertura só
-  // valeria para casos novos — ele continuaria sem ver justamente os processos em curso.
-  // Idempotente: canal que já tem o overwrite é pulado, então rodar todo boot não custa nada.
+  // LEITURA INSTITUCIONAL retroativa nos tickets ABERTOS. Canal criado antes de 20/08/2026 não tem
+  // os overwrites por cargo, e sem esta passada a mudança valeria só para casos novos — os quatro
+  // cargos continuariam sem ver justamente os processos em curso.
+  //
+  // Idempotente (cargo que já tem ViewChannel é pulado) e dentro de try/catch: permissão negada
+  // num canal não pode derrubar o bot.
   try {
     const canais = require('./utils/canais');
     const db = require('./database/db');
+    const rh = require('./utils/rh');
     const TABELAS = ['processos', 'medidas', 'peticoes', 'oficios', 'apelacoes'];
-    let abertos = 0, liberados = 0;
+    let abertos = 0, migrados = 0, restritos = 0;
     for (const tabela of TABELAS) {
       for (const r of db.todos(tabela, x => x && x.canalId && !x.arquivadoManual)) {
         abertos++;
         const canal = await guild.channels.fetch(r.canalId).catch(() => null);
-        if (canal && await canais.garantirAcessoSegundaInstancia(canal)) liberados++;
+        if (!canal) continue;
+        const restrito = canais.ehTicketRestrito(r.tipo);
+        if (restrito) restritos++;
+        const mexeu = await canais.garantirLeituraPorCargo(canal, {
+          restrito, impedidos: rh.impedidosNoCaso(r),
+        });
+        if (mexeu) migrados++;
       }
     }
-    console.log(`🏛️ [2ª instância] ${abertos} ticket(s) aberto(s) conferido(s) — ${liberados} canal(is) liberado(s) agora para o Desembargador.`);
+    console.log(`🏛️ [leitura institucional] ${abertos} ticket(s) aberto(s) conferido(s) — ${migrados} canal(is) migrado(s), ${restritos} mantido(s) restrito(s) (busca e apreensão / quebra de sigilo).`);
   } catch (e) {
-    console.error('[2ª instância] liberação retroativa falhou (ignorado, não derruba o boot):', e.message);
+    console.error('[leitura institucional] backfill falhou (ignorado, não derruba o boot):', e.message);
   }
 
   // Simulador de alto fluxo (só quando SIMULAR=1) — cria tickets ao vivo pra teste. Ver

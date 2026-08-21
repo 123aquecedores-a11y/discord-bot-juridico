@@ -15,3 +15,9 @@ fase2.js
 # Saída do comando de teste do selo (scripts/conferir-selo.js --gerar)
 teste-selo/
 recuperacao-anexos.json
+
+# Dumps do banco de PRODUÇÃO e planos de operação destrutiva (20/08/2026).
+# Carregam dado pessoal real — nome, RG, Discord ID de quem joga. O repositório é o lugar errado
+# para isso: uma vez empurrado, fica no histórico do GitHub mesmo depois de apagado do HEAD.
+# Os backups vivem só na máquina de quem opera, e no volume do Railway.
+backups/
