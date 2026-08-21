@@ -369,6 +369,27 @@ function agendarDesligamentoOcioso() {
   if (idleTimer.unref) idleTimer.unref(); // o timer não deve segurar o processo Node vivo
 }
 
+
+// Fecha o Chromium AGORA, sem esperar os 5 minutos de ociosidade.
+//
+// POR QUE ISTO PRECISOU EXISTIR (21/08/2026): o Puppeteer deixa o ChildProcess do Chromium e ~6
+// sockets abertos, e o Node não sai enquanto houver handle vivo. O `unref` do idleTimer resolve o
+// TIMER, mas não os handles do browser — então todo processo que gerou um PNG ficava preso até o
+// desligamento por ociosidade disparar.
+//
+// O custo medido: `testes-emissao-peca` levava 302s, dos quais 2,3s eram renderização e o resto
+// era o processo esperando para morrer. Multiplicado pelos arquivos que renderizam, era metade da
+// suíte. Vale igual para os scripts de linha de comando (conferir-selo, reset-tribunal).
+//
+// Em produção nada muda: o bot fica vivo de qualquer jeito, e quem chama isto é quem vai encerrar.
+async function fecharBrowser() {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  const b = browserInstance;
+  browserInstance = null;
+  browserBootPromise = null;
+  if (b && b.connected) await b.close().catch(() => {});
+}
+
 // Renderiza um HTML em PNG reusando o Chromium compartilhado. Centraliza newPage/close e a
 // contagem de trabalhos ativos (pra não desligar o Chromium no meio de uma geração).
 // `seletor` captura só aquele elemento em vez da página inteira — é como as carteirinhas
@@ -604,4 +625,4 @@ async function gerarEditalPNG({ numero, vagasJuiz, vagasPromotor, requisitos, in
   return renderHtmlToPng(html, { width: 794, height: 1123 }, { fullPage: true });
 }
 
-module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarCarteiraCargoPNG, gerarEditalPNG, nomeExibicao, getBrowser, renderHtmlToPng, renderHtmlToPngs, getLogoImgTag, LOGO_FILES };
+module.exports = { gerarDocumentoPNG, gerarCarteirinhaPNG, gerarCarteiraCargoPNG, gerarEditalPNG, nomeExibicao, getBrowser, fecharBrowser, renderHtmlToPng, renderHtmlToPngs, getLogoImgTag, LOGO_FILES };

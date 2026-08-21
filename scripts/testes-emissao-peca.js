@@ -17,6 +17,47 @@ try { fs.unlinkSync(DB_TESTE); } catch (_) {}
 process.env.DADOS_JSON_PATH = DB_TESTE;
 process.env.RESETAR_BANCO = '';
 process.env.GUILD_ID = 'guild1';
+// ---------------------------------------------------------------------------
+// RENDERIZAÇÃO: uma real, cinco stubbadas — e como voltar atrás
+// ---------------------------------------------------------------------------
+// Este arquivo levava 312s dos 689s da suíte inteira: 45% do tempo num arquivo só. A causa eram
+// SEIS emissões que sobem o Chromium de verdade, quando só UMA precisa disso.
+//
+// A QUE PRECISA é a do item 7: ela pega o PNG que o emissor recebeu por DM e o decodifica com o
+// jsQR de produção. É o teste de ponta a ponta do selo, e o cabeçalho deste arquivo explica por
+// que um token fabricado não serviria — a pergunta que ele responde é "o QR sobrevive ao caminho
+// real", e stub nenhum responde isso. Ela continua REAL, sempre.
+//
+// As outras cinco emitem peça para exercitar OUTRA coisa (visibilidade, janela, guarda de
+// duplicidade). Para elas o PNG é subproduto: o que se afirma não depende de um pixel.
+//
+// FULL_RENDER=1 devolve as seis ao gerador real. É OBRIGATÓRIO antes de qualquer deploy — ver
+// scripts/README-testes.md. O hook de pre-push já roda com a flag ligada.
+const CAMINHO_PNG = require.resolve('../services/gerarPecaPNG');
+const geradorReal = require('../services/gerarPecaPNG');
+const FULL_RENDER = process.env.FULL_RENDER === '1';
+
+// Ligado só dentro do item 7 (e sempre, quando FULL_RENDER=1). O switch é uma variável e não um
+// parâmetro porque quem chama o gerador é `criarPeca`, lá dentro de emissaoPeca — não há por onde
+// passar a opção sem furar a camada.
+let renderReal = FULL_RENDER;
+let contagem = { real: 0, stub: 0 };
+
+require.cache[CAMINHO_PNG] = {
+  id: CAMINHO_PNG, filename: CAMINHO_PNG, loaded: true, children: [], paths: [],
+  exports: {
+    ...geradorReal,
+    gerarPecaPNG: async (dados) => {
+      if (renderReal) { contagem.real++; return geradorReal.gerarPecaPNG(dados); }
+      contagem.stub++;
+      // Uma folha por ~3.000 caracteres, imitando a paginação real — as asserções que contam
+      // páginas continuam significando algo.
+      const folhas = Math.max(1, Math.ceil((dados.texto || '').length / 3000));
+      return Array.from({ length: folhas }, (_, i) => Buffer.from(`png-stub-fl${i + 1}`));
+    },
+  },
+};
+
 
 const db = require('../database/db');
 const rh = require('../utils/rh');
@@ -266,8 +307,12 @@ function novoProcesso(modo = 'ingame', extra = {}) {
 
     const proc = novoProcesso('ingame');
     await emissao.receberTrecho(fakeInteraction(JUIZ, 'modal', { tese: 'Texto de teste do recebimento.' }), 'intimacao_juiz', proc.numero);
+    // A ÚNICA renderização real do arquivo (fora de FULL_RENDER=1): o jsQR precisa de um QR de
+    // verdade dentro de um PNG de verdade. Ligada só para esta emissão, e desligada logo abaixo.
+    renderReal = true;
     const iEmitir = fakeInteraction(JUIZ, 'peca:enviar');
     await emissao.criarPeca(iEmitir, 'intimacao_juiz', proc.numero);
+    renderReal = FULL_RENDER;
 
     const peca = db.todos('pecas', x => x.processoNumero === proc.numero)[0];
     const dm = iEmitir.rec.sends.find(s => textoDe(s).includes(peca.numero));
@@ -590,8 +635,31 @@ function novoProcesso(modo = 'ingame', extra = {}) {
     ok(!!pecas.resolverTokenPublico(tokenAberto), '15c: ...enquanto o de um processo ainda ABERTO continua valendo — a varredura não revoga tudo, só o que encerrou');
   }
 
+  // FECHA O CHROMIUM antes de sair. Sem isto o processo fica preso até o desligamento por
+  // ociosidade (5 min): o Puppeteer deixa o ChildProcess e ~6 sockets abertos, e o Node não sai
+  // com handle vivo. Medido: 2,3s de renderização e 300s esperando para morrer.
+  await require('../services/gerarDocumentoPNG').fecharBrowser();
+
   try { fs.unlinkSync(DB_TESTE); } catch (_) {}
   try { fs.unlinkSync(`${DB_TESTE}.bak`); } catch (_) {}
+  // CANÁRIO DO MODO — o stub não pode mentir sobre o que rodou.
+  //
+  // Sem isto, um erro no switch faria o arquivo passar verde com ZERO renderização real, e o teste
+  // do selo (o único que justifica o custo) deixaria de existir sem ninguém notar. A contagem é
+  // afirmada nos dois modos, de propósito: cada um tem a sua forma de falhar em silêncio.
+  if (FULL_RENDER) {
+    ok(contagem.real >= 5 && contagem.stub === 0,
+      'R1: FULL_RENDER=1 — TODAS as renderizações foram reais',
+      `real=${contagem.real} stub=${contagem.stub}`);
+  } else {
+    ok(contagem.real === 1,
+      'R1: modo rápido — EXATAMENTE UMA renderização real (a do selo, item 7)',
+      `real=${contagem.real}`);
+    ok(contagem.stub >= 4,
+      'R2: e as demais foram stubbadas', `stub=${contagem.stub}`);
+    ok(true, `R3: rode com FULL_RENDER=1 antes de deploy — as ${contagem.stub} stubbadas voltam a ser reais`);
+  }
+
   console.log(`\n== Resumo: ${passes} passaram, ${falhas.length} falharam ==`);
   if (falhas.length) { for (const f of falhas) console.log(`   ❌ ${f.nome}${f.detalhe ? ` — ${f.detalhe}` : ''}`); process.exit(1); }
 })();
