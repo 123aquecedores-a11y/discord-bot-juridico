@@ -187,7 +187,10 @@ console.log('\n4) BOTÃO NÃO É TRAVA — o Discord não esconde botão por car
     '4a: abrir o menu de Administração é checado no clique');
   ok(/if \(modulo === 'rh' && !podeAdministrar\(interaction\)\)/.test(painel),
     '4b: e o de RH também');
-  ok(/if \(modulo === 'rh'\) \{\n    if \(!podeAdministrar\(interaction\)\)/.test(painel),
+  // `\r?\n`, nunca `\n` literal: o repo roda em Windows e o git normaliza para CRLF quando toca o
+  // arquivo. Esta asserção passou verde antes do commit e reprovou DEPOIS, no hook de pre-push —
+  // terceira vez que o mesmo detalhe morde neste projeto.
+  ok(/if \(modulo === 'rh'\) \{\r?\n\s*if \(!podeAdministrar\(interaction\)\)/.test(painel),
     '4c: e cada AÇÃO de RH revalida antes de executar — não confia no menu que a mostrou');
   // O executor final revalida de novo (defesa em profundidade).
   const rhSrc = LER('commands', 'rh.js');
