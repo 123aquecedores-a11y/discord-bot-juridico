@@ -160,7 +160,13 @@ console.log('\n3) Nenhum ato NOVO gravando andamento sem passar por esta revisã
     // despacho, razões do arquivamento). REVISADO, e é EXCEÇÃO DECLARADA: os três carregam TEOR de
     // propósito — são a fala do Juízo nos autos, feita para ser lida, e o documento já vai
     // publicado no canal junto. Ver a razão PUBLICADO em scripts/testes-anexos-em-canal.js.
-    'utils/emissaoPeca.js': 6, // +1 em 19/08/2026: 'selo destravado pela supervisão' — REVISADO: o detalhe carrega o MOTIVO escrito pela supervisão (metadado do ato), nunca o teor da peça
+    // +1 em 21/08/2026: 'anexo_nao_juntado' (lavrarPendenciaDeAnexo) — REVISADO, e revisado
+    // JUSTAMENTE pelo ângulo deste arquivo: o detalhe traz QUANTIDADE e POSIÇÃO dos anexos que
+    // falharam, nunca o NOME do arquivo. Nome de arquivo descreve conteúdo
+    // ("laudo-cadaverico-vitima.pdf") e gravá-lo num andamento — visível a todas as partes —
+    // furaria o podeVerTeor por um caminho novo, numa peça gated. O nome sai só na resposta
+    // efêmera ao emissor. Ver o cabeçalho de lavrarPendenciaDeAnexo em utils/emissaoPeca.js.
+    'utils/emissaoPeca.js': 7, // +1 em 19/08/2026: 'selo destravado pela supervisão' — REVISADO: o detalhe carrega o MOTIVO escrito pela supervisão (metadado do ato), nunca o teor da peça
     // +1 em 19/08/2026: 'juiz_designado' (elo denúncia recebida → destrava o juiz) — REVISADO: o detalhe diz QUEM assumiu e que o caso foi para instrução; é metadado da distribuição, não tem nada do teor da denúncia
     'utils/supervisao.js': 2,
   };

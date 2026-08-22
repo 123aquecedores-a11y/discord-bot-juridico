@@ -859,6 +859,35 @@ function resolverDestinatarios(cfg, processo, escolhido = null) {
   return out;
 }
 
+// ANEXO QUE NÃO ENTROU NOS AUTOS (21/08/2026).
+//
+// POR QUE NÃO ABORTA A EMISSÃO — a decisão é estrutural, não preferência: quando a juntada roda, o
+// `finalizarPeca` JÁ criou a peça, renderizou o PNG, mandou ao emissor, postou o card no canal do
+// processo e lavrou o andamento `peca_emitida`. Não há emissão a desfazer; há um documento assinado
+// e já publicado a destruir. E o `aplicarEfeitoNoProcesso` ainda não rodou — abortar aqui deixaria o
+// processo travado, que é exatamente o defeito de 19/08 anotado na chamada dele.
+//
+// MAS TAMBÉM NÃO PODE SUMIR. O anexo é PROVA juntada aos autos; perdê-lo em silêncio é perder prova.
+//
+// SEM O NOME DO ARQUIVO AQUI, e este é o ponto delicado: o andamento é visível a QUEM LÊ O
+// PROCESSO, e nome de arquivo costuma descrever o conteúdo ("laudo-cadaverico-vitima.pdf"). Gravá-lo
+// no andamento furaria o `podeVerTeor` por um caminho novo — e logo numa peça gated, cujo teor só
+// deveria abrir na entrega em cena. Quantidade e POSIÇÃO bastam para saber que falta algo e quanto.
+// O nome vai só para o emissor, na resposta efêmera, que ninguém mais lê.
+async function lavrarPendenciaDeAnexo(interaction, peca, falhos) {
+  const posicoes = falhos.map(f => f.posicao).join(', ');
+  await andamentos.registrar(interaction.guild, peca.processoNumero, {
+    tipo: 'anexo_nao_juntado',
+    titulo: `📎 ${falhos.length} anexo(s) NÃO juntado(s) — ${peca.numero}`,
+    detalhe: `A peça vale e está nos autos; ${falhos.length} documento(s) que a acompanhavam `
+      + `(posição ${posicoes}) NÃO foram juntados por falha técnica. `
+      + 'Podem ser juntados de novo pelo botão **🧾 Anexar prova** no canal do processo.',
+    executorId: interaction.user.id,
+    // Metadado é número, nunca nome: o registro do banco é lido por outras telas.
+    metadata: { peca: peca.numero, quantidade: falhos.length, posicoes: falhos.map(f => f.posicao) },
+  }).catch(err => console.error(`[pecas] a pendência de anexo de ${peca.numero} não pôde ser lavrada:`, err.message));
+}
+
 // ---------------------------------------------------------------------------
 // Passo 2 — gerar a peça
 // ---------------------------------------------------------------------------
@@ -911,14 +940,20 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
   // JUNTADA DOS DOCUMENTOS OPCIONAIS. Depois de a peça existir, não antes: se a criação falhasse,
   // ficariam documentos nos autos apontando para um ato que nunca nasceu. `atoOrigemId` é o número
   // da PEÇA — é o que amarra o anexo ao documento selado que o Juiz vai receber em cena.
-  for (const a of (rascunho.anexos || [])) {
+  const anexosFalhos = [];
+  for (const [i, a] of (rascunho.anexos || []).entries()) {
     try {
       require('./anexos').criarDocumento({
         tipo: `anexo_${tipoChave}`, url: a.url, nomeArquivo: a.nomeArquivo,
         autorId: interaction.user.id, atoOrigemId: peca.numero, protocoloVinculado: numeroProcesso,
       });
-    } catch (e) { console.error(`[pecas] falha ao juntar anexo de ${peca.numero}:`, e.message); }
+    } catch (e) {
+      // O loop NÃO para no primeiro erro: um anexo ruim não pode impedir os outros de entrarem.
+      anexosFalhos.push({ posicao: i + 1, nomeArquivo: a.nomeArquivo || null });
+      console.error(`[pecas] falha ao juntar o anexo ${i + 1} de ${peca.numero}:`, e.message);
+    }
   }
+  if (anexosFalhos.length) await lavrarPendenciaDeAnexo(interaction, peca, anexosFalhos);
 
   // Rascunho consumido: a peça existe, e deixar o texto em memória permitiria reenviar o mesmo
   // conteúdo como uma segunda peça por engano.
@@ -940,8 +975,23 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
     ? '\n⚠️ O documento foi criado, mas o PNG não pôde ser renderizado agora. O texto está salvo — peça à staff para reemitir a imagem.'
     : (entregue ? '' : '\n⚠️ Não consegui te mandar o documento por DM (talvez suas DMs estejam fechadas). Abra as DMs e peça reenvio à staff — o teor NÃO pode ir para o canal do processo.');
 
+  // AQUI o nome do arquivo PODE aparecer — e só aqui. Esta resposta é efêmera e vai a quem emitiu:
+  // ninguém mais lê. O andamento correspondente, que fica nos autos à vista de todos, leva só a
+  // quantidade e a posição (ver lavrarPendenciaDeAnexo).
+  //
+  // Sobre o caminho de conserto: **🧾 Anexar prova** existe e é o único disponível depois da
+  // emissão. Ele NÃO é equivalente — junta o documento ao PROCESSO (`atoOrigemId` vira
+  // `<numero>#provaN`), não preso à peça. A frase diz isso em vez de prometer restauração igual.
+  const avisoAnexo = anexosFalhos.length
+    ? `\n⚠️ **${anexosFalhos.length} anexo(s) NÃO entraram nos autos:** `
+      + anexosFalhos.map(f => f.nomeArquivo || `arquivo na posição ${f.posicao}`).join(', ') + '.'
+      + '\nA peça vale e está nos autos — falhou só a juntada. Para juntar de novo, use o botão '
+      + '**🧾 Anexar prova** no canal do processo (ele grava o documento nos autos pelo processo, '
+      + 'não preso a esta peça).'
+    : '';
+
   return interaction.editReply({
-    content: `✅ **${cfg.rotulo} ${peca.numero}** criada.${aviso}\n\n${peca.gated
+    content: `✅ **${cfg.rotulo} ${peca.numero}** criada.${aviso}${avisoAnexo}\n\n${peca.gated
       ? 'Só você vê o teor por enquanto. Quando estiver na cena com o destinatário, clique em **Entregar agora** no canal do processo para abrir a janela de 60 minutos.'
       : 'Este processo está em modo aberto: o documento já está visível às partes.'}`,
   });
@@ -1736,6 +1786,7 @@ module.exports = {
   estimarPaginas, linhaCusto, MAX_TRECHOS, MAX_CHARS_TRECHO, CHARS_POR_PAGINA, TTL_RASCUNHO_MS,
   verificarValvulaEEncerramento, publicarRelatorioSemanal, unidadeDoProcesso,
   qualificacao, // exportada para teste: e ela que classifica o rito no cabecalho do documento
+  lavrarPendenciaDeAnexo, // exportada para teste: e ela que NAO pode escrever nome de arquivo nos autos
   aplicarEfeitoDoRecebimento, EFEITOS_POS_RECEBIMENTO, // elo "documento entregue -> proxima etapa"
   finalizarPeca, emitirAtoComoPeca, // pipeline de emissao reusado por sentenca e recurso
   registrarFinalizador, lerRascunho, textoDoRascunho, limparRascunho, // rascunho por trechos, reusavel
