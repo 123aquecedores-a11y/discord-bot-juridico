@@ -185,15 +185,21 @@ async function criarEdital(interaction) {
     referencia: `Edital nº ${numero} (Juiz: ${vagasJuiz}, Promotor: ${vagasPromotor}) — inscrições ${periodo.inicioStr} a ${periodo.fimStr}`,
   });
 
-  // Publica no Diário Oficial (em try/catch — falha aqui não pode quebrar a abertura do edital).
+  // Publica no Diário Oficial (em try/catch — falha aqui não pode quebrar a abertura do edital,
+  // mas a flag sobe até a tela: edital é ato de convocação, e dizer "aberto" sem ter publicado
+  // esconde justamente a parte que dá publicidade ao concurso).
+  let publicouNoDiario = false;
   try {
     await diario.publicarNoDiario(interaction.guild, 'edital_aberto', {
       numero, vagasJuiz, vagasPromotor, inicio: periodo.inicioStr, fim: periodo.fimStr,
       files: png ? [{ attachment: png, name: `Edital-${numero.replace(/[^\w.-]/g, '_')}.png` }] : undefined,
     });
-  } catch (e) { console.error('[edital] publicação no Diário falhou (ignorado):', e.message); }
+    publicouNoDiario = true;
+  } catch (e) { console.error('[edital] publicação do edital no Diário falhou:', e.message); }
 
-  return interaction.editReply(`✅ Edital nº **${numero}** aberto em ${canal}.${png ? '' : '\n⚠️ Não consegui renderizar a imagem; o embed foi postado mesmo assim.'}`);
+  return interaction.editReply(`✅ Edital nº **${numero}** aberto em ${canal}.`
+    + `${png ? '' : '\n⚠️ Não consegui renderizar a imagem; o embed foi postado mesmo assim.'}`
+    + `${publicouNoDiario ? '' : '\n⚠️ **Não consegui publicar o edital no Diário Oficial** (canal ausente ou sem permissão). O edital VALE e está aberto no canal — o que faltou foi a publicação. Avise a staff.'}`);
 }
 
 // ---- 2) Inscrição (candidato) ----
@@ -296,10 +302,17 @@ async function decidirInscricao(interaction, inscricaoId, aprovar) {
     status: aprovar ? 'aprovada' : 'reprovada', decididoPor: interaction.user.id, decididoEm: new Date().toISOString(),
   });
 
-  let apelidoOk = null;
+  let apelidoOk = null, recusaLog = null;
   if (aprovar) {
     // REUTILIZA o fluxo de contratação existente — não duplica atribuição de cargo/role/apelido.
-    ({ apelidoOk } = await rhCmd.contratarComRole(interaction.guild, insc.userId, insc.cargo, interaction.user.id, insc.nomeRp, insc.rg));
+    ({ apelidoOk, recusa: recusaLog } = await rhCmd.contratarComRole(interaction.guild, insc.userId, insc.cargo, interaction.user.id, insc.nomeRp, insc.rg));
+    // Log de RH é condição da contratação (21/08/2026): se ele falhou, o cargo NÃO foi dado. A
+    // inscrição já ficou marcada como aprovada acima — quem decidiu precisa saber da divergência
+    // agora, e não descobrir pela ausência do cargo depois.
+    if (recusaLog) {
+      return interaction.editReply({ content: recusaLog })
+        .catch(() => interaction.reply({ content: recusaLog, ephemeral: true }));
+    }
   }
 
   const edital = db.buscarUm('editais', e => e.id === insc.editalId);
@@ -357,8 +370,16 @@ async function encerrarEdital(interaction, editalId) {
     if (msg) await msg.edit({ embeds: [embedEdital(atualizado)], components: botoesEdital(atualizado) }).catch(() => {});
   }
   await auditoria.registrar(interaction.guild, { acao: 'Edital encerrado', executorId: interaction.user.id, referencia: `Edital nº ${edital.numero}` });
-  try { await diario.publicarNoDiario(interaction.guild, 'edital_encerrado', { numero: edital.numero }); } catch (e) { console.error('[edital] publicação no Diário falhou (ignorado):', e.message); }
-  return interaction.reply({ content: `🔒 Edital nº **${edital.numero}** encerrado — botões de inscrição desativados e novas inscrições bloqueadas.`, ephemeral: true });
+  let publicouNoDiario = false;
+  try {
+    await diario.publicarNoDiario(interaction.guild, 'edital_encerrado', { numero: edital.numero });
+    publicouNoDiario = true;
+  } catch (e) { console.error('[edital] publicação do encerramento no Diário falhou:', e.message); }
+  return interaction.reply({
+    content: `🔒 Edital nº **${edital.numero}** encerrado — botões de inscrição desativados e novas inscrições bloqueadas.`
+      + `${publicouNoDiario ? '' : '\n⚠️ **Não consegui publicar o encerramento no Diário Oficial** (canal ausente ou sem permissão). O edital ESTÁ encerrado — o que faltou foi a publicação. Avise a staff.'}`,
+    ephemeral: true,
+  });
 }
 
 // ---- Router (prefixo "edital:") ----

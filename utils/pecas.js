@@ -1029,7 +1029,45 @@ function fecharJanelasDoProcesso(processoTabela, processoNumero, { agora = Date.
   return fechadas;
 }
 
+// O INVÓLUCRO QUE FALTAVA (21/08/2026).
+//
+// Os CINCO pontos que arquivam ou anulam chamavam fecharJanelasDoProcesso dentro de um try/catch
+// que só escrevia no console e seguia. Cinco cópias da mesma decisão, e a decisão estava errada:
+// JANELA ABERTA EM PROCESSO MORTO É PORTA. Enquanto ela existir, o destinatário ainda consegue
+// registrar o recebimento e abrir o teor de um ato que foi arquivado ou anulado — um documento
+// que não vale mais, entregue como se valesse.
+//
+// Agora a decisão mora num lugar só: falhou, grita no log COM o número do processo, e avisa no
+// canal de auditoria, que é onde quem arquiva está olhando. O aviso também volta no retorno, para
+// o chamador que tem tela poder mostrar a quem clicou.
+//
+// SOBRE O CONSERTO CITADO NO AVISO: não existe hoje ação manual de FECHAR janela. O botão
+// "🚨 Destravar entregas pendentes" faz o oposto — abre. Então o aviso manda repetir a ação
+// (arquivar/anular de novo, que é idempotente) e, se não der, chamar a staff. Prometer um botão
+// que não existe seria pior que não avisar.
+async function fecharJanelasEAvisar(guild, processoTabela, processoNumero, { contexto = 'arquivamento' } = {}) {
+  try {
+    const fechadas = fecharJanelasDoProcesso(processoTabela, processoNumero);
+    if (fechadas.length) {
+      console.log(`[pecas] ${contexto} de ${processoNumero}: ${fechadas.length} janela(s) de entrega fechada(s).`);
+    }
+    return { ok: true, fechadas, aviso: null };
+  } catch (e) {
+    console.error(`[pecas] FALHA ao fechar as janelas de entrega de ${processoNumero} no ${contexto}: ${e.message}`);
+    const aviso = `⚠️ **As janelas de entrega de ${processoNumero} NÃO foram fechadas.**\n`
+      + `O ${contexto} valeu, mas ficou janela de entrega ABERTA num processo morto: o destinatário `
+      + 'ainda consegue registrar recebimento e abrir o teor de um ato que não vale mais.\n'
+      + `Repita o ${contexto} (a operação é idempotente e refaz o fechamento). Se não for possível, `
+      + 'chame a staff — não há botão de fechar janela.\n'
+      + `Erro: \`${e.message}\``;
+    await require('./auditoria').avisar(guild, aviso)
+      .catch(err => console.error(`[pecas] o aviso de janela aberta de ${processoNumero} não pôde ser publicado: ${err.message}`));
+    return { ok: false, fechadas: [], aviso };
+  }
+}
+
 module.exports = {
+  fecharJanelasEAvisar,
   MODOS, VALVULA_MS, valvulaMsPara, relatorioValvula, MAX_RECUSAS_TOKEN, MAX_ILEGIVEIS_AVISO,
   modoDoProcesso, janelaMinutos, detalheDeAndamento,
   ocupanteAtual, ocupaDestinatario, isSupervisao, classificarDestinatarioIntimacao,

@@ -742,16 +742,18 @@ async function arquivarManual(interaction, modulo, numero, opcoes = {}) {
   // SPEC §11.4: processo arquivado fecha as janelas de entrega pendentes — sem isso sobra estado
   // órfão (janela "aberta" num caso morto). Só faz sentido para processos; nas outras tabelas não
   // há peça. Ligado em 19/08/2026 (era um dos exports órfãos da auditoria).
+  let janelas = { ok: true, aviso: null };
   if (modulo === 'processo') {
-    try {
-      const fechadas = require('../utils/pecas').fecharJanelasDoProcesso(tabela, numero);
-      if (fechadas.length) console.log(`[pecas] arquivamento manual de ${numero}: ${fechadas.length} janela(s) de entrega fechada(s).`);
-    } catch (e) { console.error('[pecas] falha ao fechar janelas no arquivamento:', e.message); }
+    janelas = await require('../utils/pecas').fecharJanelasEAvisar(interaction.guild, tabela, numero, { contexto: 'arquivamento manual' });
   }
   await auditoria.registrar(interaction.guild, { acao: `Arquivado manualmente (${modulo})`, executorId: interaction.user.id, referencia: numero });
 
-  if (mudo) return { ok: true };
-  return interaction.reply({ content: `📦 ${numero} arquivado — canal travado e movido pra categoria Arquivados.`, ephemeral: true });
+  if (mudo) return { ok: true, janelas };
+  // Quem arquivou vê a falha na mesma resposta: é ele quem pode repetir a ação agora.
+  return interaction.reply({
+    content: `📦 ${numero} arquivado — canal travado e movido pra categoria Arquivados.${janelas.aviso ? `\n\n${janelas.aviso}` : ''}`,
+    ephemeral: true,
+  });
 }
 
 async function executarAcaoBotao(interaction, modulo, acao, extra) {
@@ -1435,6 +1437,11 @@ async function tratarModal(interaction, modulo, acao, extra) {
     // deferReply: a redistribuição percorre os tickets abertos e posta nos canais — passa dos 3s.
     await interaction.deferReply({ ephemeral: true });
     const registro = await rhCmd.demitirComRole(interaction.guild, extra, interaction.user.id, motivo);
+    // Recusa por falha no log de RH é OUTRA coisa que "não tinha cargo": nada foi alterado, e a
+    // tela precisa dizer isso — ver exigirLogRh em commands/rh.js.
+    if (registro && registro.recusa) {
+      return interaction.editReply({ embeds: [new EmbedBuilder().setColor(0xe74c3c).setDescription(registro.recusa)] });
+    }
     const embed = new EmbedBuilder().setColor(registro ? 0xe74c3c : 0x95a5a6)
       .setDescription(registro
         ? `<@${extra}> foi removido do cargo jurídico.\n${rhCmd.resumoDaDemissao(registro)}\n**Motivo:** ${motivo}`
@@ -1446,29 +1453,34 @@ async function tratarModal(interaction, modulo, acao, extra) {
     const [usuarioId, liga] = String(extra || '').split('#');
     const afastado = liga === 'on';
     const motivo = (interaction.fields.getTextInputValue('motivo') || '').trim();
+    // O log é CONDIÇÃO, não consequência (21/08/2026). Lê o cargo antes de mexer, tenta gravar, e
+    // só então altera o RH — assim não existe instante em que a licença valeu sem registro.
+    const cargoAtual = (rh.getCargo(usuarioId) || {}).cargo || null;
+    if (!cargoAtual) {
+      return interaction.reply({
+        embeds: [new EmbedBuilder().setColor(0xe74c3c).setDescription('Essa pessoa não tem cargo jurídico ativo.')],
+        ephemeral: true,
+      });
+    }
+    const trava = rhCmd.exigirLogRh({
+      acao: 'licenca', executorId: interaction.user.id, cargoExecutor: rhCmd.cargoDoExecutor(interaction.user.id),
+      alvoId: usuarioId, cargoAlvo: cargoAtual,
+      motivo: `${afastado ? 'Afastamento' : 'Retorno'} — ${motivo}`, guildId: interaction.guild?.id,
+    });
+    if (!trava.ok) {
+      return interaction.reply({ embeds: [new EmbedBuilder().setColor(0xe74c3c).setDescription(trava.recusa)], ephemeral: true });
+    }
     const atualizado = rh.setLicenca(usuarioId, afastado);
-    let logFalhou = { ok: true, aviso: null };
     if (atualizado) {
       await auditoria.registrar(interaction.guild, {
         acao: `RH: ${afastado ? 'licença' : 'retorno de licença'}`, executorId: interaction.user.id,
         referencia: `<@${usuarioId}>`, motivo,
       });
-      logFalhou = logRh.registrar({
-        acao: 'licenca', executorId: interaction.user.id, cargoExecutor: rhCmd.cargoDoExecutor(interaction.user.id),
-        alvoId: usuarioId, cargoAlvo: (rh.getCargo(usuarioId) || {}).cargo || null,
-        motivo: `${afastado ? 'Afastamento' : 'Retorno'} — ${motivo}`, guildId: interaction.guild?.id,
-      });
-      // Quem clicou o botão vê a falha no MESMO embed, com os dados para lançar à mão. A licença
-      // não é desfeita por causa disso — ver utils/logRh.js.
-      if (!logFalhou.ok) await auditoria.avisar(interaction.guild, logFalhou.aviso);
     }
-    const okTexto = `<@${usuarioId}> agora está ${afastado ? '**de licença**' : '**ativo**'}.\n**Motivo:** ${motivo}`;
     const embed = new EmbedBuilder()
-      // Amarelo quando a ação valeu mas o log falhou: nem verde (esconderia o problema) nem
-      // vermelho (mentiria dizendo que a licença não pegou).
-      .setColor(!atualizado ? 0xe74c3c : (logFalhou.ok ? 0x2ecc71 : 0xf1c40f))
+      .setColor(atualizado ? 0x2ecc71 : 0xe74c3c)
       .setDescription(atualizado
-        ? (logFalhou.ok ? okTexto : `${okTexto}\n\n${logFalhou.aviso}`)
+        ? `<@${usuarioId}> agora está ${afastado ? '**de licença**' : '**ativo**'}.\n**Motivo:** ${motivo}`
         : 'Essa pessoa não tem cargo jurídico ativo.');
     return interaction.reply({ embeds: [embed], ephemeral: true });
   }

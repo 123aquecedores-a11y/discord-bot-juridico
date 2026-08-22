@@ -51,7 +51,23 @@ incluindo os 4 tickets abertos. Descoberto só porque a auditoria de catch silen
 **Depois do freeze:** detectar por evento `GuildMemberUpdate` e avisar na auditoria **na hora**, em
 vez de esperar o boot. O listener já existe no `index.js` para outros eventos de membro.
 
-## 5. Processo já existente não converte para o modo in-game
+## 5. Reanexar preso à PEÇA, não só ao processo
+
+Quando a juntada de um anexo falha na emissão, a pendência lavrada aponta o botão
+**🧾 Anexar prova** como conserto. Ele funciona — o documento entra nos autos — mas amarra
+`atoOrigemId: '<numero>#provaN'`, ou seja, **ao processo**. A juntada original amarrava
+`atoOrigemId: peca.numero`, **à peça**: é esse vínculo que liga o documento ao PNG selado que o
+Juiz recebe em cena.
+
+Hoje o reanexo perde esse vínculo. Depois do freeze: um caminho de reanexo que aceite o número da
+peça e recomponha `atoOrigemId` corretamente.
+
+Junto disso, e é decisão de permissão, não de código: `🧾 Anexar prova` é restrito por
+`ehParteDoRegistro` (Delegado, MP, Juiz, réu, advogado habilitado). Staff que emita uma peça e
+perca o anexo **não consegue clicar no próprio conserto** — hoje a mensagem manda pedir a uma das
+partes. Se a staff deve ou não entrar nessa lista é chamada do operador.
+
+## 6. Processo já existente não converte para o modo in-game
 
 O `modoEntrega` é carimbado na **criação** do processo e é imutável por decisão de projeto
 (SPEC §11.2). Ligar o interruptor hoje não converte o que já existe: processo aberto antes continua
@@ -64,32 +80,32 @@ no mesmo tribunal, e quem liga o interruptor espera que valha para tudo.
 Ideia, não decisão: uma ação de staff explícita, um processo por vez, com registro nos autos —
 nunca uma conversão em massa silenciosa.
 
-## 6. `BASE_URL_PECAS` não está configurada
+## 7. `BASE_URL_PECAS` não está configurada
 
 Sem ela, `servidorPecas.urlPublica()` devolve `null` e **o link da página do documento no jogo nunca
 é gerado**. O servidor HTTP sobe e avisa no log, mas a metade in-game da entrega fica sem endereço.
 Ver a pendência manual correspondente em `PENDENCIAS_MANUAIS.md`.
 
-## 7. Aposentadoria do modo `legado` (SPEC §11.2.1)
+## 8. Aposentadoria do modo `legado` (SPEC §11.2.1)
 
 Nenhum processo novo nasce `legado` desde 18/08. Quando o último processo `legado` for arquivado, o
 ramo `MODOS.LEGADO` e o `modoDoProcesso()` que o produz podem sair do código. O botão
 **📊 Relatório da entrega** no painel já serve para medir isso — é ele que diz quando chegou a hora.
 
-## 8. Código de arquivo físico (`codigoArquivo`)
+## 9. Código de arquivo físico (`codigoArquivo`)
 
 O campo existe em `utils/pecas.js`, nasce `null` e **não há nenhuma lógica de atribuição**. Foi
 reservado de propósito para que acrescentá-lo depois não exija migrar registro nem mexer no rodapé
 do PNG. Continua reservado.
 
-## 9. Gemini: qual o teto do free-tier
+## 10. Gemini: qual o teto do free-tier
 
 A `GEMINI_API_KEY` está configurada e a revisão automática de fundamentação usa o modelo. Nunca foi
 verificado qual é o limite diário do free-tier nem o que acontece com o fluxo quando ele estoura —
 se o texto sai sem revisão, se a ação falha, ou se trava. Vale medir antes de depender disso num dia
 de movimento.
 
-## 10. Diário Oficial: varredura retroativa
+## 11. Diário Oficial: varredura retroativa
 
 Chegou a ser construído um paliativo de varredura do Diário e foi **descartado** em 21/08, porque a
 política de sigilo que ele reimplementava **já existia completa** em `utils/diarioAtos.js`
@@ -99,7 +115,7 @@ O Diário foi conferido no mesmo dia: 0 publicações sigilosas em 35 mensagens 
 nada a limpar hoje. Se um dia houver, a varredura precisa nascer **lendo** a política que já existe,
 não reescrevendo-a.
 
-## 11. `FULL_RENDER=1` só no hook de pre-push
+## 12. `FULL_RENDER=1` só no hook de pre-push
 
 O dia a dia roda a suíte com renderização stubada (75s); a renderização integral só acontece no
 push. É a troca certa hoje, mas significa que um defeito exclusivo do render real só aparece na

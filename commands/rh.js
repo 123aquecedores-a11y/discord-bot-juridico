@@ -49,9 +49,43 @@ function cargoDoExecutor(executorId) {
   return (reg && reg.cargo) || 'Staff/Administração';
 }
 
+// O LOG DE RH VIROU CONDIÇÃO, NÃO CONSEQUÊNCIA (21/08/2026 — decisão do operador).
+//
+// Antes: mexia no cargo e depois tentava logar; se o log falhasse, a ação já tinha acontecido e o
+// registro simplesmente não existia. Agora é o contrário — o log vem PRIMEIRO, e sem ele a ação não
+// acontece. Contratar, demitir e dar licença mudam QUEM PODE O QUÊ no tribunal inteiro: poder que
+// muda sem registro é poder que ninguém consegue auditar depois.
+//
+// A ordem é o que dispensa rollback. Gravar o log antes significa que, quando o cargo muda, o
+// registro JÁ existe — não há janela em que um exista sem o outro. E o modo de falha real (a tabela
+// `logRh` não declarada em database/db.js, que aconteceu) quebra só o log, nunca o `rh`.
+//
+// `executorId` nulo é o caminho de sistema, sem humano por trás: não há log a exigir, e bloquear ali
+// travaria automação por uma regra escrita para ato de gente.
+function exigirLogRh(dados) {
+  if (!dados.executorId) return { ok: true, recusa: null };
+  const log = logRh.registrar(dados);
+  if (log.ok) return { ok: true, recusa: null };
+  return {
+    ok: false,
+    recusa: '🛑 **A ação NÃO foi executada.**\n'
+      + 'O registro no log de RH falhou, e sem registro a ação não acontece — contratar, demitir e dar '
+      + 'licença mudam quem pode o quê no tribunal, e poder que muda sem registro ninguém audita depois.\n'
+      + '**Nada foi alterado no RH.** Tente de novo; se repetir, chame quem cuida do bot.\n'
+      + `Erro: \`${log.erro}\``,
+  };
+}
+
 async function contratarComRole(guild, usuarioId, cargo, executorId = null, nomePersonagem = null, rg = null, motivo = null) {
   // Captura o cargo ATIVO anterior antes de contratar (rh.contratar desativa o registro antigo).
   const anterior = rh.getCargo(usuarioId);
+  // PRIMEIRA COISA, antes de qualquer escrita: sem log, não há contratação. Ver exigirLogRh.
+  const trava = exigirLogRh({
+    acao: 'contratar', executorId, cargoExecutor: cargoDoExecutor(executorId),
+    alvoId: usuarioId, cargoAlvo: cargo, motivo, guildId: guild?.id,
+  });
+  if (!trava.ok) return { ok: false, recusa: trava.recusa, apelidoOk: null, carteira: null, assumidos: [], publicouNoDiario: false };
+
   rh.contratar(usuarioId, cargo, nomePersonagem, rg);
   const membro = await guild.members.fetch(usuarioId).catch(() => null);
   const roleId = roleIdPorCargo(cargo);
@@ -80,25 +114,20 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
   // de emitirCarteirinha e não interrompe a contratação.
   const carteira = await carteirinha.emitirCarteirinha(guild, usuarioId)
     .catch(err => { console.error('[rh] falha ao emitir carteira:', err.message); return null; });
+  // A auditoria no canal CONTINUA: são coisas diferentes. O canal é o aviso; o logRh é o arquivo —
+  // e o arquivo já foi gravado lá em cima, antes de qualquer escrita, porque agora ele é condição.
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: contratação', executorId, referencia: `<@${usuarioId}> → ${cargo}${nomePersonagem ? ` ("${nomePersonagem}")` : ''}`, motivo });
-    // LOG PERSISTENTE, além da auditoria no canal: a auditoria é o AVISO (mensagem, some), isto é
-    // o ARQUIVO (tabela, consultável). Ver o cabeçalho de utils/logRh.js.
-    const log = logRh.registrar({
-      acao: 'contratar', executorId, cargoExecutor: cargoDoExecutor(executorId),
-      alvoId: usuarioId, cargoAlvo: cargo, motivo, guildId: guild?.id,
-    });
-    // Falha de log NÃO desfaz a contratação (o cargo já foi dado) — mas também não some mais em
-    // silêncio: o aviso com os dados do lançamento manual vai para o canal de auditoria, que é
-    // onde quem opera RH já está olhando. Ver utils/logRh.js.
-    if (!log.ok) await auditoria.avisar(guild, log.aviso);
   }
-  // Publica a nomeação no Diário Oficial (try/catch — falha aqui não pode quebrar a contratação).
+  // Publica a nomeação no Diário Oficial (try/catch — falha aqui não pode quebrar a contratação,
+  // mas a flag sobe até quem clicou: a tela não pode dizer que publicou quando não publicou).
   // Cobre TODOS os caminhos que contratam: /rh contratar, aprovação de solicitação e aprovação de
   // inscrição de edital (resultado de seletivo).
+  let publicouNoDiario = false;
   try {
     await diario.publicarNoDiario(guild, 'nomeacao', { userId: usuarioId, cargo, nome: nomePersonagem, porQuemId: executorId });
-  } catch (e) { console.error('[rh] publicação de nomeação no Diário falhou (ignorado):', e.message); }
+    publicouNoDiario = true;
+  } catch (e) { console.error('[rh] publicação de nomeação no Diário falhou:', e.message); }
   // CICLO FECHADO (19/08/2026): demitido → sem ninguém → aguardando designação → contratado →
   // o caso vai para ele sozinho. Sem isto, o caso ficava esperando a varredura periódica passar,
   // e a Staff tinha de designar na mão justamente no momento em que acabara de resolver a falta.
@@ -117,8 +146,13 @@ async function contratarComRole(guild, usuarioId, cargo, executorId = null, nome
     }
   }
 
-  return { apelidoOk, carteira, assumidos };
+  return { ok: true, recusa: null, apelidoOk, carteira, assumidos, publicouNoDiario };
 }
+
+// Frase única para quem clicou, quando o Diário não publicou. Vive num lugar só porque os quatro
+// caminhos de contratação mostram a mesma coisa, e três cópias divergem na primeira edição.
+const AVISO_DIARIO_NOMEACAO = '\n⚠️ **Não consegui publicar a nomeação no Diário Oficial** '
+  + '(canal ausente ou sem permissão). O cargo VALE e está no RH — o que faltou foi a publicação. Avise a staff.';
 
 // Contratação via PAINEL (Staff) com captura de nome + RG num modal — o painel é o caminho
 // principal da Staff, então ele também passa a capturar RG (igual o /rh contratar slash). Ambos os
@@ -173,13 +207,16 @@ async function contratarViaModal(interaction, usuarioId, cargo) {
   await interaction.deferReply({ ephemeral: true });
   const nome = (interaction.fields.getTextInputValue('nome') || '').trim() || null;
   const rg = (interaction.fields.getTextInputValue('rg') || '').trim() || null;
-  await contratarComRole(interaction.guild, usuarioId, cargo, interaction.user.id, nome, rg, (interaction.fields.getTextInputValue('motivo') || '').trim());
+  const r = await contratarComRole(interaction.guild, usuarioId, cargo, interaction.user.id, nome, rg, (interaction.fields.getTextInputValue('motivo') || '').trim());
+  if (!r.ok) return interaction.editReply({ embeds: [new EmbedBuilder().setColor(0xe74c3c).setDescription(r.recusa)] });
   // Mesmo aviso fail-open do slash: magistrado/MP que ficou sem RG → impedimento não verificável.
   const reg = rh.getCargo(usuarioId);
   const aviso = rh.precisaRg(cargo) && !(reg && reg.rg)
     ? '\n⚠️ **Sem RG cadastrado** — o impedimento não é verificável pra essa pessoa até preencher o RG em **Gerenciar dados**. Veja todos com `/rh sem-rg`.'
     : '';
-  const embed = new EmbedBuilder().setColor(0x2ecc71).setDescription(`<@${usuarioId}> agora é **${cargo}**.${aviso}`);
+  const embed = new EmbedBuilder()
+    .setColor(r.publicouNoDiario ? 0x2ecc71 : 0xf1c40f)
+    .setDescription(`<@${usuarioId}> agora é **${cargo}**.${aviso}${r.publicouNoDiario ? '' : AVISO_DIARIO_NOMEACAO}`);
   return interaction.editReply({ embeds: [embed] });
 }
 
@@ -204,6 +241,16 @@ function resumoDaDemissao(saiu) {
 
 async function demitirComRole(guild, usuarioId, executorId = null, motivo = null) {
   const registro = rh.getCargo(usuarioId);
+  // Sem log, não há demissão. Antes de `rh.demitir`, de propósito: assim não existe instante em que
+  // o cargo caiu e o registro não. Ver exigirLogRh.
+  const trava = exigirLogRh({
+    acao: 'demitir', executorId, cargoExecutor: cargoDoExecutor(executorId),
+    alvoId: usuarioId, cargoAlvo: registro ? registro.cargo : null, motivo, guildId: guild?.id,
+  });
+  // Objeto com `recusa`, e não `null`: null já significa "não tinha cargo nenhum", e confundir as
+  // duas coisas faria a tela dizer "essa pessoa não está no quadro" quando o que houve foi falha.
+  if (!trava.ok) return { recusa: trava.recusa };
+
   rh.demitir(usuarioId);
   if (registro) {
     const roleId = roleIdPorCargo(registro.cargo);
@@ -221,14 +268,10 @@ async function demitirComRole(guild, usuarioId, executorId = null, motivo = null
   // Roda MESMO sem registro: quem tinha role sem cargo nenhum no RH é exatamente o caso achado em
   // produção em 21/08 — role posta na mão, fora do bot, sem nada no quadro.
   await reconciliacaoRoles.reconciliarMembro(guild, usuarioId, { motivo: 'demissão' });
+  // O arquivo (logRh) já está gravado — foi condição para chegar aqui. O canal continua recebendo
+  // o aviso, que é outra coisa: um é consulta, o outro é acompanhamento ao vivo.
   if (executorId) {
     await auditoria.registrar(guild, { acao: 'RH: demissão', executorId, referencia: `<@${usuarioId}>${registro ? ` (era ${registro.cargo})` : ''}`, motivo });
-    const log = logRh.registrar({
-      acao: 'demitir', executorId, cargoExecutor: cargoDoExecutor(executorId),
-      alvoId: usuarioId, cargoAlvo: registro ? registro.cargo : null, motivo, guildId: guild?.id,
-    });
-    // Idem contratar: a demissão está feita e NÃO é revertida por causa do log. O aviso aparece.
-    if (!log.ok) await auditoria.avisar(guild, log.aviso);
   }
 
   // O CASO NÃO PODE FICAR SEM DONO (19/08/2026). Antes, a demissão só mexia no quadro; os casos
@@ -419,9 +462,12 @@ async function decidirSolicitacao(interaction, id, aprovar) {
     status: aprovar ? 'Aprovada' : 'Negada', decididoPor: interaction.user.id, decididoEm: new Date().toISOString(),
   });
 
-  let apelidoOk = null, carteira = null;
+  let apelidoOk = null, carteira = null, publicouNoDiario = true, recusaLog = null;
   if (aprovar) {
-    ({ apelidoOk, carteira } = await contratarComRole(interaction.guild, sol.discordId, sol.cargo, interaction.user.id, sol.nomePersonagem, sol.rg));
+    ({ apelidoOk, carteira, publicouNoDiario, recusa: recusaLog } = await contratarComRole(interaction.guild, sol.discordId, sol.cargo, interaction.user.id, sol.nomePersonagem, sol.rg));
+    // A solicitação já ficou marcada como Aprovada acima, mas o CARGO não foi dado. Quem decidiu
+    // precisa saber agora, não descobrir pela ausência do cargo depois.
+    if (recusaLog) return interaction.editReply({ content: recusaLog }).catch(() => interaction.reply({ content: recusaLog, ephemeral: true }));
   }
 
   const membro = await interaction.guild.members.fetch(sol.discordId).catch(() => null);
@@ -663,14 +709,16 @@ module.exports = {
       // Chromium frio) — senão o reply que carrega o aviso fail-open de RG morre com 10062. Mesmo
       // motivo do contratarViaModal. editReply depois.
       await interaction.deferReply();
-      await contratarComRole(interaction.guild, usuario.id, cargo, interaction.user.id, null, rg, interaction.options.getString('motivo'));
+      const r = await contratarComRole(interaction.guild, usuario.id, cargo, interaction.user.id, null, rg, interaction.options.getString('motivo'));
+      // Log de RH é condição: sem ele nada foi alterado, e a tela diz isso em vez de mentir.
+      if (!r.ok) return interaction.editReply({ content: r.recusa });
       // Fail-open VISÍVEL: se é cargo de magistratura/MP e a pessoa segue sem RG (nem informado agora,
       // nem preservado de um cargo anterior), avisa que o impedimento não vai pegar pra ela.
       const reg = rh.getCargo(usuario.id);
       const aviso = rh.precisaRg(cargo) && !(reg && reg.rg)
         ? '\n⚠️ **Sem RG cadastrado** — o impedimento não é verificável pra essa pessoa até preencher o RG em **Gerenciar dados**. Veja todos com `/rh sem-rg`.'
         : '';
-      return interaction.editReply({ content: `${usuario} agora é **${cargo}**.${aviso}` });
+      return interaction.editReply({ content: `${usuario} agora é **${cargo}**.${aviso}${r.publicouNoDiario ? '' : AVISO_DIARIO_NOMEACAO}` });
     }
 
     if (sub === 'sem-rg') {
@@ -690,6 +738,9 @@ module.exports = {
       // Defer: a redistribuição percorre os tickets abertos e posta nos canais — passa dos 3s.
       await interaction.deferReply();
       const saiu = await demitirComRole(interaction.guild, usuario.id, interaction.user.id, interaction.options.getString('motivo'));
+      // `recusa` vem ANTES do teste de `!saiu`: as duas coisas são diferentes, e trocá-las faria a
+      // tela dizer "não tinha cargo" quando o que houve foi o log falhando.
+      if (saiu && saiu.recusa) return interaction.editReply({ content: saiu.recusa });
       if (!saiu) return interaction.editReply({ content: `${usuario} não tinha cargo jurídico ativo.` });
       // Diz o que aconteceu com os CASOS, não só com o cargo: era isso que faltava para a Staff
       // saber se sobrou algo aguardando designação.
@@ -701,21 +752,22 @@ ${resumoDaDemissao(saiu)}` });
       const usuario = interaction.options.getUser('usuario');
       const afastado = interaction.options.getBoolean('afastado');
       const motivo = interaction.options.getString('motivo');
+      // O cargo é lido ANTES de mexer: o log precisa registrar de qual cargo se trata, e ele agora
+      // vem primeiro. Sem cargo ativo não há licença a dar — nem log a exigir.
+      const cargoAtual = (rh.getCargo(usuario.id) || {}).cargo || null;
+      if (!cargoAtual) return interaction.reply({ content: 'Essa pessoa não tem cargo jurídico ativo.', ephemeral: true });
+      const trava = exigirLogRh({
+        acao: 'licenca', executorId: interaction.user.id, cargoExecutor: cargoDoExecutor(interaction.user.id),
+        alvoId: usuario.id, cargoAlvo: cargoAtual,
+        motivo: `${afastado ? 'Afastamento' : 'Retorno'} — ${motivo}`, guildId: interaction.guild?.id,
+      });
+      if (!trava.ok) return interaction.reply({ content: trava.recusa, ephemeral: true });
       const atualizado = rh.setLicenca(usuario.id, afastado);
       if (!atualizado) return interaction.reply({ content: 'Essa pessoa não tem cargo jurídico ativo.', ephemeral: true });
       await auditoria.registrar(interaction.guild, {
         acao: `RH: ${afastado ? 'licença' : 'retorno de licença'}`, executorId: interaction.user.id, referencia: `${usuario}`, motivo,
       });
-      const log = logRh.registrar({
-        acao: 'licenca', executorId: interaction.user.id, cargoExecutor: cargoDoExecutor(interaction.user.id),
-        alvoId: usuario.id, cargoAlvo: (rh.getCargo(usuario.id) || {}).cargo || null,
-        motivo: `${afastado ? 'Afastamento' : 'Retorno'} — ${motivo}`, guildId: interaction.guild?.id,
-      });
-      // Aqui HÁ quem clicou, então o aviso vai direto para ele — é quem pode lançar à mão agora,
-      // sem depender de alguém ler o canal de auditoria depois. A licença em si já valeu.
-      if (!log.ok) await auditoria.avisar(interaction.guild, log.aviso);
-      const okTexto = `${usuario} agora está ${afastado ? '**de licença**' : '**ativo**'}.`;
-      return interaction.reply({ content: log.ok ? okTexto : `${okTexto}\n\n${log.aviso}` });
+      return interaction.reply({ content: `${usuario} agora está ${afastado ? '**de licença**' : '**ativo**'}.` });
     }
 
     if (sub === 'listar') {
@@ -733,6 +785,9 @@ ${resumoDaDemissao(saiu)}` });
   },
 
   modalMotivoRh, cargoDoExecutor,
+  // O log de RH virou CONDIÇÃO da ação (21/08/2026): exportada porque o painel também a aplica na
+  // licença, e duas cópias da mesma trava divergem na primeira edição.
+  exigirLogRh, AVISO_DIARIO_NOMEACAO,
   contratarComRole,
   demitirComRole, resumoDaDemissao, redistribuirCasosDe, derrubarHabilitacoesDe,
   modalContratarStaff,

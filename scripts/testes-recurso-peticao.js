@@ -202,8 +202,11 @@ console.log('\n4) MANTER / REFORMAR / ANULAR nos autos da petição');
     '4g: ...com OUTRO Juiz — quem proferiu a decisão anulada não a refaz');
   ok(/motivo: null, decisaoJuizEm: null, executadoPorId: null/.test(corpo),
     '4h: ...e limpa a decisão anulada, sem deixar fundamentação órfã nos autos');
-  ok(/fecharJanelasDoProcesso\('peticoes'/.test(corpo),
-    '4i: ...e fecha entrega pendente da decisão anulada (SPEC §11.4)');
+  // Passou a exigir o INVÓLUCRO, não a função crua (21/08/2026): fecharJanelasDoProcesso direto
+  // volta a engolir a falha, e janela aberta em processo anulado é porta para entregar documento
+  // que não vale mais. Ver fecharJanelasEAvisar em utils/pecas.js.
+  ok(/fecharJanelasEAvisar\(interaction\.guild, 'peticoes'/.test(corpo),
+    '4i: ...e fecha entrega pendente da decisão anulada, pelo invólucro que avisa quando falha (SPEC §11.4)');
 }
 
 // ---------------------------------------------------------------------------

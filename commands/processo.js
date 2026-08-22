@@ -394,7 +394,7 @@ async function executarParecerMp(interaction, numero, modo) {
 
   db.atualizar('processos', numero, { status: 'Arquivado' });
   // SPEC §11.4: arquivou, fecha as janelas de entrega pendentes (sem estado órfão em caso morto).
-  try { require('../utils/pecas').fecharJanelasDoProcesso('processos', numero); } catch (e) { console.error('[pecas] fechar janelas no arquivamento:', e.message); }
+  const janelasParecer = await require('../utils/pecas').fecharJanelasEAvisar(interaction.guild, 'processos', numero, { contexto: 'arquivamento' });
   if (canal) {
     await canais.arquivarCanal(canal);
     // Sem Delegado (processo aberto pelo próprio MP) não há a quem oferecer a revisão do
@@ -409,7 +409,10 @@ async function executarParecerMp(interaction, numero, modo) {
   await auditoria.registrar(interaction.guild, { acao: 'Processo arquivado (MP)', executorId: interaction.user.id, referencia: `Processo ${numero}` });
   // NÍVEL 1 — arquivamento de inquérito publica no Diário na hora (efeito automático por natureza).
   await diarioAtos.publicarAto(interaction.guild, 'arquivamentoInquerito', db.buscarPorNumero('processos', numero));
-  return interaction.editReply({ content: `Processo ${numero} arquivado.` });
+  // Janela de entrega que não fechou vira porta num processo morto — quem arquivou vê na hora.
+  return interaction.editReply({ content: `Processo ${numero} arquivado.${janelasParecer.aviso ? `
+
+${janelasParecer.aviso}` : ''}` });
 }
 
 // ---- Catálogo central de ações do painel (spec-andamentos-processuais_4.md, seção 8.6) ----
@@ -2404,8 +2407,13 @@ async function arquivarCivil(interaction, numero) {
     ...atosPorCargo.carimboDeExecucao(interaction.user.id),
   });
   // SPEC §11.4: arquivou, fecha as janelas de entrega pendentes (sem estado órfão em caso morto).
-  try { require('../utils/pecas').fecharJanelasDoProcesso('processos', numero); } catch (e) { console.error('[pecas] fechar janelas no arquivamento:', e.message); }
+  const janelasArquivo = await require('../utils/pecas').fecharJanelasEAvisar(interaction.guild, 'processos', numero, { contexto: 'arquivamento' });
   await interaction.update({ embeds: [embedProcesso(db.buscarPorNumero('processos', numero))], components: [] });
+  // `update` substitui a mensagem do botão e não comporta emenda: o aviso vai como efêmera nova.
+  if (janelasArquivo.aviso) {
+    await interaction.followUp({ content: janelasArquivo.aviso, ephemeral: true })
+      .catch(err => console.error('[pecas] aviso de janela aberta não pôde ser entregue a quem arquivou:', err.message));
+  }
 
   const canal = await interaction.guild.channels.fetch(processo.canalId).catch(() => null);
   if (canal) {
@@ -3641,6 +3649,10 @@ async function abrirModalFundamentacaoDecisao(interaction, numeroApelacao, decis
 async function finalizarApelacao(interaction, numeroApelacao, decisao, extras = {}) {
   const apelacao = await validarDecisaoApelacao(interaction, numeroApelacao);
   if (!apelacao) return;
+  // Janela de entrega que não fechou na anulação vira porta num ato que não vale mais. O aviso é
+  // acumulado aqui porque a função tem DOIS pontos de anulação (petição e processo) e uma única
+  // resposta no fim. Ver utils/pecas.js -> fecharJanelasEAvisar.
+  const avisosDeJanela = [];
 
   // Guard de defer idempotente: no modo "revisão automática" o executarAcordao já deu deferReply
   // antes de revisar — sem esse guard, deferir de novo aqui lançaria (interação já reconhecida).
@@ -3690,7 +3702,8 @@ Fundamentação do relator: ${extras.fundamentacao}`.trim(),
       });
       // SPEC §11.4: decisão anulada fecha entrega pendente — entregar documento void é pior
       // que estado órfão. É a mesma razão do processo anulado, logo abaixo.
-      try { require('../utils/pecas').fecharJanelasDoProcesso('peticoes', processoOriginal.numero); } catch (e) { console.error('[pecas] fechar janelas na anulação da petição:', e.message); }
+      const janelasPeticao = await require('../utils/pecas').fecharJanelasEAvisar(interaction.guild, 'peticoes', processoOriginal.numero, { contexto: 'anulação da decisão' });
+      if (janelasPeticao.aviso) avisosDeJanela.push(janelasPeticao.aviso);
       const canalPet = processoOriginal.canalId ? await interaction.guild.channels.fetch(processoOriginal.canalId).catch(() => null) : null;
       if (canalPet) {
         await canais.reabrirCanal(canalPet, [processoOriginal.requerenteId, novoJuizId || processoOriginal.juiz, processoOriginal.promotor].filter(Boolean));
@@ -3725,7 +3738,8 @@ Fundamentação do relator: ${extras.fundamentacao}`.trim(),
     // SPEC §11.4: processo ANULADO também fecha janelas de entrega pendentes — a sentença anulada
     // pode ter entrega aberta, e entregar documento void é pior que estado órfão. Quem tiver ato
     // legítimo ainda pendente (uma intimação) reabre a janela com um clique em "Entregar agora".
-    try { require('../utils/pecas').fecharJanelasDoProcesso('processos', processoOriginal.numero); } catch (e) { console.error('[pecas] fechar janelas na anulação:', e.message); }
+    const janelasAnulacao = await require('../utils/pecas').fecharJanelasEAvisar(interaction.guild, 'processos', processoOriginal.numero, { contexto: 'anulação da sentença' });
+    if (janelasAnulacao.aviso) avisosDeJanela.push(janelasAnulacao.aviso);
     const canalOriginalParaJuiz = await interaction.guild.channels.fetch(processoOriginal.canalId).catch(() => null);
     if (canalOriginalParaJuiz) {
       // A sentença original já tinha travado e arquivado esse canal — anular reabre o caso
@@ -3818,7 +3832,9 @@ Fundamentação do relator: ${extras.fundamentacao}`.trim(),
   await auditoria.registrar(interaction.guild, {
     acao: `Apelação decidida: ${statusFinal}`, executorId: interaction.user.id, referencia: `${numeroApelacao} (processo ${apelacao.processoOriginalNumero})`,
   });
-  // Publica o acórdão no Diário Oficial (try/catch — falha aqui não pode quebrar a decisão).
+  // Publica o acórdão no Diário Oficial (try/catch — falha aqui não pode quebrar a decisão, mas
+  // também não pode passar despercebida: a flag abaixo é lida na resposta ao relator).
+  let publicouNoDiario = false;
   try {
     await diario.publicarNoDiario(interaction.guild, 'acordao', {
       numero: apelacao.processoOriginalNumero,
@@ -3827,9 +3843,21 @@ Fundamentação do relator: ${extras.fundamentacao}`.trim(),
       // SEM ANEXO. O Diário publica o RESULTADO do acórdão; o inteiro teor sai pela entrega
       // com selo. Anexar aqui tornava a fundamentação pública para @everyone no ato.
     });
-  } catch (e) { console.error('[processo] publicação de acórdão no Diário falhou (ignorado):', e.message); }
+    publicouNoDiario = true;
+  } catch (e) {
+    console.error('[processo] publicação de acórdão no Diário falhou:', e.message);
+  }
 
-  const embedResultado = new EmbedBuilder().setColor(0x8e44ad).setDescription(`Apelação ${numeroApelacao}: sentença **${statusFinal}**. Acórdão publicado no canal.`);
+  // A tela não afirma o que não aconteceu — mesmo padrão de commands/diarioOficial.js, que já
+  // acertava isto: flag de sucesso, e frase honesta quando a publicação não saiu.
+  const linhas = [`Apelação ${numeroApelacao}: sentença **${statusFinal}**. Acórdão publicado no canal.`];
+  if (!publicouNoDiario) {
+    linhas.push('\n⚠️ **Não consegui publicar o acórdão no Diário Oficial** (canal ausente ou sem permissão). '
+      + 'A decisão vale e está nos autos — o que faltou foi a publicação. Avise a staff.');
+  }
+  for (const a of avisosDeJanela) linhas.push(`\n${a}`);
+  const embedResultado = new EmbedBuilder().setColor(publicouNoDiario && !avisosDeJanela.length ? 0x8e44ad : 0xf1c40f)
+    .setDescription(linhas.join('\n'));
   return interaction.editReply({ embeds: [embedResultado], components: [] });
 }
 
@@ -4082,7 +4110,18 @@ async function executarSentenca(interaction, numero, modo) {
         // SEM ANEXO — mesma razão do acórdão. Vale inclusive no processo `aberto`, que chega
         // aqui: aberto significa "visível às PARTES", não "publicado ao servidor inteiro".
       });
-    } catch (e) { console.error('[processo] publicação de sentença no Diário falhou (ignorado):', e.message); }
+    } catch (e) {
+      console.error('[processo] publicação de sentença no Diário falhou:', e.message);
+      // `followUp`, e não emenda na resposta: o editReply com a sentença já saiu lá em cima. O
+      // aviso vai como mensagem efêmera nova ao Juiz — quem sentenciou é quem precisa saber que a
+      // publicação não saiu. Só avisa quando REALMENTE tentou: em processo `ingame` a publicação é
+      // suprimida de propósito, e ali não há falha nenhuma a relatar.
+      await interaction.followUp({
+        content: '⚠️ **Não consegui publicar a sentença no Diário Oficial** (canal ausente ou sem permissão). '
+          + 'A sentença vale, está nos autos e foi publicada no canal do processo — o que faltou foi o Diário. Avise a staff.',
+        ephemeral: true,
+      }).catch(err => console.error('[processo] aviso de falha do Diário não pôde ser entregue ao Juiz:', err.message));
+    }
   }
   await postarOuAtualizarCapaPublica(interaction.guild, numero);
 }

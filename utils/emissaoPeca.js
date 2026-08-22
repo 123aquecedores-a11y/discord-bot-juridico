@@ -987,7 +987,8 @@ async function criarPeca(interaction, tipoChave, numeroProcesso) {
       + anexosFalhos.map(f => f.nomeArquivo || `arquivo na posição ${f.posicao}`).join(', ') + '.'
       + '\nA peça vale e está nos autos — falhou só a juntada. Para juntar de novo, use o botão '
       + '**🧾 Anexar prova** no canal do processo (ele grava o documento nos autos pelo processo, '
-      + 'não preso a esta peça).'
+      + 'não preso a esta peça). Se o botão não aparecer para você, peça a uma das partes do '
+      + 'processo ou à staff — ele é restrito a quem é parte.'
     : '';
 
   return interaction.editReply({

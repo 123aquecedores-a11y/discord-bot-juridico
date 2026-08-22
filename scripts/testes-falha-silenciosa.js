@@ -218,38 +218,42 @@ function parte3() {
   ok(/Demiss/.test(a), '3k: o aviso diz QUAL ação foi');
   ok(/<t:\d+:f>/.test(a), '3l: o aviso repete QUANDO, em timestamp do Discord');
   ok(/logRh|tabela/.test(a), '3m: e traz o erro técnico, para quem for consertar a causa');
-  ok(/valeu|já mudou|nada foi desfeito/i.test(a),
-    '3n: o aviso deixa explícito que a AÇÃO VALEU — senão quem lê tenta demitir de novo');
+  ok(/N[ÃA]O foi gravado|n[ãa]o foi gravado/.test(a),
+    '3n: o aviso deixa explícito que o REGISTRO falhou, e o que precisa ser lançado à mão');
 
   db.inserir = inserirOriginal;
 
   // -------------------------------------------------------------------------
-  console.log('\n4) Os QUATRO chamadores olham o retorno (era o buraco real):');
-  // O conserto do logRh.js sozinho não vale nada se os chamadores continuarem ignorando o retorno —
-  // que era exatamente a situação antes. Esta varredura é o que impede o conserto de ser decorativo.
+  console.log('\n4) O retorno virou CONDIÇÃO da ação, não aviso depois do fato:');
+  // MUDANÇA DE CONTRATO EM 21/08/2026, decisão do operador. A primeira versão desta correção fazia
+  // a ação acontecer e avisar que o log falhou. Não bastava: contratar, demitir e dar licença mudam
+  // QUEM PODE O QUÊ no tribunal, e poder que muda sem registro é poder que ninguém audita depois.
+  //
+  // Agora o log vem PRIMEIRO e a ação só acontece se ele gravar. Por isso as chamadas espalhadas
+  // sumiram: existe UMA trava (exigirLogRh) e todo mundo passa por ela. O comportamento em si é
+  // provado em scripts/testes-falha-que-aparece.js; aqui fica a garantia estrutural de que ninguém
+  // volta a chamar o logRh por fora.
   const rhSrc = SEM_COMENTARIO(LER('commands', 'rh.js'));
   const painelSrc = SEM_COMENTARIO(LER('commands', 'painel.js'));
+  ok(rhSrc.length > 5000 && painelSrc.length > 5000, '4a: CANÁRIO — os dois arquivos foram lidos inteiros',
+    `${rhSrc.length}/${painelSrc.length} chars`);
 
-  const chamadas = (rhSrc.match(/logRh\.registrar\(/g) || []).length + (painelSrc.match(/logRh\.registrar\(/g) || []).length;
-  ok(chamadas === 4, '4a: CANÁRIO — as 4 chamadas de logRh.registrar foram localizadas (varredura não passou vazia)', `achadas=${chamadas}`);
+  const diretas = (rhSrc.match(/logRh\.registrar\(/g) || []).length + (painelSrc.match(/logRh\.registrar\(/g) || []).length;
+  ok(diretas === 1, '4b: só UMA chamada a logRh.registrar sobrou — a de dentro da trava', `diretas=${diretas}`);
+  ok(/function exigirLogRh/.test(rhSrc) && /logRh\.registrar\(dados\)/.test(rhSrc),
+    '4c: e ela vive dentro de exigirLogRh, que é quem decide se a ação prossegue');
 
-  const soltas = (rhSrc.match(/^\s*logRh\.registrar\(/gm) || []).length + (painelSrc.match(/^\s*logRh\.registrar\(/gm) || []).length;
-  ok(soltas === 0,
-    '4b: NENHUMA chamada descarta o retorno (chamada solta no início da linha = retorno jogado fora)', `soltas=${soltas}`);
+  const travas = (rhSrc.match(/exigirLogRh\(/g) || []).length + (painelSrc.match(/rhCmd\.exigirLogRh\(/g) || []).length;
+  ok(travas === 5, '4d: a trava é aplicada nos 4 caminhos de ação (+ a própria definição)', `usos=${travas}`);
 
-  const conferidas = (rhSrc.match(/(const |let )\w+ = logRh\.registrar\(/g) || []).length
-    + (painelSrc.match(/(const |let )?\w+ = logRh\.registrar\(/g) || []).length;
-  ok(conferidas === 4, '4c: as 4 guardam o retorno numa variável', `guardadas=${conferidas}`);
+  const recusas = (rhSrc.match(/trava\.ok|\.recusa/g) || []).length + (painelSrc.match(/trava\.ok|\.recusa/g) || []).length;
+  ok(recusas >= 8, '4e: e todos os caminhos tratam a recusa em vez de seguir em frente', `tratamentos=${recusas}`);
 
-  const avisos = (rhSrc.match(/if \(!\w+\.ok\) await auditoria\.avisar\(/g) || []).length
-    + (painelSrc.match(/if \(!\w+\.ok\) await auditoria\.avisar\(/g) || []).length;
-  ok(avisos === 4, '4d: e as 4 publicam o aviso quando ok é falso', `avisos=${avisos}`);
-
-  // Os dois caminhos que TÊM interaction devolvem o aviso a quem clicou, sem esperar que alguém
-  // leia o canal de auditoria depois.
-  ok(/log\.ok \? okTexto :/.test(rhSrc), '4e: /rh licenca mostra o aviso na PRÓPRIA resposta de quem clicou');
-  ok(/logFalhou\.ok \? okTexto :/.test(painelSrc), '4f: e o modal do painel mostra no PRÓPRIO embed');
-  ok(/0xf1c40f/.test(painelSrc), '4g: com cor de alerta — nem verde (esconderia) nem vermelho (mentiria)');
+  // O que NÃO pode voltar: ação primeiro, log depois. Se `rh.contratar`/`rh.demitir` aparecer antes
+  // da trava, a janela de "cargo mudou sem registro" reabre.
+  const corpoContratar = rhSrc.slice(rhSrc.indexOf('async function contratarComRole'));
+  ok(corpoContratar.indexOf('exigirLogRh(') < corpoContratar.indexOf('rh.contratar('),
+    '4f: MUTAÇÃO — a trava continua ANTES da escrita no RH (é a ordem que dispensa rollback)');
 
   // -------------------------------------------------------------------------
   console.log('\n5) Os catch mudos não voltam sozinhos:');
