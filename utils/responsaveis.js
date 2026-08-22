@@ -12,6 +12,7 @@ const rh = require('./rh');
 const canais = require('./canais');
 const auditoria = require('./auditoria');
 const andamentos = require('./andamentos');
+const logRh = require('./logRh');
 const documentoPng = require('../services/gerarDocumentoPNG');
 const config = require('../config');
 
@@ -115,6 +116,49 @@ async function checarMembro(guild, id) {
 // definitiva) continua valendo normalmente.
 const LIMITE_RECONCILIACAO_SEM_CARGO = 5;
 
+// DEMISSÃO PELO SISTEMA — registro obrigatório, bloqueio proibido (21/08/2026).
+//
+// Os três pontos deste arquivo que chamam `rh.demitir()` desativam o registro de quem SAIU do
+// Discord. São demissões de verdade: mudam quem pode o quê. Até hoje não entravam no `logRh`, e o
+// "📜 Log de RH" do painel ficava com um buraco invisível — quem consultasse encontraria alguém
+// fora do quadro sem uma linha explicando por quê, exatamente o que aconteceu no caso de 21/08.
+//
+// ================= A ASSIMETRIA COM O ITEM 5 É PROPOSITAL. NÃO "CONSERTE". =================
+//
+// No caminho de HUMANO (commands/rh.js -> exigirLogRh), o log é CONDIÇÃO: se ele não gravar, a ação
+// não acontece. Ali há alguém escolhendo tirar o poder de outra pessoa, e poder que muda sem
+// registro ninguém audita depois — vale travar e pedir para tentar de novo.
+//
+// AQUI é o contrário, e por três razões concretas:
+//   1. Não há a quem recusar. Isto roda em varredura de boot, em `guildMemberRemove` e no meio de um
+//      re-sorteio. Não existe tela, não existe quem clicou, não existe "tente de novo".
+//   2. O alvo JÁ SAIU do servidor (o Discord respondeu 10007). Travar a limpeza deixaria um fantasma
+//      no quadro sendo sorteado para casos — o dano de não limpar é maior que o de não registrar.
+//   3. Falha de log aqui não esconde decisão de ninguém: não houve decisão, houve constatação.
+//
+// Então: registra sempre, grita quando falhar, e SEGUE. Nunca lança.
+// ==========================================================================================
+async function registrarDemissaoDeSistema(guild, { discordId, cargo, motivo }) {
+  const log = logRh.registrar({
+    acao: 'demitir',
+    executorId: logRh.EXECUTOR_SISTEMA,
+    cargoExecutor: logRh.CARGO_SISTEMA,
+    alvoId: discordId,
+    cargoAlvo: cargo || null,
+    motivo,
+    guildId: guild?.id || null,
+  });
+  if (!log.ok) {
+    // Grita com contexto e segue — ver o bloco acima antes de transformar isto em bloqueio.
+    console.error(`[responsaveis] demissão automática de ${discordId} (${cargo || 'sem cargo'}) NÃO entrou no log de RH: ${log.erro}`);
+  }
+  await auditoria.registrar(guild, {
+    acao: 'RH: desativação automática', executorId: null,
+    referencia: `<@${discordId}>${cargo ? ` (era ${cargo})` : ''}`, motivo,
+  }).catch(err => console.error(`[responsaveis] auditoria da demissão automática de ${discordId} falhou: ${err.message}`));
+  return log.ok;
+}
+
 // É um responsável válido? 'valido' | 'ausente' | 'indeterminado'. Só olha PRESENÇA no servidor —
 // NÃO checa rh.temCargo: nem todo responsável de ticket é um cargo do rh (a integração da Polícia
 // Civil injeta o `delegado` por @menção crua, sem contratar no rh; ele é participante legítimo). Só
@@ -179,7 +223,15 @@ async function sortearSubstitutoValido(guild, papel, excluir) {
     const res = await checarMembro(guild, cand);
     if (res.presente) return cand;
     if (res.indeterminado) { excluidos.push(cand); continue; } // não arrisca: tenta outro
-    rh.demitir(cand); // ausente (saiu): reconcilia o rh e exclui
+    // Ausente (saiu do servidor): reconcilia o rh e exclui do sorteio. Este era o ponto MAIS
+    // silencioso dos três — demitia sem log e sem auditoria, e a cadeia pode começar num clique
+    // humano (/rh demitir -> redistribuição -> re-sorteio). Agora registra como os outros dois.
+    const cargoDoCand = (rh.getCargo(cand) || {}).cargo || null;
+    rh.demitir(cand);
+    await registrarDemissaoDeSistema(guild, {
+      discordId: cand, cargo: cargoDoCand,
+      motivo: 'membro não encontrado no servidor (10007) durante re-sorteio de responsável',
+    });
     excluidos.push(cand);
   }
   return null;
@@ -492,7 +544,12 @@ async function limparRhFantasma(guild) {
     if (!res.ausente) continue; // presente ou indeterminado: mantém
     rh.demitir(reg.discordId);
     orfaos.push({ discordId: reg.discordId, cargo: reg.cargo, motivo: 'ausente do servidor' });
-    await auditoria.registrar(guild, { acao: 'RH: desativação automática (ausente do servidor)', executorId: null, referencia: `<@${reg.discordId}> (era ${reg.cargo})`, motivo: 'ausente do servidor' });
+    // A auditoria já existia aqui; o logRh não. Sem ele, o "📜 Log de RH" mostrava o quadro com um
+    // buraco. Ver o bloco de registrarDemissaoDeSistema para a assimetria com o caminho humano.
+    await registrarDemissaoDeSistema(guild, {
+      discordId: reg.discordId, cargo: reg.cargo,
+      motivo: 'membro não encontrado no servidor (10007) na varredura de reconciliação do RH',
+    });
   }
   return orfaos;
 }
@@ -564,11 +621,16 @@ async function recuperarPendencias(guild) {
 // guildMemberRemove -> aqui. Demite no rh e reatribui os tickets abertos onde a pessoa é
 // responsável. A varredura diária é a rede de segurança. Idempotente.
 async function tratarResponsavelInvalido(guild, discordId, motivoTipo) {
-  if (rh.getCargo(discordId)) {
+  const registroAtual = rh.getCargo(discordId);
+  if (registroAtual) {
     rh.demitir(discordId);
-    await auditoria.registrar(guild, {
-      acao: `RH: desativação automática (${motivoTipo === 'ausente' ? 'ausente do servidor' : 'sem o cargo'})`,
-      executorId: null, referencia: `<@${discordId}>`,
+    // Idem os outros dois pontos: a auditoria já existia, o logRh não. Uma demissão que não entra
+    // no log é uma linha faltando no "📜 Log de RH" sem ninguém saber que falta.
+    await registrarDemissaoDeSistema(guild, {
+      discordId, cargo: registroAtual.cargo,
+      motivo: motivoTipo === 'ausente'
+        ? 'membro saiu do servidor (evento guildMemberRemove)'
+        : 'membro sem o cargo correspondente no Discord',
     });
   }
   const tratados = [];

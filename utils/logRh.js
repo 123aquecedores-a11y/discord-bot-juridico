@@ -15,6 +15,17 @@ const db = require('../database/db');
 const ACOES = ['contratar', 'demitir', 'licenca'];
 const ROTULO = { contratar: '🟢 Contratação', demitir: '🔴 Demissão', licenca: '🟡 Licença' };
 
+// EXECUTOR "SISTEMA" (21/08/2026). Nem toda demissão tem gente por trás: quando alguém SAI do
+// Discord, o bot desativa o registro sozinho (utils/responsaveis.js). Antes isso não entrava aqui, e
+// o "📜 Log de RH" ficava com um buraco que ninguém via — quem consultasse depois encontraria uma
+// pessoa fora do quadro sem nenhuma linha explicando por quê. Foi exatamente o que aconteceu com o
+// caso de 21/08: role de Promotor sem registro de RH, e nada no log dizendo o que houve.
+//
+// NÃO é `null`: o log é lido por `formatar`, que monta menção `<@id>`. Null viraria `<@null>` na
+// tela. O sentinela é uma string reconhecida, e `formatar` a troca por um rótulo legível.
+const EXECUTOR_SISTEMA = 'sistema';
+const CARGO_SISTEMA = 'automação do bot';
+
 /**
  * Texto de resgate: o que precisa ser lançado à mão porque a gravação falhou.
  *
@@ -99,9 +110,11 @@ function consultar({ acao = null, executorId = null, alvoId = null, limite = 15 
 function formatar(r) {
   const quando = Math.floor(new Date(r.criadoEm).getTime() / 1000);
   const alvo = r.cargoAlvo ? `<@${r.alvoId}> (${r.cargoAlvo})` : `<@${r.alvoId}>`;
+  // Menção só para gente. O sentinela do sistema vira rótulo — `<@sistema>` apareceria cru na tela.
+  const executor = r.executorId === EXECUTOR_SISTEMA ? '⚙️ **o sistema**' : `<@${r.executorId}>`;
   return `${ROTULO[r.acao] || r.acao} — ${alvo}\n`
-    + `por <@${r.executorId}> *(${r.cargoExecutor})* · <t:${quando}:f>\n`
+    + `por ${executor} *(${r.cargoExecutor})* · <t:${quando}:f>\n`
     + `Motivo: ${r.motivo}`;
 }
 
-module.exports = { ACOES, registrar, consultar, formatar, avisoDeFalha, ROTULO };
+module.exports = { ACOES, registrar, consultar, formatar, avisoDeFalha, ROTULO, EXECUTOR_SISTEMA, CARGO_SISTEMA };
